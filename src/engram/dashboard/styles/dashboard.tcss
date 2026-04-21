@@ -1,0 +1,567 @@
+/* Engram Dashboard — Anthropic brand theme */
+
+Screen {
+    background: $background;
+}
+
+/* ── Tab styling ── */
+TabbedContent {
+    height: 100%;
+}
+
+TabPane {
+    padding: 1 1;
+    height: 1fr;
+}
+
+Tabs {
+    dock: top;
+    background: $surface;
+    height: 3;
+}
+
+Tab {
+    padding: 0 3;
+    color: $text-muted;
+}
+
+Tab:hover {
+    color: $text;
+}
+
+Tab.-active {
+    color: $text;
+    text-style: bold;
+    background: $background;
+}
+
+Underline {
+    color: $accent;
+}
+
+/* ── Header ── */
+Header {
+    dock: top;
+    background: $surface;
+    color: $text;
+    height: 1;
+}
+
+HeaderTitle {
+    color: $accent;
+    text-style: bold;
+}
+
+/* ── Footer ── */
+Footer {
+    dock: bottom;
+    background: $surface;
+}
+
+FooterKey {
+    background: $surface;
+}
+
+FooterKey .footer-key--key {
+    color: $accent;
+    background: $background;
+}
+
+FooterKey .footer-key--description {
+    color: $text-muted;
+}
+
+/* ── Dynamic footer label ── */
+#dynamic-footer {
+    dock: bottom;
+    height: 1;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 2;
+    text-align: center;
+}
+
+/* ── Global DataTable ── */
+DataTable {
+    background: $background;
+}
+
+DataTable > .datatable--header {
+    background: $surface;
+    color: $accent;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: $accent 30%;
+    color: $text;
+}
+
+DataTable > .datatable--even-row {
+    background: $background;
+}
+
+DataTable > .datatable--odd-row {
+    background: $surface-lighten-1;
+}
+
+/* ── Shared layout classes ── */
+.filter-bar {
+    height: 3;
+    width: 100%;
+    layout: horizontal;
+    padding: 0 1;
+    background: $surface;
+    dock: top;
+}
+
+.filter-bar Input {
+    width: 1fr;
+    margin: 0 1;
+}
+
+.filter-bar Select {
+    width: 24;
+    margin: 0 1;
+}
+
+.filter-bar .cand-stats {
+    width: 1fr;
+    content-align: right middle;
+    color: $text-muted;
+    padding: 0 2;
+}
+
+.screen-body {
+    height: 1fr;
+    width: 100%;
+    layout: horizontal;
+}
+
+.table-container {
+    width: 2fr;
+    height: 100%;
+}
+
+.detail-pane {
+    width: 1fr;
+    height: 100%;
+    display: none;
+}
+
+.detail-pane.visible {
+    display: block;
+}
+
+.hint {
+    dock: bottom;
+    height: 1;
+    color: $text-muted;
+    padding: 0 2;
+}
+
+.panel-title {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+/* ── Overview ── */
+OverviewScreen {
+    scrollbar-size: 1 1;
+}
+
+#stats-row {
+    height: auto;
+    width: 100%;
+    layout: horizontal;
+    margin: 0 0 1 0;
+}
+
+#stats-row StatCard {
+    margin: 0 1 0 0;
+}
+
+#stat-total .stat-value { color: $text; }
+#stat-active .stat-value { color: $stat-active; }
+#stat-forgotten .stat-value { color: $stat-forgotten; }
+#stat-expired .stat-value { color: $stat-expired; }
+#stat-candidates .stat-value { color: $stat-pending; }
+
+#distributions {
+    height: 20;
+    width: 100%;
+    layout: horizontal;
+    margin: 0 0 1 0;
+}
+
+.dist-panel {
+    width: 1fr;
+    height: 1fr;
+    padding: 1 2;
+    background: $surface;
+    border: round $primary-background-lighten-1;
+}
+
+#cat-panel {
+    margin-right: 1;
+}
+
+OverviewScreen OptionList {
+    height: auto;
+    max-height: 14;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+OverviewScreen OptionList:focus > .option-list--option-highlighted {
+    background: $accent 25%;
+}
+
+OverviewScreen OptionList > .option-list--option-highlighted {
+    background: $surface-lighten-1;
+}
+
+#activity-panel {
+    height: auto;
+    width: 100%;
+    padding: 1 2;
+    background: $surface;
+    border: round $primary-background-lighten-1;
+    margin-bottom: 1;
+}
+
+#activity-panel Sparkline {
+    width: 100%;
+    height: 3;
+}
+
+.activity-stats {
+    color: $text-muted;
+    margin-top: 1;
+    text-align: center;
+    width: 100%;
+}
+
+#storage-info {
+    height: 1;
+    width: 100%;
+    color: $text-muted;
+    text-align: center;
+}
+
+/* ── Timeline ── */
+TimelineScreen {
+    width: 100%;
+    height: 100%;
+}
+
+#timeline-chart {
+    width: 100%;
+    height: 1fr;
+    background: $surface;
+    border: round $primary-background-lighten-1;
+    margin: 0 0 1 0;
+}
+
+#sparkline-row {
+    height: auto;
+    width: 100%;
+    layout: horizontal;
+}
+
+.spark-panel {
+    width: 1fr;
+    height: auto;
+    padding: 1;
+    background: $surface;
+    border: round $primary-background-lighten-1;
+    margin: 0 1;
+}
+
+.spark-panel Sparkline {
+    width: 100%;
+    height: 2;
+}
+
+/* ── Facts ── */
+FactsScreen {
+    width: 100%;
+    height: 100%;
+}
+
+FactsScreen DataTable {
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Candidates ── */
+CandidatesScreen {
+    width: 100%;
+    height: 100%;
+}
+
+CandidatesScreen DataTable {
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Forgotten ── */
+ForgottenScreen {
+    width: 100%;
+    height: 100%;
+}
+
+ForgottenScreen DataTable {
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Projects ── */
+ProjectsScreen {
+    width: 100%;
+    height: 100%;
+}
+
+#proj-list-view {
+    width: 100%;
+    height: 100%;
+}
+
+#proj-list-header {
+    height: auto;
+    padding: 1;
+}
+
+ProjectsScreen DataTable {
+    height: 1fr;
+    width: 100%;
+}
+
+/* ── Project detail ── */
+ProjectDetailView {
+    width: 100%;
+    height: 100%;
+}
+
+#proj-detail-header {
+    height: auto;
+    width: 100%;
+    layout: horizontal;
+    margin-bottom: 1;
+}
+
+.proj-stat-box {
+    width: 1fr;
+    height: 8;
+    padding: 1;
+    background: $surface;
+    border: round $primary-background-lighten-1;
+    margin: 0 1;
+}
+
+.proj-stat-box .stat-value {
+    text-style: bold;
+    color: $accent;
+}
+
+#proj-search-bar {
+    height: 3;
+    width: 100%;
+    padding: 0 1;
+    background: $surface;
+}
+
+#proj-search-bar Input {
+    width: 1fr;
+}
+
+#proj-facts-body {
+    height: 1fr;
+    width: 100%;
+    layout: horizontal;
+}
+
+#proj-facts-table-wrap {
+    width: 2fr;
+    height: 100%;
+}
+
+ProjectDetailView DataTable {
+    height: 100%;
+    width: 100%;
+}
+
+/* ── Category detail modal ── */
+CategoryDetailScreen {
+    align: center middle;
+}
+
+#cat-detail-container {
+    width: 90%;
+    height: 85%;
+    background: $surface;
+    border: round $accent;
+    padding: 1 2;
+}
+
+#cat-stats-row {
+    height: auto;
+    layout: horizontal;
+    margin-bottom: 1;
+}
+
+.cat-stat {
+    width: 1fr;
+    height: auto;
+    padding: 1;
+    margin: 0 1;
+    background: $panel;
+    border: round $primary-background-lighten-1;
+}
+
+#cat-search-input {
+    margin: 0 0 1 0;
+}
+
+#cat-facts-body {
+    height: 1fr;
+    layout: horizontal;
+}
+
+#cat-facts-table-wrap {
+    width: 2fr;
+    height: 100%;
+}
+
+CategoryDetailScreen DataTable {
+    width: 100%;
+    height: 100%;
+}
+
+CategoryDetailScreen .title {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+/* ── Stat card ── */
+StatCard {
+    width: 1fr;
+    height: 6;
+    padding: 1 2 0 2;
+    background: $surface;
+    border: round $primary-background-lighten-1;
+    margin: 0 0;
+}
+
+StatCard .stat-label {
+    color: $text-muted;
+    text-style: bold;
+    text-align: center;
+    width: 100%;
+}
+
+StatCard .stat-value {
+    width: 100%;
+    text-align: center;
+    text-style: bold;
+    color: $accent;
+    margin: 0;
+}
+
+StatCard .stat-spark {
+    width: 100%;
+    height: 1;
+    margin-top: 0;
+}
+
+/* ── Fact detail panel ── */
+FactDetail {
+    padding: 1 2;
+    background: $surface;
+    border: tall $accent;
+}
+
+FactDetail .detail-title {
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+FactDetail .detail-row {
+    margin-bottom: 0;
+}
+
+FactDetail .detail-label {
+    color: $text-muted;
+    text-style: bold;
+    width: 16;
+}
+
+FactDetail .detail-content {
+    color: $text;
+    margin-bottom: 1;
+}
+
+/* ── Confirm dialog ── */
+ConfirmScreen {
+    align: center middle;
+}
+
+#confirm-box {
+    width: 48;
+    height: auto;
+    padding: 2 4;
+    background: $surface;
+    border: round $accent;
+}
+
+.confirm-msg {
+    text-align: center;
+    margin-bottom: 1;
+}
+
+.confirm-hint {
+    text-align: center;
+    color: $text-muted;
+}
+
+/* ── Help modal ── */
+HelpScreen {
+    align: center middle;
+}
+
+#help-container {
+    width: 72;
+    max-height: 80%;
+    background: $surface;
+    border: round $accent;
+    padding: 1 2;
+}
+
+.help-title {
+    text-style: bold;
+    color: $accent;
+    text-align: center;
+    width: 100%;
+    margin-bottom: 1;
+}
+
+.help-section {
+    text-style: bold;
+    color: $text;
+    margin-top: 1;
+}
+
+.help-row {
+    margin: 0;
+}
+
+.help-hint {
+    color: $text-muted;
+    text-align: center;
+    width: 100%;
+    margin-top: 1;
+}
