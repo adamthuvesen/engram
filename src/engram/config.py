@@ -23,11 +23,6 @@ class Settings(BaseSettings):
     # Retrieval
     max_facts_per_agent: int = 200
     retrieval_timeout: float = 15.0
-    parallel_agents: bool = True
-    # Accepts "multilens" (default) or "legacy". Unknown values are handled at
-    # runtime by engram.retriever._resolve_pipeline with a warning, so
-    # misconfiguration doesn't take the server down at import time.
-    recall_pipeline: str = "multilens"
     # Tier selector rules. "v2" (default) caps tier at 1 when the prefilter
     # returns fewer than `tier2_min_prefilter_count` facts. "v1" restores the
     # pre-small-corpus-cap behaviour. Unknown values warn and fall back to v2.
