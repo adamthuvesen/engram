@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from engram.models import Fact, FactCategory
-from engram.store import FactStore
+from engram.store import AsyncFactStore, FactStore
 from engram.synthesizer import SynthesisResult, format_synthesis_result, synthesize
 
 
@@ -109,6 +109,40 @@ def test_removes_stale_facts(monkeypatch):
     active = store.load_active_facts()
     assert len(active) == 1
     assert active[0].id == "good1"
+
+
+def test_synthesize_accepts_async_store(monkeypatch):
+    store = _make_store()
+    _seed_facts(
+        store,
+        [
+            Fact(
+                id="stale1",
+                category=FactCategory.event,
+                content="Temporary async migration note",
+            ),
+        ],
+    )
+
+    async def fake_complete_json(
+        prompt: str, system: str = "", model: str | None = None
+    ):
+        return {
+            "actions": [
+                {
+                    "fact_id": "stale1",
+                    "action": "remove",
+                    "reason": "no longer relevant",
+                }
+            ]
+        }
+
+    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+
+    result = asyncio.run(synthesize(dry_run=False, store=AsyncFactStore(store)))
+
+    assert result.removed == 1
+    assert store.load_facts()[0].confidence == 0.0
 
 
 def test_rewrites_facts(monkeypatch):
@@ -217,6 +251,11 @@ def test_project_filter_only_processes_matching(monkeypatch):
                 content="Fact B",
                 project="beta",
             ),
+            Fact(
+                id="global_pref",
+                category=FactCategory.preference,
+                content="Global fact",
+            ),
         ],
     )
 
@@ -242,6 +281,7 @@ def test_project_filter_only_processes_matching(monkeypatch):
     assert len(calls) == 1
     assert "proj_a" in calls[0]
     assert "proj_b" not in calls[0]
+    assert "global_pref" not in calls[0]
 
 
 def test_invalid_llm_response_defaults_to_keep(monkeypatch):

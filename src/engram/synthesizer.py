@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from engram.config import get_settings
 from engram.llm import complete_json
 from engram.models import Fact
-from engram.store import FactStore, format_facts_for_llm
+from engram.store import AsyncFactStore, FactStore, format_facts_for_llm
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class SynthesisResult:
 async def synthesize(
     project: str | None = None,
     dry_run: bool = True,
-    store: FactStore | None = None,
+    store: FactStore | AsyncFactStore | None = None,
 ) -> SynthesisResult:
     """Analyze and consolidate the fact store.
 
@@ -80,7 +80,7 @@ async def synthesize(
     settings = get_settings()
     batch_size = settings.synthesis_batch_size
 
-    facts = store.load_active_facts(project=project)
+    facts = await _load_active_facts(store, project=project, include_global=False)
     if not facts:
         return SynthesisResult()
 
@@ -118,7 +118,7 @@ async def synthesize(
                     )
 
             if not dry_run:
-                _apply_actions(batch_actions, store)
+                await _apply_actions(batch_actions, store)
 
     return result
 
@@ -152,7 +152,22 @@ async def _synthesize_batch(batch: list[Fact], store: FactStore) -> list[dict]:
     return actions
 
 
-def _apply_actions(actions: list[dict], store: FactStore) -> None:
+async def _load_active_facts(
+    store: FactStore | AsyncFactStore,
+    project: str | None,
+    include_global: bool,
+) -> list[Fact]:
+    if isinstance(store, AsyncFactStore):
+        return await store.load_active_facts(
+            project=project, include_global=include_global
+        )
+    return store.load_active_facts(project=project, include_global=include_global)
+
+
+async def _apply_actions(
+    actions: list[dict],
+    store: FactStore | AsyncFactStore,
+) -> None:
     """Apply synthesis actions to the store in a single batch write."""
     updates: dict[str, dict] = {}
 
@@ -206,7 +221,10 @@ def _apply_actions(actions: list[dict], store: FactStore) -> None:
             updates[fact_id] = {"confidence": 0.0}
 
     if updates:
-        store.batch_update_facts(updates)
+        if isinstance(store, AsyncFactStore):
+            await store.batch_update_facts(updates)
+        else:
+            store.batch_update_facts(updates)
 
 
 def format_synthesis_result(result: SynthesisResult, dry_run: bool) -> str:
