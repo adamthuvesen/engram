@@ -5,26 +5,28 @@ Structured, cross-project memory for coding agents via MCP. No embeddings, no ve
 ## Quick Start
 
 ```bash
-uv sync                                          # install deps
+uv sync --extra dev                              # install deps
 uv run engram                                    # start MCP server
 uv run fastmcp dev src/engram/server.py          # dev mode (inspector)
-uv run pytest tests/ -v                           # run tests
+uv run --extra dev pytest tests/ -v              # run tests
 ```
 
 ## Architecture
 
 ```
 server.py      FastMCP entrypoint, tool definitions
-store.py       JSONL storage, filtering, candidate review, prefiltering
+store.py       JSONL storage + AsyncFactStore facade, prefilter, candidate review,
+               transaction journal for candidate approval
 observer.py    Fact extraction & suggestion queueing (LLM structured output)
-retriever.py   Deterministic prefilter → 3 parallel search agents → synthesis
+retriever.py   Tiered: deterministic fast paths → multi-lens search + synthesis
+synthesizer.py Batch LLM consolidation (keep/remove/rewrite/merge)
 importer.py    Bootstrap from Claude Code memory files
 llm.py         litellm wrapper
 config.py      pydantic-settings (env prefix: ENGRAM_)
-models.py      Fact, Candidate, Category, audit models
+models.py      Fact, MemoryCandidate, IngestionRecord, RecallRecord, StoreTransaction
 ```
 
-**Data flow:** natural language → `observer` extracts structured facts → `store` persists as JSONL → `retriever` searches with 3 agents (direct, contextual, temporal) and synthesizes.
+**Data flow:** natural language → `observer` extracts structured facts → `store` persists as JSONL via `AsyncFactStore` → `retriever` runs deterministic fast paths first, escalating to multi-lens search + synthesis only for complex queries.
 
 ## MCP Tools
 
@@ -35,12 +37,19 @@ models.py      Fact, Candidate, Category, audit models
 | `suggest_memories`                         | Propose candidates for human review                   |
 | `list_candidates`                          | Browse pending/reviewed suggestions                   |
 | `approve_candidates` / `reject_candidates` | Promote or dismiss candidates                         |
-| `recall`                                   | Search with 3 parallel agentic search agents          |
+| `recall`                                   | Tiered multi-lens search                              |
 | `recall_context`                           | Recall as answer or compact prompt block              |
-| `forget`                                   | Soft-delete a fact                                    |
+| `recall_trace`                             | Recall + bounded prompt/output excerpts for debugging |
+| `recall_stats`                             | Per-recall LLM usage and cache-hit summary            |
+| `forget` / `edit_fact`                     | Soft-delete or edit a fact in place                   |
+| `correct_memory` / `merge_memories`        | Agent-first correction and merge primitives           |
+| `mark_stale` / `unmark_stale`              | Toggle a fact's recall eligibility                    |
 | `inspect`                                  | Browse stored facts                                   |
 | `import_memories`                          | Bootstrap from `~/.claude/projects/*/memory/`         |
 | `memory_stats`                             | Counts, storage size, category breakdown              |
+| `synthesize`                               | Batch dedupe / merge / rewrite / prune                |
+| `purge` / `rename_project`                 | Permanently drop forgotten/expired or rename a scope  |
+| `doctor`                                   | Read-only health diagnostics (with opt-in `repair`)   |
 
 
 ## Data
@@ -50,6 +59,8 @@ All data lives under `~/.engram/data/`:
 - `facts.jsonl` — active + forgotten facts
 - `candidates.jsonl` — suggested memories pending review
 - `ingestion_log.jsonl` — audit trail
+- `recall_log.jsonl` — recall quality / latency observability
+- `transactions.jsonl` — prepared/committed markers for crash-safe candidate approval
 
 ## Config
 
@@ -61,7 +72,6 @@ All settings via `ENGRAM_*` env vars (pydantic-settings). Key knobs:
 | `ENGRAM_LLM_MODEL`           | `openai/gpt-5.4-mini` | LLM for extraction & search agents |
 | `ENGRAM_MAX_FACTS_PER_AGENT` | `200`                 | Facts fed to each search agent     |
 | `ENGRAM_RETRIEVAL_TIMEOUT`   | `15.0`                | Search agent timeout (seconds)     |
-| `ENGRAM_RECALL_PIPELINE`     | `multilens`           | Tier-2 pipeline: `multilens` (single search + synthesis, prompt-cache friendly) or `legacy` (3 parallel agents + synthesis) |
 | `ENGRAM_TIER_RULES`          | `v2`                  | Tier selector rules: `v2` (default, caps tier-2 when prefilter is small) or `v1` (pre-cap behaviour) |
 | `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11`            | Under v2, tier-2 requires at least this many positive-scoring prefilter matches. `0` disables the cap. |
 | `ENGRAM_DATA_DIR`            | `~/.engram/data`      | Storage directory                  |
@@ -82,6 +92,6 @@ summary with the active version noted inline.
 - Python 3.11+, managed with `uv`
 - FastMCP 2.x for the MCP server surface
 - litellm for model-agnostic LLM calls
-- All tools are async; store operations are synchronous (file I/O)
+- All MCP tools are async; storage I/O is synchronous behind an `AsyncFactStore` `asyncio.to_thread` facade
 - Facts have: category, content, confidence, timestamps, project scope, supersession chain, source metadata
 
