@@ -26,6 +26,7 @@ from engram.config import get_settings
 from engram.models import (
     CandidateStatus,
     Fact,
+    MIN_ACTIVE_CONFIDENCE,
     MemoryCandidate,
     RecallRecord,
     StoreTransaction,
@@ -101,15 +102,16 @@ def _check_jsonl_integrity(
         return 0
     valid = 0
     corrupt: list[int] = []
-    for lineno, line in enumerate(path.read_text().splitlines(), 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            model_cls.model_validate_json(line)
-            valid += 1
-        except (ValueError, ValidationError):
-            corrupt.append(lineno)
+    with path.open() as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                model_cls.model_validate_json(line)
+                valid += 1
+            except (ValueError, ValidationError):
+                corrupt.append(lineno)
     if corrupt:
         issues.append(
             DoctorIssue(
@@ -132,22 +134,23 @@ def _check_transactions(store: FactStore, issues: list[DoctorIssue]) -> None:
     if not path.exists():
         return
     transactions: list[StoreTransaction] = []
-    for lineno, line in enumerate(path.read_text().splitlines(), 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            transactions.append(StoreTransaction.model_validate_json(line))
-        except (ValueError, ValidationError):
-            issues.append(
-                DoctorIssue(
-                    code="transaction_log_corrupt",
-                    severity="warning",
-                    category="storage",
-                    message=f"Corrupt transaction log line {lineno}",
-                    repair="Inspect transactions.jsonl manually.",
+    with path.open() as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                transactions.append(StoreTransaction.model_validate_json(line))
+            except (ValueError, ValidationError):
+                issues.append(
+                    DoctorIssue(
+                        code="transaction_log_corrupt",
+                        severity="warning",
+                        category="storage",
+                        message=f"Corrupt transaction log line {lineno}",
+                        repair="Inspect transactions.jsonl manually.",
+                    )
                 )
-            )
     prepared: dict[str, StoreTransaction] = {}
     committed: set[str] = set()
     for txn in transactions:
@@ -177,14 +180,15 @@ def _check_recall_log(store: FactStore, issues: list[DoctorIssue]) -> None:
     if not path.exists():
         return
     bad: list[int] = []
-    for lineno, line in enumerate(path.read_text().splitlines(), 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            RecallRecord.model_validate_json(line)
-        except (ValueError, ValidationError):
-            bad.append(lineno)
+    with path.open() as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                RecallRecord.model_validate_json(line)
+            except (ValueError, ValidationError):
+                bad.append(lineno)
     if bad:
         issues.append(
             DoctorIssue(
@@ -222,7 +226,7 @@ def _check_facts_relationships(
     # Duplicates: same project + category + normalized content among active facts.
     by_signature: dict[tuple[str | None, str, str], list[str]] = defaultdict(list)
     for fact in facts:
-        if fact.confidence < 0.1 or getattr(fact, "stale", False):
+        if fact.confidence < MIN_ACTIVE_CONFIDENCE or fact.stale:
             continue
         sig = (
             fact.project,
@@ -288,9 +292,7 @@ def _check_facts_relationships(
         )
 
     # Stale + forgotten on the same fact is contradictory.
-    contradictory = [
-        f.id for f in facts if getattr(f, "stale", False) and f.confidence == 0.0
-    ]
+    contradictory = [f.id for f in facts if f.stale and f.confidence == 0.0]
     if contradictory:
         issues.append(
             DoctorIssue(
@@ -424,9 +426,9 @@ def run_doctor(
         "facts_valid": facts_valid,
         "candidates_valid": candidates_valid,
         "active_facts": sum(
-            1 for f in facts if f.confidence >= 0.1 and not getattr(f, "stale", False)
+            1 for f in facts if f.confidence >= MIN_ACTIVE_CONFIDENCE and not f.stale
         ),
-        "stale_facts": sum(1 for f in facts if getattr(f, "stale", False)),
+        "stale_facts": sum(1 for f in facts if f.stale),
         "forgotten_facts": sum(1 for f in facts if f.confidence == 0.0),
         "issues": len(issues),
     }

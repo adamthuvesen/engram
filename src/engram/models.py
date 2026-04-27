@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+MIN_ACTIVE_CONFIDENCE = 0.1
+
 
 class FactCategory(str, Enum):
     """Categories for structured knowledge extraction."""

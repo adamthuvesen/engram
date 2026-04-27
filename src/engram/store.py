@@ -25,6 +25,7 @@ from engram.models import (
     Fact,
     FactCategory,
     IngestionRecord,
+    MIN_ACTIVE_CONFIDENCE,
     MemoryCandidate,
     RecallRecord,
     StoreTransaction,
@@ -176,14 +177,15 @@ class FactStore:
         if not self.facts_path.exists():
             return []
         facts = []
-        for lineno, line in enumerate(self.facts_path.read_text().splitlines(), 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                facts.append(Fact.model_validate_json(line))
-            except (ValueError, ValidationError) as exc:
-                logger.warning("Skipping corrupt fact at line %d: %s", lineno, exc)
+        with self.facts_path.open() as fh:
+            for lineno, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    facts.append(Fact.model_validate_json(line))
+                except (ValueError, ValidationError) as exc:
+                    logger.warning("Skipping corrupt fact at line %d: %s", lineno, exc)
         return facts
 
     def load_candidates(
@@ -197,20 +199,23 @@ class FactStore:
             return []
 
         candidates = []
-        for lineno, line in enumerate(self.candidates_path.read_text().splitlines(), 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                candidate = MemoryCandidate.model_validate_json(line)
-            except (ValueError, ValidationError) as exc:
-                logger.warning("Skipping corrupt candidate at line %d: %s", lineno, exc)
-                continue
-            if status and candidate.status != status:
-                continue
-            if project and candidate.project and candidate.project != project:
-                continue
-            candidates.append(candidate)
+        with self.candidates_path.open() as fh:
+            for lineno, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    candidate = MemoryCandidate.model_validate_json(line)
+                except (ValueError, ValidationError) as exc:
+                    logger.warning(
+                        "Skipping corrupt candidate at line %d: %s", lineno, exc
+                    )
+                    continue
+                if status and candidate.status != status:
+                    continue
+                if project and candidate.project and candidate.project != project:
+                    continue
+                candidates.append(candidate)
 
         candidates.sort(key=lambda c: c.updated_at, reverse=True)
         if limit:
@@ -238,7 +243,7 @@ class FactStore:
                 continue
             if fact.expires_at and fact.expires_at < now:
                 continue
-            if not include_stale and getattr(fact, "stale", False):
+            if not include_stale and fact.stale:
                 continue
             if category and fact.category != category:
                 continue
@@ -793,20 +798,19 @@ class FactStore:
             return []
 
         transactions: list[StoreTransaction] = []
-        for lineno, line in enumerate(
-            self.transaction_log_path.read_text().splitlines(), 1
-        ):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                transactions.append(StoreTransaction.model_validate_json(line))
-            except (ValueError, ValidationError) as exc:
-                logger.warning(
-                    "Skipping corrupt transaction at line %d: %s",
-                    lineno,
-                    exc,
-                )
+        with self.transaction_log_path.open() as fh:
+            for lineno, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    transactions.append(StoreTransaction.model_validate_json(line))
+                except (ValueError, ValidationError) as exc:
+                    logger.warning(
+                        "Skipping corrupt transaction at line %d: %s",
+                        lineno,
+                        exc,
+                    )
         return transactions
 
     def _pending_transactions(self) -> list[StoreTransaction]:
@@ -839,7 +843,7 @@ class FactStore:
         kept = []
         purged = 0
         for fact in facts:
-            is_forgotten = fact.confidence < 0.1
+            is_forgotten = fact.confidence < MIN_ACTIVE_CONFIDENCE
             is_expired = fact.expires_at is not None and fact.expires_at < now
             if is_forgotten or is_expired:
                 purged += 1
@@ -859,13 +863,16 @@ class FactStore:
         active = [
             f
             for f in facts
-            if f.confidence >= 0.1 and not (f.expires_at and f.expires_at < now)
+            if f.confidence >= MIN_ACTIVE_CONFIDENCE
+            and not (f.expires_at and f.expires_at < now)
         ]
-        forgotten = [f for f in facts if f.confidence < 0.1]
+        forgotten = [f for f in facts if f.confidence < MIN_ACTIVE_CONFIDENCE]
         expired = [
             f
             for f in facts
-            if f.confidence >= 0.1 and f.expires_at and f.expires_at < now
+            if f.confidence >= MIN_ACTIVE_CONFIDENCE
+            and f.expires_at
+            and f.expires_at < now
         ]
         by_category = Counter(f.category.value for f in active)
         by_project = Counter(f.project or "(none)" for f in active)
@@ -918,9 +925,11 @@ class FactStore:
         if not self.recall_log_path.exists():
             return []
         records = []
-        for line in self.recall_log_path.read_text().splitlines():
-            line = line.strip()
-            if line:
+        with self.recall_log_path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
                 try:
                     records.append(RecallRecord.model_validate_json(line))
                 except Exception:
@@ -946,15 +955,16 @@ class FactStore:
 
             valid = []
             corrupt = 0
-            for line in path.read_text().splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    valid.append(model_cls.model_validate_json(line))
-                except Exception:
-                    corrupt += 1
-                    logger.warning("Corrupt %s line dropped: %s", label, line[:80])
+            with path.open() as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        valid.append(model_cls.model_validate_json(line))
+                    except Exception:
+                        corrupt += 1
+                        logger.warning("Corrupt %s line dropped: %s", label, line[:80])
 
             if corrupt > 0:
                 self._rewrite(valid, path=path)

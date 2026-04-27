@@ -347,7 +347,7 @@ def _build_source_summaries(
             score=score,
             cited=fact.id in cited_ids,
             superseded_by=None,
-            stale=getattr(fact, "stale", False),
+            stale=fact.stale,
             forgotten=fact.confidence == 0.0,
         )
         if summary.cited:
@@ -383,7 +383,7 @@ def _build_warnings(
     superseded_ids: list[str] = []
     forgotten_ids: list[str] = []
     for _, fact in scored_facts:
-        if getattr(fact, "stale", False):
+        if fact.stale:
             stale_ids.append(fact.id)
         if fact.id in superseded_by:
             superseded_ids.append(fact.id)
