@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-engram = "engram.server:main"
+engram = "engram.cli:main_dispatch"
 engram-dash = "engram.dashboard.app:main"
 
 [project.optional-dependencies]
@@ -35,4 +35,3 @@ packages = ["src/engram"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-asyncio_mode = "auto"
