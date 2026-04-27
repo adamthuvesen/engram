@@ -53,6 +53,13 @@ class CandidateStatus(str, Enum):
     rejected = "rejected"
 
 
+class TransactionStatus(str, Enum):
+    """Lifecycle states for durable store transactions."""
+
+    prepared = "prepared"
+    committed = "committed"
+
+
 class FactBase(BaseModel):
     """Shared fields between Fact and MemoryCandidate."""
 
@@ -72,6 +79,10 @@ class FactBase(BaseModel):
     evidence_kind: EvidenceKind = EvidenceKind.unknown
     source_ref: str | None = None
     why_store: str = ""
+    # Stale facts are inspectable but excluded from active recall and prefilter.
+    # Set via the maintenance workflows (mark_stale).
+    stale: bool = False
+    stale_reason: str = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -131,3 +142,17 @@ class RecallRecord(BaseModel):
     cached_tokens: int | None = None
     selector_version: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class StoreTransaction(BaseModel):
+    """Durable transaction journal entry for multi-file store operations."""
+
+    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    type: str
+    status: TransactionStatus
+    candidate_ids: list[str] = Field(default_factory=list)
+    fact_updates: dict[str, dict] = Field(default_factory=dict)
+    candidate_updates: dict[str, dict] = Field(default_factory=dict)
+    new_facts: list[Fact] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    committed_at: datetime | None = None

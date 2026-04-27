@@ -128,6 +128,12 @@ class ProjectDetailView(Container):
                 return f
         return None
 
+    def refresh_data(self, data: DashboardData, health: ProjectHealth) -> None:
+        self._data = data
+        self._health = health
+        self._all_facts = get_facts_for_project(data, self._project)
+        self._apply_filters()
+
     def on_key(self, event) -> None:
         table = self.query_one("#proj-detail-table", DataTable)
         focused = self.app.focused
@@ -298,5 +304,11 @@ class ProjectsScreen(Container):
 
     def refresh_data(self, data: DashboardData) -> None:
         self._data = data
-        if not self._detail_view:
+        if self._detail_view:
+            health = self._data.project_health.get(self._detail_view._project)
+            if health:
+                self._detail_view.refresh_data(data, health)
+            else:
+                self._close_detail()
+        else:
             self._populate_table()

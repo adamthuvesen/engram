@@ -1,15 +1,19 @@
 """JSONL-based knowledge store for facts."""
 
+import asyncio
 import fcntl
 import logging
 import os
 import re
 import sys
 import tempfile
+import threading
 from collections import Counter
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import ParamSpec, TypeVar
 
 from uuid import uuid4
 
@@ -23,10 +27,16 @@ from engram.models import (
     IngestionRecord,
     MemoryCandidate,
     RecallRecord,
+    StoreTransaction,
+    TransactionStatus,
 )
 
 logger = logging.getLogger(__name__)
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_THREAD_LOCKS: dict[Path, threading.RLock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+P = ParamSpec("P")
+R = TypeVar("R")
 
 # Lightweight suffix-stripping stemmer (no NLTK dependency)
 _STEM_SUFFIXES = (
@@ -63,6 +73,16 @@ def _stem(word: str) -> str:
 def _content_hash(text: str) -> str:
     """Normalize and hash fact content for exact-match dedup."""
     return " ".join(text.lower().split())
+
+
+def _thread_lock_for(path: Path) -> threading.RLock:
+    """Return a process-local lock for the given filesystem lock path."""
+    with _THREAD_LOCKS_GUARD:
+        lock = _THREAD_LOCKS.get(path)
+        if lock is None:
+            lock = threading.RLock()
+            _THREAD_LOCKS[path] = lock
+        return lock
 
 
 def format_facts_for_llm(facts: list[Fact]) -> str:
@@ -103,6 +123,28 @@ def _locked_write(path: Path):
         lock_fd.close()
 
 
+@contextmanager
+def _locked_store(data_dir: Path):
+    """Acquire the coarse store lock for multi-file operations."""
+    lock_path = data_dir / "store.lock"
+    thread_lock = _thread_lock_for(lock_path)
+    with thread_lock:
+        if sys.platform == "win32":
+            logger.warning(
+                "File locking not supported on Windows; store transactions are not serialized"
+            )
+            yield
+            return
+
+        lock_fd = lock_path.open("a")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+
 class FactStore:
     """Read/write/filter operations on the JSONL fact store."""
 
@@ -111,6 +153,7 @@ class FactStore:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         # Cache: fact.id -> (updated_at_iso, unigrams, bigrams)
         self._tok_cache: dict[str, tuple[str, set[str], set[str]]] = {}
+        self.recover_transactions()
 
     @property
     def facts_path(self) -> Path:
@@ -123,6 +166,10 @@ class FactStore:
     @property
     def candidates_path(self) -> Path:
         return self.data_dir / "candidates.jsonl"
+
+    @property
+    def transaction_log_path(self) -> Path:
+        return self.data_dir / "transactions.jsonl"
 
     def load_facts(self) -> list[Fact]:
         """Load all facts from JSONL, skipping corrupt lines."""
@@ -175,10 +222,16 @@ class FactStore:
         self,
         category: FactCategory | None = None,
         project: str | None = None,
+        include_global: bool = True,
         min_confidence: float = 0.1,
         limit: int | None = None,
+        include_stale: bool = False,
     ) -> list[Fact]:
-        """Load facts filtered by confidence, category, and project."""
+        """Load facts filtered by confidence, category, project, and stale status.
+
+        Stale facts are excluded by default. Pass ``include_stale=True`` for
+        inspection workflows that need to see the full set.
+        """
         now = datetime.now(timezone.utc)
         facts = []
         for fact in self.load_facts():
@@ -186,10 +239,15 @@ class FactStore:
                 continue
             if fact.expires_at and fact.expires_at < now:
                 continue
+            if not include_stale and getattr(fact, "stale", False):
+                continue
             if category and fact.category != category:
                 continue
-            if project and fact.project and fact.project != project:
-                continue
+            if project:
+                if fact.project != project and not (
+                    include_global and fact.project is None
+                ):
+                    continue
             facts.append(fact)
 
         # Sort by recency
@@ -222,26 +280,28 @@ class FactStore:
 
         scored: list[tuple[int, Fact]] = []
         for fact in facts:
-            score = 0
+            evidence_score = 0
             content_unigrams, content_bigrams = self._get_cached_tokens(fact)
 
             # Unigram overlap (stemmed)
             overlap = len(query_unigrams & content_unigrams)
-            score += overlap * 5
+            evidence_score += overlap * 5
 
             # Bigram overlap — catches "coding style" vs "coding_style"
             bigram_overlap = len(query_bigrams & content_bigrams)
-            score += bigram_overlap * 3
+            evidence_score += bigram_overlap * 3
 
             # Tag overlap (stem query tokens, compare to tags)
             tag_set = {_stem(t) for t in fact.tags}
             tag_overlap = len(query_unigrams & tag_set)
-            score += tag_overlap * 4
+            evidence_score += tag_overlap * 4
 
             if fact.project and fact.project in query.lower():
-                score += 6
+                evidence_score += 6
             if any(token in fact.category.value for token in query_unigrams):
-                score += 3
+                evidence_score += 3
+
+            score = evidence_score
             if fact.supersedes:
                 score += 1
             if fact.expires_at:
@@ -255,7 +315,7 @@ class FactStore:
             if fact.confidence > 0.8:
                 score += 1
 
-            if score > 0:
+            if evidence_score > 0:
                 scored.append((score, fact))
 
         if not scored:
@@ -421,6 +481,8 @@ class FactStore:
         for i, candidate in enumerate(candidates):
             if candidate.id in updates:
                 for key, value in updates[candidate.id].items():
+                    if key == "status":
+                        value = CandidateStatus(value)
                     setattr(candidate, key, value)
                 candidate.updated_at = now
                 candidates[i] = candidate
@@ -439,19 +501,231 @@ class FactStore:
             logger.info("Forgot fact %s: %s", fact_id, reason)
         return fact
 
+    def correct_fact(
+        self,
+        fact_id: str,
+        new_content: str,
+        *,
+        category: FactCategory | None = None,
+        tags: list[str] | None = None,
+        project: str | None = None,
+        reason: str = "",
+    ) -> Fact | None:
+        """Replace ``fact_id`` with a new active fact that supersedes it.
+
+        The original fact is preserved (its confidence is reduced so it falls
+        out of active recall) and a new fact with ``supersedes=fact_id`` is
+        created. The new fact inherits the original's category/project/tags
+        unless overrides are supplied.
+
+        Returns the new fact, or ``None`` if the original fact was not found
+        or was already forgotten.
+        """
+        existing = next((f for f in self.load_facts() if f.id == fact_id), None)
+        if existing is None or existing.confidence == 0.0:
+            return None
+
+        now = datetime.now(timezone.utc)
+        new_fact = Fact(
+            id=uuid4().hex[:12],
+            category=category or existing.category,
+            content=new_content,
+            source=existing.source,
+            confidence=existing.confidence,
+            created_at=now,
+            updated_at=now,
+            observed_at=now,
+            project=project if project is not None else existing.project,
+            tags=tags if tags is not None else list(existing.tags),
+            supersedes=fact_id,
+            evidence_kind=existing.evidence_kind,
+            why_store=reason or existing.why_store,
+        )
+        self.append_facts([new_fact])
+        # Mark the old fact superseded by reducing its confidence so default
+        # recall paths (min_confidence=0.1) skip it. Audit trail is preserved
+        # via the supersedes link on the new fact.
+        self.update_fact(fact_id, confidence=0.05)
+        self.log_ingestion(
+            IngestionRecord(
+                source="correct_fact",
+                facts_created=[new_fact.id],
+                facts_updated=[fact_id],
+                agent_model="manual_correction",
+            )
+        )
+        logger.info("Corrected fact %s -> %s: %s", fact_id, new_fact.id, reason)
+        return new_fact
+
+    def merge_facts(
+        self,
+        source_ids: list[str],
+        merged_content: str,
+        *,
+        category: FactCategory | None = None,
+        tags: list[str] | None = None,
+        project: str | None = None,
+        reason: str = "",
+    ) -> tuple[Fact, list[str]] | None:
+        """Consolidate multiple active facts into one new fact.
+
+        Creates a single new active fact that supersedes the first source and
+        marks every other source fact superseded as well (by reducing their
+        confidence). Returns ``(new_fact, superseded_ids)`` on success.
+
+        Returns ``None`` if fewer than two valid active source facts are
+        provided or the source set is invalid.
+        """
+        if len(source_ids) < 2:
+            return None
+
+        # Deduplicate while preserving order.
+        seen: set[str] = set()
+        unique_ids = [sid for sid in source_ids if not (sid in seen or seen.add(sid))]
+        if len(unique_ids) < 2:
+            return None
+
+        all_facts = {f.id: f for f in self.load_facts()}
+        sources: list[Fact] = []
+        for sid in unique_ids:
+            fact = all_facts.get(sid)
+            if fact is None or fact.confidence == 0.0:
+                return None
+            sources.append(fact)
+
+        # Same project scope across sources or merge is ambiguous.
+        scopes = {f.project for f in sources}
+        if len(scopes) > 1:
+            return None
+
+        primary = sources[0]
+        now = datetime.now(timezone.utc)
+        new_fact = Fact(
+            id=uuid4().hex[:12],
+            category=category or primary.category,
+            content=merged_content,
+            source=primary.source,
+            confidence=max(f.confidence for f in sources),
+            created_at=now,
+            updated_at=now,
+            observed_at=now,
+            project=project if project is not None else primary.project,
+            tags=tags if tags is not None else list(primary.tags),
+            supersedes=primary.id,
+            evidence_kind=primary.evidence_kind,
+            why_store=reason or "merged",
+        )
+        self.append_facts([new_fact])
+
+        # Reduce confidence on every source so they fall out of active recall.
+        updates = {sid: {"confidence": 0.05} for sid in unique_ids}
+        self.batch_update_facts(updates)
+
+        self.log_ingestion(
+            IngestionRecord(
+                source="merge_facts",
+                facts_created=[new_fact.id],
+                facts_updated=list(unique_ids),
+                agent_model="manual_merge",
+            )
+        )
+        logger.info("Merged %d facts -> %s: %s", len(unique_ids), new_fact.id, reason)
+        return new_fact, unique_ids
+
+    def mark_stale(self, fact_id: str, reason: str = "") -> Fact | None:
+        """Mark a fact stale so it is excluded from active recall.
+
+        Stale facts remain inspectable and keep their supersession history.
+        """
+        existing = next((f for f in self.load_facts() if f.id == fact_id), None)
+        if existing is None:
+            return None
+        fact = self.update_fact(fact_id, stale=True, stale_reason=reason)
+        if fact:
+            self.log_ingestion(
+                IngestionRecord(
+                    source="mark_stale",
+                    facts_updated=[fact_id],
+                    agent_model="manual_stale",
+                )
+            )
+            logger.info("Marked fact %s stale: %s", fact_id, reason)
+        return fact
+
+    def unmark_stale(self, fact_id: str) -> Fact | None:
+        """Reverse a stale marking on a fact."""
+        return self.update_fact(fact_id, stale=False, stale_reason="")
+
     def approve_candidates(self, candidate_ids: list[str]) -> list[Fact]:
-        """Approve candidates and promote them into active facts (batched)."""
-        all_candidates = {c.id: c for c in self.load_candidates()}
+        """Approve candidates and promote them into active facts with recovery."""
+        with _locked_store(self.data_dir):
+            self._recover_transactions_locked()
+            transaction = self._prepare_approval_transaction(candidate_ids)
+            if not transaction:
+                return []
+
+            self._append_transaction(transaction)
+            self._apply_approval_transaction(transaction)
+            self._commit_transaction(transaction)
+            return transaction.new_facts
+
+    def reject_candidates(
+        self, candidate_ids: list[str], reason: str = ""
+    ) -> list[MemoryCandidate]:
+        """Reject candidates without promoting them into active facts."""
+        pending_candidates = {
+            c.id: c for c in self.load_candidates(status=CandidateStatus.pending)
+        }
+        updates: dict[str, dict] = {}
+        for candidate_id in candidate_ids:
+            if candidate_id in pending_candidates:
+                updates[candidate_id] = {
+                    "status": CandidateStatus.rejected,
+                    "review_note": reason,
+                }
+        return self.batch_update_candidates(updates)
+
+    def recover_transactions(self) -> int:
+        """Roll forward any prepared store transactions that lack a commit marker."""
+        with _locked_store(self.data_dir):
+            return self._recover_transactions_locked()
+
+    def _recover_transactions_locked(self) -> int:
+        recovered = 0
+        for transaction in self._pending_transactions():
+            logger.warning(
+                "Recovering prepared %s transaction %s",
+                transaction.type,
+                transaction.id,
+            )
+            self._apply_transaction(transaction)
+            self._commit_transaction(transaction)
+            recovered += 1
+        return recovered
+
+    def _prepare_approval_transaction(
+        self, candidate_ids: list[str]
+    ) -> StoreTransaction | None:
+        pending_candidates = {
+            c.id: c for c in self.load_candidates(status=CandidateStatus.pending)
+        }
 
         fact_updates: dict[str, dict] = {}
         candidate_updates: dict[str, dict] = {}
         new_facts: list[Fact] = []
         now = datetime.now(timezone.utc)
+        seen_ids: set[str] = set()
+        selected_ids: list[str] = []
 
         for candidate_id in candidate_ids:
-            candidate = all_candidates.get(candidate_id)
+            if candidate_id in seen_ids:
+                continue
+            seen_ids.add(candidate_id)
+
+            candidate = pending_candidates.get(candidate_id)
             if not candidate:
                 continue
+            selected_ids.append(candidate_id)
 
             candidate_updates[candidate_id] = {"status": CandidateStatus.approved}
 
@@ -462,29 +736,93 @@ class FactStore:
             data.update(id=uuid4().hex[:12], created_at=now, updated_at=now)
             new_facts.append(Fact(**data))
 
-        if fact_updates:
-            self.batch_update_facts(fact_updates)
-        if candidate_updates:
-            self.batch_update_candidates(candidate_updates)
-        if new_facts:
-            self.append_facts(new_facts)
+        if not new_facts:
+            return None
 
-        return new_facts
+        return StoreTransaction(
+            type="approve_candidates",
+            status=TransactionStatus.prepared,
+            candidate_ids=selected_ids,
+            fact_updates=fact_updates,
+            candidate_updates=candidate_updates,
+            new_facts=new_facts,
+            created_at=now,
+        )
 
-    def reject_candidates(
-        self, candidate_ids: list[str], reason: str = ""
-    ) -> list[MemoryCandidate]:
-        """Reject candidates without promoting them into active facts."""
-        rejected: list[MemoryCandidate] = []
-        for candidate_id in candidate_ids:
-            candidate = self.update_candidate(
-                candidate_id,
-                status=CandidateStatus.rejected,
-                review_note=reason,
+    def _apply_transaction(self, transaction: StoreTransaction) -> None:
+        if transaction.type != "approve_candidates":
+            logger.warning(
+                "Skipping unsupported transaction %s of type %s",
+                transaction.id,
+                transaction.type,
             )
-            if candidate:
-                rejected.append(candidate)
-        return rejected
+            return
+        self._apply_approval_transaction(transaction)
+
+    def _apply_approval_transaction(self, transaction: StoreTransaction) -> None:
+        missing_facts = self._missing_facts(transaction.new_facts)
+        if missing_facts:
+            self.append_facts(missing_facts)
+        if transaction.fact_updates:
+            self.batch_update_facts(transaction.fact_updates)
+        if transaction.candidate_updates:
+            self.batch_update_candidates(transaction.candidate_updates)
+
+    def _missing_facts(self, facts: list[Fact]) -> list[Fact]:
+        existing_ids = {fact.id for fact in self.load_facts()}
+        return [fact for fact in facts if fact.id not in existing_ids]
+
+    def _commit_transaction(self, transaction: StoreTransaction) -> None:
+        committed = transaction.model_copy(
+            update={
+                "status": TransactionStatus.committed,
+                "committed_at": datetime.now(timezone.utc),
+            }
+        )
+        self._append_transaction(committed)
+
+    def _append_transaction(self, transaction: StoreTransaction) -> None:
+        with _locked_write(self.transaction_log_path):
+            self._ensure_trailing_newline(self.transaction_log_path)
+            with self.transaction_log_path.open("a") as f:
+                f.write(transaction.model_dump_json() + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+
+    def _load_transactions(self) -> list[StoreTransaction]:
+        if not self.transaction_log_path.exists():
+            return []
+
+        transactions: list[StoreTransaction] = []
+        for lineno, line in enumerate(
+            self.transaction_log_path.read_text().splitlines(), 1
+        ):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                transactions.append(StoreTransaction.model_validate_json(line))
+            except (ValueError, ValidationError) as exc:
+                logger.warning(
+                    "Skipping corrupt transaction at line %d: %s",
+                    lineno,
+                    exc,
+                )
+        return transactions
+
+    def _pending_transactions(self) -> list[StoreTransaction]:
+        prepared: dict[str, StoreTransaction] = {}
+        committed_ids: set[str] = set()
+        for transaction in self._load_transactions():
+            if transaction.status == TransactionStatus.prepared:
+                prepared[transaction.id] = transaction
+            elif transaction.status == TransactionStatus.committed:
+                committed_ids.add(transaction.id)
+        return [
+            transaction
+            for transaction_id, transaction in prepared.items()
+            if transaction_id not in committed_ids
+        ]
 
     def log_ingestion(self, record: IngestionRecord) -> None:
         """Append an ingestion record to the audit log."""
@@ -695,3 +1033,163 @@ class FactStore:
         """Tokenize text into stemmed lowercase terms (backward compat)."""
         normalized = text.lower().replace("_", " ").replace("-", " ")
         return {_stem(t) for t in _TOKEN_RE.findall(normalized)}
+
+
+class AsyncFactStore:
+    """Async facade for running blocking JSONL store operations off the event loop."""
+
+    def __init__(self, store: FactStore | None = None):
+        self.sync_store = store or FactStore()
+
+    @property
+    def data_dir(self) -> Path:
+        return self.sync_store.data_dir
+
+    @property
+    def facts_path(self) -> Path:
+        return self.sync_store.facts_path
+
+    @property
+    def ingestion_log_path(self) -> Path:
+        return self.sync_store.ingestion_log_path
+
+    @property
+    def candidates_path(self) -> Path:
+        return self.sync_store.candidates_path
+
+    @property
+    def transaction_log_path(self) -> Path:
+        return self.sync_store.transaction_log_path
+
+    @property
+    def recall_log_path(self) -> Path:
+        return self.sync_store.recall_log_path
+
+    async def _run(self, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+        return await asyncio.to_thread(func, *args, **kwargs)
+
+    async def load_facts(self) -> list[Fact]:
+        return await self._run(self.sync_store.load_facts)
+
+    async def load_candidates(
+        self,
+        status: CandidateStatus | None = None,
+        project: str | None = None,
+        limit: int | None = None,
+    ) -> list[MemoryCandidate]:
+        return await self._run(self.sync_store.load_candidates, status, project, limit)
+
+    async def load_active_facts(
+        self,
+        category: FactCategory | None = None,
+        project: str | None = None,
+        include_global: bool = True,
+        min_confidence: float = 0.1,
+        limit: int | None = None,
+        include_stale: bool = False,
+    ) -> list[Fact]:
+        return await self._run(
+            self.sync_store.load_active_facts,
+            category,
+            project,
+            include_global,
+            min_confidence,
+            limit,
+            include_stale,
+        )
+
+    async def prefilter_facts(
+        self,
+        query: str,
+        project: str | None = None,
+        limit: int | None = None,
+    ) -> list[tuple[int, Fact]]:
+        return await self._run(self.sync_store.prefilter_facts, query, project, limit)
+
+    async def append_facts(self, facts: list[Fact]) -> None:
+        await self._run(self.sync_store.append_facts, facts)
+
+    async def append_candidates(self, candidates: list[MemoryCandidate]) -> None:
+        await self._run(self.sync_store.append_candidates, candidates)
+
+    async def update_fact(self, fact_id: str, **updates) -> Fact | None:
+        return await self._run(self.sync_store.update_fact, fact_id, **updates)
+
+    async def update_candidate(
+        self, candidate_id: str, **updates
+    ) -> MemoryCandidate | None:
+        return await self._run(
+            self.sync_store.update_candidate, candidate_id, **updates
+        )
+
+    async def rename_project(self, old_project: str, new_project: str) -> int:
+        return await self._run(self.sync_store.rename_project, old_project, new_project)
+
+    async def batch_update_facts(self, updates: dict[str, dict]) -> list[Fact]:
+        return await self._run(self.sync_store.batch_update_facts, updates)
+
+    async def batch_update_candidates(
+        self, updates: dict[str, dict]
+    ) -> list[MemoryCandidate]:
+        return await self._run(self.sync_store.batch_update_candidates, updates)
+
+    async def forget(self, fact_id: str, reason: str = "") -> Fact | None:
+        return await self._run(self.sync_store.forget, fact_id, reason)
+
+    async def correct_fact(
+        self,
+        fact_id: str,
+        new_content: str,
+        **kwargs,
+    ) -> Fact | None:
+        return await self._run(
+            self.sync_store.correct_fact, fact_id, new_content, **kwargs
+        )
+
+    async def merge_facts(
+        self,
+        source_ids: list[str],
+        merged_content: str,
+        **kwargs,
+    ) -> tuple[Fact, list[str]] | None:
+        return await self._run(
+            self.sync_store.merge_facts, source_ids, merged_content, **kwargs
+        )
+
+    async def mark_stale(self, fact_id: str, reason: str = "") -> Fact | None:
+        return await self._run(self.sync_store.mark_stale, fact_id, reason)
+
+    async def unmark_stale(self, fact_id: str) -> Fact | None:
+        return await self._run(self.sync_store.unmark_stale, fact_id)
+
+    async def approve_candidates(self, candidate_ids: list[str]) -> list[Fact]:
+        return await self._run(self.sync_store.approve_candidates, candidate_ids)
+
+    async def reject_candidates(
+        self, candidate_ids: list[str], reason: str = ""
+    ) -> list[MemoryCandidate]:
+        return await self._run(self.sync_store.reject_candidates, candidate_ids, reason)
+
+    async def recover_transactions(self) -> int:
+        return await self._run(self.sync_store.recover_transactions)
+
+    async def log_ingestion(self, record: IngestionRecord) -> None:
+        await self._run(self.sync_store.log_ingestion, record)
+
+    async def purge(self) -> dict:
+        return await self._run(self.sync_store.purge)
+
+    async def stats(self) -> dict:
+        return await self._run(self.sync_store.stats)
+
+    def format_candidates_for_review(self, candidates: list[MemoryCandidate]) -> str:
+        return self.sync_store.format_candidates_for_review(candidates)
+
+    async def log_recall(self, record: RecallRecord) -> None:
+        await self._run(self.sync_store.log_recall, record)
+
+    async def load_recall_log(self, limit: int = 500) -> list[RecallRecord]:
+        return await self._run(self.sync_store.load_recall_log, limit)
+
+    async def repair(self) -> dict:
+        return await self._run(self.sync_store.repair)

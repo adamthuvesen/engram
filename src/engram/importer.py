@@ -7,12 +7,14 @@ import yaml
 
 from engram.config import get_settings
 from engram.observer import extract_facts
-from engram.store import FactStore
+from engram.store import AsyncFactStore, FactStore
 
 logger = logging.getLogger(__name__)
 
 
-async def import_claude_code_memories(store: FactStore | None = None) -> dict:
+async def import_claude_code_memories(
+    store: FactStore | AsyncFactStore | None = None,
+) -> dict:
     """Walk ~/.claude/projects/*/memory/*.md and import as structured facts.
 
     Returns summary of what was imported.
@@ -28,7 +30,12 @@ async def import_claude_code_memories(store: FactStore | None = None) -> dict:
     memory_files = [f for f in memory_files if f.name != "MEMORY.md"]
 
     if not memory_files:
-        return {"imported": 0, "message": "No memory files found to import"}
+        return {
+            "imported_files": 0,
+            "total_facts": 0,
+            "details": [],
+            "message": "No memory files found to import",
+        }
 
     total_facts = 0
     imported_files = []
