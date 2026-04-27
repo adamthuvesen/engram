@@ -3,14 +3,11 @@
 import importlib
 import json
 import logging
-import re
 from dataclasses import dataclass
 
 from engram.config import ensure_openai_api_key, get_settings
 
 logger = logging.getLogger(__name__)
-
-_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 @dataclass
@@ -46,12 +43,8 @@ def _build_user_content(prompt: str, cache_prefix: str | None, model: str):
     `prompt`, return a two-part content list with cache_control on the prefix.
     Otherwise return the plain string.
     """
-    if (
-        cache_prefix
-        and _is_anthropic_model(model)
-        and prompt.startswith(cache_prefix)
-    ):
-        suffix = prompt[len(cache_prefix):]
+    if cache_prefix and _is_anthropic_model(model) and prompt.startswith(cache_prefix):
+        suffix = prompt[len(cache_prefix) :]
         parts = [
             {
                 "type": "text",
@@ -193,15 +186,27 @@ async def complete_json(
     except json.JSONDecodeError:
         pass
 
-    # 3. Extract first {...} block via regex and retry
-    match = _JSON_BLOCK_RE.search(stripped)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
+    # 3. Extract the first decodable JSON value embedded in prose.
+    embedded = _decode_first_json_value(stripped)
+    if embedded is not None:
+        return embedded
 
     logger.warning(
         "complete_json: could not parse LLM response as JSON: %s", text[:200]
     )
     return {}
+
+
+def _decode_first_json_value(text: str) -> list | dict | None:
+    """Return the first JSON object/array embedded in text, if one exists."""
+    decoder = json.JSONDecoder()
+    for i, char in enumerate(text):
+        if char not in "{[":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[i:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, (dict, list)):
+            return value
+    return None

@@ -11,6 +11,7 @@ from engram.llm import (
     _build_user_content,
     _extract_usage,
     _is_anthropic_model,
+    complete_json,
     complete_with_usage,
 )
 
@@ -40,7 +41,9 @@ def test_is_anthropic_model_openai_false():
 def test_build_user_content_openai_passes_through():
     """OpenAI-family calls never get a content list — implicit cache handles it."""
     prompt = "PREFIX\n\nQUERY: x"
-    out = _build_user_content(prompt, cache_prefix="PREFIX", model="openai/gpt-5.4-mini")
+    out = _build_user_content(
+        prompt, cache_prefix="PREFIX", model="openai/gpt-5.4-mini"
+    )
     assert out == prompt
 
 
@@ -48,7 +51,9 @@ def test_build_user_content_anthropic_splits_prefix():
     """Anthropic-family calls get a two-part content list with cache_control."""
     prompt = "STORED FACTS:\n1. foo\n\nQUERY: x"
     prefix = "STORED FACTS:\n1. foo\n\n"
-    out = _build_user_content(prompt, cache_prefix=prefix, model="anthropic/claude-sonnet-4")
+    out = _build_user_content(
+        prompt, cache_prefix=prefix, model="anthropic/claude-sonnet-4"
+    )
     assert isinstance(out, list)
     assert out[0] == {
         "type": "text",
@@ -60,14 +65,18 @@ def test_build_user_content_anthropic_splits_prefix():
 
 def test_build_user_content_anthropic_no_prefix_passthrough():
     """No cache_prefix → plain string even on Anthropic."""
-    out = _build_user_content("hi", cache_prefix=None, model="anthropic/claude-sonnet-4")
+    out = _build_user_content(
+        "hi", cache_prefix=None, model="anthropic/claude-sonnet-4"
+    )
     assert out == "hi"
 
 
 def test_build_user_content_anthropic_prefix_equals_prompt():
     """Prefix == prompt → only the prefix block, no empty suffix entry."""
     prompt = "exact"
-    out = _build_user_content(prompt, cache_prefix=prompt, model="anthropic/claude-sonnet-4")
+    out = _build_user_content(
+        prompt, cache_prefix=prompt, model="anthropic/claude-sonnet-4"
+    )
     assert isinstance(out, list)
     assert len(out) == 1
     assert out[0]["cache_control"] == {"type": "ephemeral"}
@@ -75,7 +84,9 @@ def test_build_user_content_anthropic_prefix_equals_prompt():
 
 def test_build_user_content_bad_prefix_falls_back_to_string():
     """If cache_prefix isn't actually a prefix, fall back to plain string."""
-    out = _build_user_content("hello world", cache_prefix="nope", model="anthropic/claude-sonnet-4")
+    out = _build_user_content(
+        "hello world", cache_prefix="nope", model="anthropic/claude-sonnet-4"
+    )
     assert out == "hello world"
 
 
@@ -131,7 +142,9 @@ def test_extract_usage_dict_shape():
 # ---------------------------------------------------------------------------
 
 
-def _mock_response(text: str, prompt_tokens: int | None = None, cached: int | None = None):
+def _mock_response(
+    text: str, prompt_tokens: int | None = None, cached: int | None = None
+):
     msg = SimpleNamespace(content=text)
     choice = SimpleNamespace(message=msg)
     usage = None
@@ -242,3 +255,14 @@ def test_complete_with_usage_missing_usage_returns_none(monkeypatch, fresh_setti
     assert result.text == "answer"
     assert result.input_tokens is None
     assert result.cached_tokens is None
+
+
+def test_complete_json_embedded_multiple_objects_uses_first(monkeypatch):
+    async def fake_complete(**kwargs):
+        return 'First: {"answer": 42} second: {"ignored": true}'
+
+    monkeypatch.setattr("engram.llm.complete", fake_complete)
+
+    result = asyncio.run(complete_json(prompt="test"))
+
+    assert result == {"answer": 42}
