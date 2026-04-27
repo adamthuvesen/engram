@@ -45,16 +45,6 @@ from engram.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
 from engram.retriever import recall_with_provenance
 from engram.store import AsyncFactStore, FactStore
 
-CLI_SUBCOMMANDS = {
-    "trace",
-    "doctor",
-    "correct",
-    "merge",
-    "stale",
-    "unstale",
-    "inspect",
-}
-
 EXIT_OK = 0
 EXIT_VALIDATION = 1
 EXIT_NOT_FOUND = 2
@@ -315,8 +305,8 @@ async def cmd_inspect(args: argparse.Namespace) -> CliResult:
             "project": f.project,
             "content": f.content,
             "confidence": f.confidence,
-            "stale": getattr(f, "stale", False),
-            "stale_reason": getattr(f, "stale_reason", ""),
+            "stale": f.stale,
+            "stale_reason": f.stale_reason,
             "supersedes": f.supersedes,
             "tags": f.tags,
             "created_at": f.created_at.isoformat(),
@@ -338,7 +328,7 @@ async def cmd_inspect(args: argparse.Namespace) -> CliResult:
     else:
         text_lines = [f"Found {len(facts)} fact(s):"]
         for fact in facts:
-            stale_marker = " [stale]" if getattr(fact, "stale", False) else ""
+            stale_marker = " [stale]" if fact.stale else ""
             text_lines.append(
                 f"  [{fact.category.value}]{stale_marker} {fact.content} (id: {fact.id})"
             )
@@ -417,6 +407,8 @@ _HANDLERS = {
     "unstale": cmd_unstale,
     "inspect": cmd_inspect,
 }
+
+CLI_SUBCOMMANDS = frozenset(_HANDLERS)
 
 
 def run(argv: Sequence[str] | None = None) -> int:

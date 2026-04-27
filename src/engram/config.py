@@ -101,17 +101,18 @@ def load_cached_api_keys(cache_path: Path | None = None) -> dict[str, str]:
         return {}
 
     values: dict[str, str] = {}
-    for line in path.read_text().splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
+    with path.open() as fh:
+        for line in fh:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
 
-        match = _CACHE_EXPORT_RE.match(stripped)
-        if not match:
-            continue
+            match = _CACHE_EXPORT_RE.match(stripped)
+            if not match:
+                continue
 
-        key, raw = match.groups()
-        values[key] = _expand_cached_value(raw, values)
+            key, raw = match.groups()
+            values[key] = _expand_cached_value(raw, values)
 
     return values
 

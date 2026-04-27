@@ -492,8 +492,8 @@ async def inspect(
                 "project": f.project,
                 "content": f.content,
                 "confidence": f.confidence,
-                "stale": getattr(f, "stale", False),
-                "stale_reason": getattr(f, "stale_reason", ""),
+                "stale": f.stale,
+                "stale_reason": f.stale_reason,
                 "supersedes": f.supersedes,
                 "tags": f.tags,
                 "created_at": f.created_at.isoformat(),
@@ -517,7 +517,7 @@ async def inspect(
         meta_str = f"[{fact.category.value}]"
         if fact.project:
             meta_str += f" [{fact.project}]"
-        if getattr(fact, "stale", False):
+        if fact.stale:
             meta_str += " [stale]"
         created = fact.created_at.strftime("%Y-%m-%d")
         lines.append(f"- {meta_str} {fact.content} (id: {fact.id}, created: {created})")
