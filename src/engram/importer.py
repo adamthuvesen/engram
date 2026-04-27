@@ -89,8 +89,7 @@ def _parse_memory_file(path: Path) -> tuple[str, dict]:
         logger.warning("Failed to read %s: %s", path, e)
         return "", {}
 
-    # Parse YAML frontmatter
-    metadata = {}
+    metadata: dict = {}
     body = text
     if text.startswith("---"):
         parts = text.split("---", 2)

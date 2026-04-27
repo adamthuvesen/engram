@@ -1,4 +1,4 @@
-"""Shared constants for the dashboard — single source of truth."""
+"""Shared dashboard constants."""
 
 MIN_ACTIVE_CONFIDENCE = 0.1
 NO_PROJECT_LABEL = "(none)"

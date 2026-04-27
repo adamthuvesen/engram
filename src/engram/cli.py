@@ -55,7 +55,6 @@ CLI_SUBCOMMANDS = {
     "inspect",
 }
 
-# Exit codes
 EXIT_OK = 0
 EXIT_VALIDATION = 1
 EXIT_NOT_FOUND = 2
@@ -65,8 +64,6 @@ EXIT_DOCTOR_ERROR = 4
 
 @dataclass
 class CliResult:
-    """Helper carrying envelope + exit code + a human-friendly text fallback."""
-
     envelope: Envelope
     exit_code: int
     text: str = ""
@@ -82,11 +79,6 @@ def _emit(result: CliResult, *, as_json: bool, out=None) -> int:
     return result.exit_code
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
 def _store() -> AsyncFactStore:
     return AsyncFactStore(FactStore())
 
@@ -98,11 +90,6 @@ def _category(value: str | None) -> FactCategory | None:
         return FactCategory(value)
     except ValueError:
         return None
-
-
-# ---------------------------------------------------------------------------
-# Subcommand handlers
-# ---------------------------------------------------------------------------
 
 
 async def cmd_trace(args: argparse.Namespace) -> CliResult:
@@ -173,9 +160,7 @@ async def cmd_doctor(args: argparse.Namespace) -> CliResult:
         data={"report": report.model_dump(mode="json"), "repair": repair_summary}
     )
 
-    exit_code = EXIT_OK
-    if report.status == "error":
-        exit_code = EXIT_DOCTOR_ERROR
+    exit_code = EXIT_DOCTOR_ERROR if report.status == "error" else EXIT_OK
 
     text_lines = [f"Doctor: {report.status}"]
     for issue in report.issues:
@@ -361,11 +346,6 @@ async def cmd_inspect(args: argparse.Namespace) -> CliResult:
     return CliResult(envelope=env, exit_code=EXIT_OK, text=text)
 
 
-# ---------------------------------------------------------------------------
-# Argument parser
-# ---------------------------------------------------------------------------
-
-
 def _add_json_flag(p: argparse.ArgumentParser) -> None:
     p.add_argument("--json", action="store_true", help="Emit JSON envelope output")
 
@@ -477,7 +457,6 @@ def main_dispatch(argv: Sequence[str] | None = None) -> int:
     if is_cli_invocation(argv):
         configure_logging()
         return run(argv)
-    # Fall through to MCP server.
     from engram.server import main as server_main
 
     server_main()

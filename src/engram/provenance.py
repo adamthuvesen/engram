@@ -30,8 +30,6 @@ DEFAULT_MAX_PREFILTER_MATCHES = 50
 
 
 class PrefilterMatch(BaseModel):
-    """A single fact matched by the deterministic prefilter."""
-
     id: str
     score: int
     above_floor: bool
@@ -55,8 +53,6 @@ class SourceSummary(BaseModel):
 
 
 class TierDecision(BaseModel):
-    """Why the retriever chose its tier."""
-
     tier: int
     rules: str
     relevant_count: int
@@ -98,8 +94,6 @@ class RecallProvenance(BaseModel):
 
 
 class LLMCallTrace(BaseModel):
-    """Bounded record of one LLM call within a recall."""
-
     name: str
     system_excerpt: str = ""
     prompt_excerpt: str = ""

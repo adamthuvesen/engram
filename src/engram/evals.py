@@ -34,8 +34,6 @@ from engram.store import FactStore
 
 
 class EvalFactSpec(BaseModel):
-    """A fact entry in an eval fixture corpus."""
-
     id: str
     category: FactCategory = FactCategory.preference
     content: str
@@ -47,8 +45,6 @@ class EvalFactSpec(BaseModel):
 
 
 class EvalBudget(BaseModel):
-    """Optional performance budgets for an eval."""
-
     max_tier: int | None = None
     max_llm_calls: int | None = None
     max_latency_ms: float | None = None
@@ -57,8 +53,6 @@ class EvalBudget(BaseModel):
 
 
 class EvalFixture(BaseModel):
-    """A complete recall eval fixture."""
-
     version: int = 1
     name: str
     description: str = ""
@@ -80,8 +74,6 @@ class EvalFixture(BaseModel):
 
 
 class EvalCheck(BaseModel):
-    """A single passed/failed assertion within an eval."""
-
     name: str
     passed: bool
     expected: Any | None = None
@@ -90,8 +82,6 @@ class EvalCheck(BaseModel):
 
 
 class EvalResult(BaseModel):
-    """Outcome of running a single fixture."""
-
     fixture: str
     passed: bool
     skipped: bool = False
@@ -179,11 +169,10 @@ async def run_fixture(
     if facts:
         store.append_facts(facts)
 
-    # Patch litellm only when we have mocked responses queued. Tier-0 evals
-    # don't need any mocking.
     import engram.retriever as retriever_mod
 
     saved = retriever_mod.complete_with_usage
+    # Tier-0 evals run without LLM calls; only patch when tier-1/2 mocks exist.
     if fixture.mode == "deterministic" and fixture.mocked_responses:
         _patch_completions(retriever_mod, fixture.mocked_responses)
 
@@ -198,7 +187,6 @@ async def run_fixture(
 
     checks: list[EvalCheck] = []
 
-    # Expected source IDs
     cited = set(provenance.cited_fact_ids)
     matched_ids = {m.id for m in provenance.prefilter_matches if m.above_floor}
     seen = cited | matched_ids
@@ -214,7 +202,6 @@ async def run_fixture(
             )
         )
 
-    # Excluded IDs
     for excluded in fixture.excluded_source_ids:
         passed = excluded not in cited
         checks.append(
@@ -227,7 +214,6 @@ async def run_fixture(
             )
         )
 
-    # Answer text contains/excludes
     answer_lower = answer.lower()
     for needle in fixture.answer_contains:
         passed = needle.lower() in answer_lower
@@ -250,7 +236,6 @@ async def run_fixture(
             )
         )
 
-    # Budget checks
     b = fixture.budget
     if b.max_tier is not None:
         passed = provenance.tier <= b.max_tier
@@ -323,11 +308,6 @@ def run_fixture_sync(
     fixture: EvalFixture, *, enable_provider: bool | None = None
 ) -> EvalResult:
     return asyncio.run(run_fixture(fixture, enable_provider=enable_provider))
-
-
-# ---------------------------------------------------------------------------
-# Representative fixtures (7.5)
-# ---------------------------------------------------------------------------
 
 
 def representative_fixtures() -> list[EvalFixture]:

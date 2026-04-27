@@ -48,12 +48,10 @@ class Settings(BaseSettings):
 
     @property
     def facts_path(self) -> Path:
-        """Path to the facts JSONL file."""
         return self.data_dir / "facts.jsonl"
 
     @property
     def ingestion_log_path(self) -> Path:
-        """Path to the ingestion audit log."""
         return self.data_dir / "ingestion_log.jsonl"
 
 
@@ -128,13 +126,12 @@ def _is_unresolved_env_placeholder(value: str | None) -> bool:
 def ensure_openai_api_key(cache_path: Path | None = None) -> str | None:
     """Ensure OPENAI_API_KEY is available, loading from the dotfiles cache if needed."""
     current = os.environ.get("OPENAI_API_KEY")
-    if current and not _is_unresolved_env_placeholder(current):
-        return current
-    if current and _is_unresolved_env_placeholder(current):
+    if current:
+        if not _is_unresolved_env_placeholder(current):
+            return current
         os.environ.pop("OPENAI_API_KEY", None)
 
-    cached = load_cached_api_keys(cache_path=cache_path)
-    value = cached.get("OPENAI_API_KEY")
+    value = load_cached_api_keys(cache_path=cache_path).get("OPENAI_API_KEY")
     if value:
         os.environ["OPENAI_API_KEY"] = value
         return value

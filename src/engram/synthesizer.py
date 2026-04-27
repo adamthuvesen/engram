@@ -91,8 +91,7 @@ async def synthesize(
 
     result = SynthesisResult(total_analyzed=len(facts))
 
-    for group_key, group_facts in groups.items():
-        # Chunk into batches
+    for group_facts in groups.values():
         for i in range(0, len(group_facts), batch_size):
             batch = group_facts[i : i + batch_size]
             batch_actions = await _synthesize_batch(batch, store)

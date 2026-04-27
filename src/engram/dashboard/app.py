@@ -23,7 +23,6 @@ from engram.store import FactStore
 
 CSS_PATH = Path(__file__).parent / "styles" / "dashboard.tcss"
 
-# ── Anthropic brand palettes ──
 
 ANTHROPIC_DARK = Theme(
     name="anthropic-dark",
@@ -102,7 +101,7 @@ class EngramDashboard(App):
         self._store = FactStore()
         self._data: DashboardData = load_dashboard_data(self._store)
         self._last_hash: int = self._data.content_hash
-        self._undo_stack: list[tuple[str, float]] = []  # (fact_id, old_confidence)
+        self._undo_stack: list[tuple[str, float]] = []
         self._undo_timer: Timer | None = None
         self._dirty_tabs: set[str] = set()
         self._pending_forget: list[str] = []
@@ -152,12 +151,10 @@ class EngramDashboard(App):
         self, event: TabbedContent.TabActivated
     ) -> None:
         tab_id = event.pane.id or ""
-        # Refresh dirty tabs when they become active
         if tab_id in self._dirty_tabs:
             self._dirty_tabs.discard(tab_id)
             self._refresh_screen(tab_id)
         self.set_timer(0.05, self._focus_tabs)
-        # Update dynamic footer
         self._update_footer_hint()
 
     def on_descendant_focus(self, event) -> None:
@@ -170,7 +167,6 @@ class EngramDashboard(App):
             if focused and focused.id and focused.id in FOOTER_HINTS:
                 footer.update(FOOTER_HINTS[focused.id])
             elif focused:
-                # Check by widget type
                 from textual.widgets import Input, Select
 
                 if isinstance(focused, Input):
@@ -201,28 +197,13 @@ class EngramDashboard(App):
                 pass
 
     def _refresh_data(self) -> None:
-        # Smart refresh: skip if data hasn't changed
         current_hash = content_hash_for(self._store)
         if current_hash == self._last_hash:
             return
         self._last_hash = current_hash
 
         self._data = load_dashboard_data(self._store)
-
-        # Only refresh the active tab; mark others dirty
-        active_tab = self.query_one("#tabs", TabbedContent).active
-        all_tabs = {
-            "overview",
-            "timeline",
-            "facts",
-            "candidates",
-            "projects",
-            "forgotten",
-        }
-        self._dirty_tabs |= all_tabs - {active_tab}
-        self._refresh_screen(active_tab)
-        self._update_tab_labels()
-        self.sub_title = f"memory dashboard — {self._data.active_count} facts"
+        self._apply_data_to_tabs()
 
     def _refresh_screen(self, tab_id: str) -> None:
         screen_map = {
@@ -280,8 +261,6 @@ class EngramDashboard(App):
         except Exception:
             pass
 
-    # ── Fact actions with confirmation ──
-
     def action_forget_fact(self, fact_id: str) -> None:
         self._forget_facts([fact_id])
 
@@ -304,7 +283,7 @@ class EngramDashboard(App):
         self._pending_forget = []
         undo_entries: list[tuple[str, float]] = []
         for fid in fact_ids:
-            # Find original confidence before forgetting
+            # Capture pre-forget confidence so Ctrl+Z can restore it.
             for f in self._data.all_facts:
                 if f.id == fid:
                     undo_entries.append((fid, f.confidence))
@@ -331,10 +310,9 @@ class EngramDashboard(App):
         if not self._undo_stack:
             self.notify("Nothing to undo", severity="information")
             return
-        count = 0
+        count = len(self._undo_stack)
         for fid, old_confidence in self._undo_stack:
             self._store.update_fact(fid, confidence=old_confidence)
-            count += 1
         self._undo_stack.clear()
         if self._undo_timer:
             self._undo_timer.stop()
@@ -395,6 +373,9 @@ class EngramDashboard(App):
         """Force a full data reload, bypassing the hash check."""
         self._data = load_dashboard_data(self._store)
         self._last_hash = self._data.content_hash
+        self._apply_data_to_tabs()
+
+    def _apply_data_to_tabs(self) -> None:
         active_tab = self.query_one("#tabs", TabbedContent).active
         all_tabs = {
             "overview",

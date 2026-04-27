@@ -89,7 +89,6 @@ class FactBase(BaseModel):
     def _migrate_legacy_category(cls, data: object) -> object:
         if isinstance(data, dict) and "category" in data:
             raw = data["category"]
-            # Only migrate string values; enum instances are already valid
             if isinstance(raw, str):
                 data["category"] = migrate_category(raw)
         return data
