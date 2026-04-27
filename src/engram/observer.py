@@ -79,12 +79,10 @@ async def extract_facts(
     if not candidates:
         return []
 
-    # Step 2: Dedup against existing facts in the same scope
     existing = await _load_dedup_facts_for_store(store, project)
     if existing:
         candidates = await _dedup(candidates, existing, store)
 
-    # Step 3: Persist
     if candidates:
         await _append_facts(store, candidates)
         await _log_ingestion(
@@ -184,7 +182,6 @@ async def _dedup(
     store: FactStore | AsyncFactStore | None,
 ) -> list[Fact]:
     """Two-phase dedup: exact content hash, then scoped LLM dedup for near-matches."""
-    # Phase 1: Exact-match dedup via content hash — no LLM call needed
     existing_hashes = {_content_hash(f.content) for f in existing}
     after_exact: list[Fact] = []
     for fact in candidates:
@@ -196,8 +193,7 @@ async def _dedup(
     if not after_exact:
         return []
 
-    # Phase 2: Scoped LLM dedup — only compare candidates to existing facts
-    # with meaningful token overlap (no hard truncation)
+    # Only ask the LLM about existing facts with meaningful token overlap.
     near_matches = _find_near_matches(after_exact, existing)
     if not near_matches:
         return after_exact
@@ -295,24 +291,20 @@ Classify each new fact as genuinely new, a duplicate, or an update to an existin
     return kept
 
 
-def _load_dedup_facts(store: FactStore, project: str | None) -> list[Fact]:
-    """Load facts that are allowed to deduplicate a new fact in this scope."""
-    if project:
-        return store.load_active_facts(project=project)
-    return [fact for fact in store.load_active_facts() if fact.project is None]
-
-
 async def _load_dedup_facts_for_store(
     store: FactStore | AsyncFactStore,
     project: str | None,
 ) -> list[Fact]:
-    """Async-aware variant of `_load_dedup_facts` for orchestration paths."""
-    if isinstance(store, AsyncFactStore):
-        if project:
+    """Load facts allowed to deduplicate a new fact in this scope."""
+    if project:
+        if isinstance(store, AsyncFactStore):
             return await store.load_active_facts(project=project)
+        return store.load_active_facts(project=project)
+    if isinstance(store, AsyncFactStore):
         facts = await store.load_active_facts()
-        return [fact for fact in facts if fact.project is None]
-    return _load_dedup_facts(store, project)
+    else:
+        facts = store.load_active_facts()
+    return [fact for fact in facts if fact.project is None]
 
 
 async def _load_pending_candidates(

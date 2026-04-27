@@ -165,7 +165,6 @@ class CandidatesScreen(Container):
             table.focus()
             return
 
-        # Space toggles selection
         if focused is table and event.key == "space":
             event.prevent_default()
             row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
@@ -190,7 +189,6 @@ class CandidatesScreen(Container):
             self._populate_table()
             return
 
-        # Sort
         if focused is table and event.key == "s":
             event.prevent_default()
             self._cycle_sort(reverse=False)

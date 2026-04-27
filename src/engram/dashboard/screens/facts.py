@@ -107,12 +107,11 @@ class FactsScreen(Container):
                 or q in f.id
             ]
 
-        # Apply current sort
         col = self.SORT_COLUMNS[self._sort_index]
         facts.sort(key=lambda f: getattr(f, col) or "", reverse=self._sort_reverse)
 
         self._filtered_facts = facts
-        # Clear selection on filter change
+        # Selection refers to filtered rows; reset when the set changes.
         self._selected_ids.clear()
         self._populate_table()
 
@@ -216,7 +215,6 @@ class FactsScreen(Container):
             self.query_one("#search-input", Input).focus()
             return
 
-        # Space toggles selection
         if focused is table and event.key == "space":
             event.prevent_default()
             row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
@@ -241,7 +239,6 @@ class FactsScreen(Container):
             self._populate_table()
             return
 
-        # Sort
         if focused is table and event.key == "s":
             event.prevent_default()
             self._cycle_sort(reverse=False)

@@ -166,13 +166,12 @@ async def complete_json(
 
     text = (raw or "").strip()
 
-    # 1. Raw parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # 2. Strip markdown code fences and retry
+    # Strip markdown code fences and retry.
     if "```" in text:
         lines = [
             line for line in text.split("\n") if not line.strip().startswith("```")
@@ -186,7 +185,6 @@ async def complete_json(
     except json.JSONDecodeError:
         pass
 
-    # 3. Extract the first decodable JSON value embedded in prose.
     embedded = _decode_first_json_value(stripped)
     if embedded is not None:
         return embedded

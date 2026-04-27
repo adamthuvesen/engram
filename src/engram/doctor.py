@@ -27,6 +27,7 @@ from engram.models import (
     CandidateStatus,
     Fact,
     MemoryCandidate,
+    RecallRecord,
     StoreTransaction,
     TransactionStatus,
 )
@@ -36,8 +37,6 @@ logger = logging.getLogger(__name__)
 
 
 class DoctorIssue(BaseModel):
-    """A single diagnostic finding."""
-
     code: str
     severity: str  # "info" | "warning" | "error"
     category: (
@@ -50,11 +49,7 @@ class DoctorIssue(BaseModel):
 
 
 class DoctorReport(BaseModel):
-    """Structured output of ``run_doctor``.
-
-    ``status`` rolls up the worst severity: ``ok`` if no errors/warnings,
-    ``warning`` if at least one warning but no errors, ``error`` otherwise.
-    """
+    """``status`` rolls up the worst severity: ``ok``, ``warning``, or ``error``."""
 
     status: str
     issues: list[DoctorIssue] = Field(default_factory=list)
@@ -187,8 +182,6 @@ def _check_recall_log(store: FactStore, issues: list[DoctorIssue]) -> None:
         if not line:
             continue
         try:
-            from engram.models import RecallRecord
-
             RecallRecord.model_validate_json(line)
         except (ValueError, ValidationError):
             bad.append(lineno)
@@ -319,7 +312,6 @@ def _check_candidates(
 ) -> None:
     if not candidates:
         return
-    # Pending candidates older than 30 days might be forgotten review queue.
     now = datetime.now(timezone.utc)
     stale_pending = [
         c.id

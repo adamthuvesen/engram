@@ -26,7 +26,6 @@ class ProjectHealth:
 class DashboardData:
     """Precomputed aggregations for the dashboard."""
 
-    # Raw data
     all_facts: list[Fact] = field(default_factory=list)
     active_facts: list[Fact] = field(default_factory=list)
     forgotten_facts: list[Fact] = field(default_factory=list)
@@ -34,7 +33,6 @@ class DashboardData:
     candidates: list[MemoryCandidate] = field(default_factory=list)
     pending_candidates: list[MemoryCandidate] = field(default_factory=list)
 
-    # Counts
     total: int = 0
     active_count: int = 0
     forgotten_count: int = 0
@@ -42,27 +40,21 @@ class DashboardData:
     pending_count: int = 0
     storage_bytes: int = 0
 
-    # Distributions
     by_category: dict[str, int] = field(default_factory=dict)
     by_project: dict[str, int] = field(default_factory=dict)
 
-    # Time series (date string -> count)
+    # Daily counts keyed by YYYY-MM-DD; activity_* are dense per-day series.
     daily_created: dict[str, int] = field(default_factory=dict)
     daily_forgotten: dict[str, int] = field(default_factory=dict)
     daily_expired: dict[str, int] = field(default_factory=dict)
-
-    # Sparkline data (last 30 days, one value per day)
     activity_30d: list[float] = field(default_factory=list)
     activity_7d: list[float] = field(default_factory=list)
 
-    # Project health
     project_health: dict[str, ProjectHealth] = field(default_factory=dict)
-
-    # Category labels for display
     categories: list[str] = field(default_factory=list)
     projects: list[str] = field(default_factory=list)
 
-    # Content hash for smart refresh
+    # File-stat-based hash; used to skip refreshes when storage hasn't changed.
     content_hash: int = 0
 
 
@@ -108,7 +100,6 @@ def load_dashboard_data(store: FactStore | None = None) -> DashboardData:
         store.facts_path.stat().st_size if store.facts_path.exists() else 0
     )
 
-    # Distributions
     cat_counter = Counter(f.category.value for f in data.active_facts)
     data.by_category = dict(cat_counter.most_common())
     proj_counter = Counter(f.project or NO_PROJECT_LABEL for f in data.active_facts)
@@ -116,7 +107,6 @@ def load_dashboard_data(store: FactStore | None = None) -> DashboardData:
     data.categories = list(data.by_category.keys())
     data.projects = list(data.by_project.keys())
 
-    # Time series
     data.daily_created = _daily_counts(data.all_facts, key=lambda f: f.created_at)
     data.daily_forgotten = _daily_counts(
         data.forgotten_facts, key=lambda f: f.updated_at
@@ -125,11 +115,9 @@ def load_dashboard_data(store: FactStore | None = None) -> DashboardData:
         data.expired_facts, key=lambda f: f.expires_at or f.updated_at
     )
 
-    # Sparklines
     data.activity_30d = _sparkline_data(data.daily_created, days=30, now=now)
     data.activity_7d = _sparkline_data(data.daily_created, days=7, now=now)
 
-    # Project health
     _compute_project_health(data, now)
 
     return data
@@ -170,12 +158,10 @@ def format_age(dt: datetime) -> str:
 
 
 def format_timestamp(dt: datetime) -> str:
-    """Full timestamp with relative age for detail panes."""
     return f"{dt:%Y-%m-%d %H:%M} UTC ({format_age(dt)} ago)"
 
 
 def format_confidence(conf: float) -> str:
-    """Confidence as colored percentage."""
     pct = f"{conf:.0%}"
     if conf >= 0.8:
         return f"[#788c5d]{pct}[/]"

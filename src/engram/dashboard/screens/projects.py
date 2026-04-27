@@ -158,7 +158,7 @@ class ProjectDetailView(Container):
             return
 
         if event.key == "escape":
-            # Close detail pane first, then let parent handle back navigation
+            # Close detail pane before letting parent handle back navigation.
             try:
                 detail = self.query_one("#proj-fact-detail", FactDetail)
                 if detail.has_class("visible"):
@@ -167,7 +167,6 @@ class ProjectDetailView(Container):
                     return
             except Exception:
                 pass
-            # Close search if focused
             if isinstance(focused, Input):
                 event.prevent_default()
                 table.focus()

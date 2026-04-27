@@ -29,8 +29,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class EnvelopeStatus(str, Enum):
-    """Top-level outcome of a structured operation."""
-
     ok = "ok"
     error = "error"
     partial = "partial"
@@ -64,8 +62,6 @@ class WarningCode(str, Enum):
 
 
 class EnvelopeWarning(BaseModel):
-    """A non-fatal advisory attached to a structured response."""
-
     code: WarningCode
     message: str = ""
     ids: list[str] = Field(default_factory=list)
@@ -73,8 +69,6 @@ class EnvelopeWarning(BaseModel):
 
 
 class EnvelopeError(BaseModel):
-    """A machine-readable error attached to a structured response."""
-
     code: ErrorCode
     message: str = ""
     ids: list[str] = Field(default_factory=list)
@@ -82,8 +76,6 @@ class EnvelopeError(BaseModel):
 
 
 class EnvelopeMeta(BaseModel):
-    """Limits, truncation, and pagination metadata."""
-
     limit: int | None = None
     requested_limit: int | None = None
     returned: int | None = None
@@ -93,8 +85,6 @@ class EnvelopeMeta(BaseModel):
 
 
 class Envelope(BaseModel):
-    """Stable structured response wrapper for agent-facing operations."""
-
     model_config = ConfigDict(extra="forbid")
 
     status: EnvelopeStatus
@@ -137,7 +127,6 @@ class Envelope(BaseModel):
         )
 
     def to_json(self) -> str:
-        """Serialize to a stable JSON string."""
         return self.model_dump_json()
 
 

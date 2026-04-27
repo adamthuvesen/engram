@@ -14,6 +14,8 @@ from engram.models import Fact
 class ForgottenScreen(Container):
     """Browse forgotten facts with option to restore."""
 
+    SORT_COLUMNS = ["updated_at", "category", "project", "content"]
+
     def __init__(self, data: DashboardData) -> None:
         super().__init__()
         self._data = data
@@ -22,6 +24,8 @@ class ForgottenScreen(Container):
         self._filter_text: str = ""
         self._selected_ids: set[str] = set()
         self._search_timer = None
+        self._sort_index: int = 0
+        self._sort_reverse: bool = True
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="forgotten-filter-bar", classes="filter-bar"):
@@ -102,7 +106,7 @@ class ForgottenScreen(Container):
         return None
 
     def _get_action_targets(self) -> list[str]:
-        """Return selected IDs, or cursor row if nothing selected."""
+        """Multi-select takes priority; otherwise act on the cursor row."""
         if self._selected_ids:
             return list(self._selected_ids)
         if self._selected_fact:
@@ -133,7 +137,6 @@ class ForgottenScreen(Container):
             self.query_one("#forgotten-search", Input).focus()
             return
 
-        # Space toggles selection
         if focused is table and event.key == "space":
             event.prevent_default()
             row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
@@ -146,21 +149,18 @@ class ForgottenScreen(Container):
                 self._populate_table()
             return
 
-        # Ctrl+A select all
         if focused is table and event.key == "ctrl+a":
             event.prevent_default()
             self._selected_ids = {f.id for f in self._filtered_facts}
             self._populate_table()
             return
 
-        # Ctrl+D deselect all
         if focused is table and event.key == "ctrl+d":
             event.prevent_default()
             self._selected_ids.clear()
             self._populate_table()
             return
 
-        # Sort
         if focused is table and event.key == "s":
             event.prevent_default()
             self._cycle_sort(reverse=False)
@@ -170,17 +170,12 @@ class ForgottenScreen(Container):
             self._cycle_sort(reverse=True)
             return
 
-    # Sorting state
-    _sort_columns = ["updated_at", "category", "project", "content"]
-    _sort_index = 0
-    _sort_reverse = True
-
     def _cycle_sort(self, reverse: bool) -> None:
         if reverse:
             self._sort_reverse = not self._sort_reverse
         else:
-            self._sort_index = (self._sort_index + 1) % len(self._sort_columns)
-        col = self._sort_columns[self._sort_index]
+            self._sort_index = (self._sort_index + 1) % len(self.SORT_COLUMNS)
+        col = self.SORT_COLUMNS[self._sort_index]
         self._filtered_facts.sort(
             key=lambda f: getattr(f, col) or "",
             reverse=self._sort_reverse,

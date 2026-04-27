@@ -201,7 +201,6 @@ class FactStore:
             line = line.strip()
             if not line:
                 continue
-
             try:
                 candidate = MemoryCandidate.model_validate_json(line)
             except (ValueError, ValidationError) as exc:
@@ -1020,19 +1019,14 @@ class FactStore:
     def _tokenize_extended(self, text: str) -> tuple[set[str], set[str]]:
         """Tokenize text into stemmed unigrams and bigrams.
 
-        Returns (unigrams, bigrams). Handles underscore/hyphen normalization.
+        Normalizes underscore/hyphen so "fact_store" and "fact-store" both
+        produce the same tokens as "fact store".
         """
-        # Normalize separators so "fact_store" and "fact-store" → "fact store"
         normalized = text.lower().replace("_", " ").replace("-", " ")
         raw = _TOKEN_RE.findall(normalized)
         unigrams = {_stem(t) for t in raw}
         bigrams = {f"{raw[i]}_{raw[i + 1]}" for i in range(len(raw) - 1)}
         return unigrams, bigrams
-
-    def _tokenize(self, text: str) -> set[str]:
-        """Tokenize text into stemmed lowercase terms (backward compat)."""
-        normalized = text.lower().replace("_", " ").replace("-", " ")
-        return {_stem(t) for t in _TOKEN_RE.findall(normalized)}
 
 
 class AsyncFactStore:
