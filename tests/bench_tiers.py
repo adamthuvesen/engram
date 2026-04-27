@@ -48,8 +48,14 @@ FACTS = [
         FactCategory.personal_info,
         tags=["team", "role"],
     ),
-    _fact("Alex Chen is a senior machine learning engineer", FactCategory.personal_info, tags=["role"]),
-    _fact("Alex Chen's manager is Jordan Kim", FactCategory.personal_info, tags=["team"]),
+    _fact(
+        "Alex Chen is a senior machine learning engineer",
+        FactCategory.personal_info,
+        tags=["role"],
+    ),
+    _fact(
+        "Alex Chen's manager is Jordan Kim", FactCategory.personal_info, tags=["team"]
+    ),
     _fact(
         "Alex Chen works remotely from Portland",
         FactCategory.personal_info,
