@@ -14,7 +14,7 @@ from engram.models import (
     IngestionRecord,
     MemoryCandidate,
 )
-from engram.store import FactStore, _content_hash, _stem, _TOKEN_RE
+from engram.store import AsyncFactStore, FactStore, _content_hash, _stem, _TOKEN_RE
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ async def extract_facts(
     content: str,
     source: str = "conversation",
     project: str | None = None,
-    store: FactStore | None = None,
+    store: FactStore | AsyncFactStore | None = None,
 ) -> list[Fact]:
     """Extract structured facts from raw text input.
 
@@ -79,21 +79,22 @@ async def extract_facts(
     if not candidates:
         return []
 
-    # Step 2: Dedup against existing facts
-    existing = store.load_active_facts(limit=200)
+    # Step 2: Dedup against existing facts in the same scope
+    existing = await _load_dedup_facts_for_store(store, project)
     if existing:
         candidates = await _dedup(candidates, existing, store)
 
     # Step 3: Persist
     if candidates:
-        store.append_facts(candidates)
-        store.log_ingestion(
+        await _append_facts(store, candidates)
+        await _log_ingestion(
+            store,
             IngestionRecord(
                 source=source,
                 facts_created=[f.id for f in candidates if not f.supersedes],
                 facts_updated=[f.id for f in candidates if f.supersedes],
                 agent_model=get_settings().llm_model,
-            )
+            ),
         )
 
     logger.info("Extracted %d facts from input", len(candidates))
@@ -104,7 +105,7 @@ async def suggest_memories(
     content: str,
     source: str = "conversation",
     project: str | None = None,
-    store: FactStore | None = None,
+    store: FactStore | AsyncFactStore | None = None,
 ) -> list[MemoryCandidate]:
     """Extract and queue proposed memories for review."""
     store = store or FactStore()
@@ -112,18 +113,18 @@ async def suggest_memories(
     if not facts:
         return []
 
-    existing = store.load_active_facts(limit=200)
+    existing = await _load_dedup_facts_for_store(store, project)
     if existing:
         facts = await _dedup(facts, existing, store=None)
 
-    pending = store.load_candidates(status=CandidateStatus.pending, limit=200)
+    pending = await _load_pending_candidates(store, limit=200)
     if pending:
         facts = _dedup_against_candidates(facts, pending)
 
     candidates = [MemoryCandidate(**fact.model_dump()) for fact in facts]
 
     if candidates:
-        store.append_candidates(candidates)
+        await _append_candidates(store, candidates)
     return candidates
 
 
@@ -180,7 +181,7 @@ async def _extract_candidate_facts(
 async def _dedup(
     candidates: list[Fact],
     existing: list[Fact],
-    store: FactStore | None,
+    store: FactStore | AsyncFactStore | None,
 ) -> list[Fact]:
     """Two-phase dedup: exact content hash, then scoped LLM dedup for near-matches."""
     # Phase 1: Exact-match dedup via content hash — no LLM call needed
@@ -201,11 +202,9 @@ async def _dedup(
     if not near_matches:
         return after_exact
 
-    existing_summary = "\n".join(
-        f"[id:{f.id}] [{f.category.value}] {f.content}" for f in near_matches
-    )
+    existing_summary = "\n".join(_format_fact_for_dedup(f) for f in near_matches)
     candidate_summary = "\n".join(
-        f"[{i}] [{f.category.value}] {f.content}" for i, f in enumerate(after_exact)
+        f"[{i}] {_format_fact_for_dedup(f)}" for i, f in enumerate(after_exact)
     )
 
     prompt = f"""EXISTING FACTS:
@@ -217,10 +216,39 @@ NEW CANDIDATE FACTS:
 Classify each new fact as genuinely new, a duplicate, or an update to an existing fact."""
 
     result = await complete_json(prompt=prompt, system=DEDUP_SYSTEM)
+    if not isinstance(result, dict):
+        logger.warning("Dedup response was not an object, keeping all candidates")
+        return after_exact
 
-    new_indices = set(result.get("new", []))
+    new_indices = {
+        idx
+        for idx in (result.get("new", []) or [])
+        if isinstance(idx, int) and 0 <= idx < len(after_exact)
+    }
+    duplicate_indices = {
+        idx
+        for idx in (result.get("duplicates", []) or [])
+        if isinstance(idx, int) and 0 <= idx < len(after_exact)
+    }
     updates = result.get("updates", [])
-    raw_update_map = {u["new_idx"]: u["existing_id"] for u in updates}
+    if not isinstance(updates, list):
+        updates = []
+
+    near_ids = {fact.id for fact in near_matches}
+    raw_update_map: dict[int, str] = {}
+    for update in updates:
+        if not isinstance(update, dict):
+            logger.warning("Skipping malformed dedup update entry: %s", update)
+            continue
+        new_idx = update.get("new_idx")
+        existing_id = update.get("existing_id")
+        if not isinstance(new_idx, int) or not 0 <= new_idx < len(after_exact):
+            logger.warning("Skipping dedup update with invalid new_idx: %s", update)
+            continue
+        if not isinstance(existing_id, str) or existing_id not in near_ids:
+            logger.warning("Skipping dedup update with invalid existing_id: %s", update)
+            continue
+        raw_update_map[new_idx] = existing_id
 
     # Detect collisions: multiple candidates targeting the same ancestor.
     # Keep only the highest-confidence candidate per ancestor.
@@ -243,6 +271,7 @@ Classify each new fact as genuinely new, a duplicate, or an update to an existin
                 old_id,
             )
 
+    dropped_update_indices = set(raw_update_map) - set(resolved_update_map)
     kept = []
     for i, fact in enumerate(after_exact):
         if i in new_indices:
@@ -251,11 +280,90 @@ Classify each new fact as genuinely new, a duplicate, or an update to an existin
             old_id = resolved_update_map[i]
             fact.supersedes = old_id
             if store is not None:
-                store.update_fact(old_id, confidence=0.3)
+                await _update_fact(store, old_id, confidence=0.3)
             kept.append(fact)
-        # else: duplicate, skip
+        elif i in duplicate_indices:
+            continue
+        elif i in dropped_update_indices:
+            continue
+        else:
+            logger.warning(
+                "Dedup response did not classify candidate %d, keeping it", i
+            )
+            kept.append(fact)
 
     return kept
+
+
+def _load_dedup_facts(store: FactStore, project: str | None) -> list[Fact]:
+    """Load facts that are allowed to deduplicate a new fact in this scope."""
+    if project:
+        return store.load_active_facts(project=project)
+    return [fact for fact in store.load_active_facts() if fact.project is None]
+
+
+async def _load_dedup_facts_for_store(
+    store: FactStore | AsyncFactStore,
+    project: str | None,
+) -> list[Fact]:
+    """Async-aware variant of `_load_dedup_facts` for orchestration paths."""
+    if isinstance(store, AsyncFactStore):
+        if project:
+            return await store.load_active_facts(project=project)
+        facts = await store.load_active_facts()
+        return [fact for fact in facts if fact.project is None]
+    return _load_dedup_facts(store, project)
+
+
+async def _load_pending_candidates(
+    store: FactStore | AsyncFactStore,
+    limit: int,
+) -> list[MemoryCandidate]:
+    if isinstance(store, AsyncFactStore):
+        return await store.load_candidates(status=CandidateStatus.pending, limit=limit)
+    return store.load_candidates(status=CandidateStatus.pending, limit=limit)
+
+
+async def _append_facts(store: FactStore | AsyncFactStore, facts: list[Fact]) -> None:
+    if isinstance(store, AsyncFactStore):
+        await store.append_facts(facts)
+    else:
+        store.append_facts(facts)
+
+
+async def _append_candidates(
+    store: FactStore | AsyncFactStore,
+    candidates: list[MemoryCandidate],
+) -> None:
+    if isinstance(store, AsyncFactStore):
+        await store.append_candidates(candidates)
+    else:
+        store.append_candidates(candidates)
+
+
+async def _update_fact(
+    store: FactStore | AsyncFactStore,
+    fact_id: str,
+    **updates,
+) -> Fact | None:
+    if isinstance(store, AsyncFactStore):
+        return await store.update_fact(fact_id, **updates)
+    return store.update_fact(fact_id, **updates)
+
+
+async def _log_ingestion(
+    store: FactStore | AsyncFactStore,
+    record: IngestionRecord,
+) -> None:
+    if isinstance(store, AsyncFactStore):
+        await store.log_ingestion(record)
+    else:
+        store.log_ingestion(record)
+
+
+def _format_fact_for_dedup(fact: Fact) -> str:
+    project = fact.project if fact.project is not None else "(global)"
+    return f"[id:{fact.id}] [{fact.category.value}] [project:{project}] {fact.content}"
 
 
 def _find_near_matches(candidates: list[Fact], existing: list[Fact]) -> list[Fact]:
@@ -264,10 +372,15 @@ def _find_near_matches(candidates: list[Fact], existing: list[Fact]) -> list[Fac
     Returns the subset of existing facts worth sending to LLM dedup.
     No hard cap — scales with actual overlap, not arbitrary limits.
     """
-    candidate_tokens: set[str] = set()
-    for c in candidates:
-        normalized = c.content.lower().replace("_", " ").replace("-", " ")
-        candidate_tokens.update(_stem(t) for t in _TOKEN_RE.findall(normalized))
+    candidate_token_sets = [
+        {
+            _stem(t)
+            for t in _TOKEN_RE.findall(
+                c.content.lower().replace("_", " ").replace("-", " ")
+            )
+        }
+        for c in candidates
+    ]
 
     near: list[Fact] = []
     for fact in existing:
@@ -275,11 +388,13 @@ def _find_near_matches(candidates: list[Fact], existing: list[Fact]) -> list[Fac
         fact_tokens = {_stem(t) for t in _TOKEN_RE.findall(normalized)}
         if not fact_tokens:
             continue
-        shared = candidate_tokens & fact_tokens
-        union = candidate_tokens | fact_tokens
-        jaccard = len(shared) / len(union) if union else 0.0
-        if jaccard >= 0.3:
-            near.append(fact)
+        for candidate_tokens in candidate_token_sets:
+            shared = candidate_tokens & fact_tokens
+            union = candidate_tokens | fact_tokens
+            jaccard = len(shared) / len(union) if union else 0.0
+            if jaccard >= 0.3:
+                near.append(fact)
+                break
     return near
 
 

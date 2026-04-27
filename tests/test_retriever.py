@@ -11,13 +11,11 @@ from engram.retriever import (
     _extract_quality,
     _format_direct,
     _parse_multilens_sections,
-    _resolve_pipeline,
     _resolve_tier_rules,
     _select_tier,
-    _unknown_pipeline_warned,
     _unknown_tier_rules_warned,
 )
-from engram.store import FactStore
+from engram.store import AsyncFactStore, FactStore
 
 
 def _make_store() -> FactStore:
@@ -133,7 +131,12 @@ def test_format_direct_empty():
     result = _format_direct(
         [(0, Fact(category=FactCategory.preference, content="x"))], "q"
     )
-    assert "No memories" in result
+    assert "No relevant memories" in result
+
+
+def test_format_direct_store_empty():
+    result = _format_direct([], "q")
+    assert "No memories stored yet" in result
 
 
 # ---------------------------------------------------------------------------
@@ -238,15 +241,25 @@ def test_select_tier_v1_matches_legacy_behaviour():
     cases = [
         [],
         [(3, Fact(category=FactCategory.preference, content="noise"))],
-        [(20, Fact(category=FactCategory.personal_info, content="one")),
-         (8, Fact(category=FactCategory.preference, content="two"))],
+        [
+            (20, Fact(category=FactCategory.personal_info, content="one")),
+            (8, Fact(category=FactCategory.preference, content="two")),
+        ],
         [(25, Fact(category=FactCategory.preference, content="winner"))]
-        + [(8, Fact(category=FactCategory.preference, content=f"n{i}")) for i in range(20)],
-        [(12, Fact(category=FactCategory.preference, content=f"f{i}")) for i in range(20)],
+        + [
+            (8, Fact(category=FactCategory.preference, content=f"n{i}"))
+            for i in range(20)
+        ],
+        [
+            (12, Fact(category=FactCategory.preference, content=f"f{i}"))
+            for i in range(20)
+        ],
     ]
     # v1 should always match itself regardless of min_prefilter_for_tier2.
     for case in cases:
-        assert _select_tier(case, rules="v1", min_prefilter_for_tier2=99) == _select_tier(case)
+        assert _select_tier(
+            case, rules="v1", min_prefilter_for_tier2=99
+        ) == _select_tier(case)
 
 
 def test_select_tier_threshold_zero_disables_cap():
@@ -259,7 +272,7 @@ def test_select_tier_threshold_zero_disables_cap():
 
 
 def test_recall_stamps_selector_version(monkeypatch):
-    """Default recall stamps v2 on the log; legacy flag stamps v1."""
+    """Default recall stamps v2 on the log; tier-rule flag stamps v1."""
     from engram.config import get_settings
 
     store = _make_store()
@@ -325,7 +338,14 @@ def _patch_complete(monkeypatch, responses):
     calls = {"n": 0}
     queue = list(responses)
 
-    async def fake(prompt, system="", model=None, temperature=None, response_format=None, cache_prefix=None):
+    async def fake(
+        prompt,
+        system="",
+        model=None,
+        temperature=None,
+        response_format=None,
+        cache_prefix=None,
+    ):
         calls["n"] += 1
         text, input_tokens, cached = queue.pop(0)
         return Completion(text=text, input_tokens=input_tokens, cached_tokens=cached)
@@ -369,23 +389,6 @@ def test_parse_multilens_malformed_treated_as_direct():
     assert parsed["contextual"] == ""
 
 
-def test_resolve_pipeline_valid():
-    assert _resolve_pipeline("multilens") == "multilens"
-    assert _resolve_pipeline("legacy") == "legacy"
-
-
-def test_resolve_pipeline_unknown_falls_back_with_warning(caplog):
-    _unknown_pipeline_warned.clear()
-    with caplog.at_level("WARNING", logger="engram.retriever"):
-        assert _resolve_pipeline("bogus") == "multilens"
-    assert any("bogus" in rec.message for rec in caplog.records)
-    # Second call doesn't re-warn.
-    caplog.clear()
-    with caplog.at_level("WARNING", logger="engram.retriever"):
-        assert _resolve_pipeline("bogus") == "multilens"
-    assert not caplog.records
-
-
 def test_recall_tier2_multilens_makes_two_llm_calls(monkeypatch):
     store = _make_store()
     _flat_tier2_facts(store)
@@ -418,69 +421,32 @@ def test_recall_tier2_multilens_makes_two_llm_calls(monkeypatch):
     assert records[0].quality == "high"
 
 
-def test_recall_tier2_legacy_makes_four_llm_calls(monkeypatch):
-    from engram.config import get_settings
-
-    monkeypatch.setenv("ENGRAM_RECALL_PIPELINE", "legacy")
-    get_settings.cache_clear()
-
+def test_recall_tier2_with_async_store_makes_two_llm_calls(monkeypatch):
     store = _make_store()
     _flat_tier2_facts(store)
+    async_store = AsyncFactStore(store)
 
     calls = _patch_complete(
         monkeypatch,
         [
-            ("agent A output", 500, 0),
-            ("agent B output", 500, 0),
-            ("agent C output", 500, 0),
-            ("final synthesis\n[quality: medium]", 800, 0),
-        ],
-    )
-
-    from engram.retriever import recall
-
-    try:
-        asyncio.run(recall("retrieval", store=store))
-    finally:
-        monkeypatch.delenv("ENGRAM_RECALL_PIPELINE", raising=False)
-        get_settings.cache_clear()
-
-    assert calls["n"] == 4
-    records = store.load_recall_log()
-    assert records[0].tier == 2
-    assert records[0].llm_calls == 4
-    assert records[0].quality == "medium"
-
-
-def test_recall_tier2_flag_fallback_on_unknown_value(monkeypatch, caplog):
-    from engram.config import get_settings
-
-    monkeypatch.setenv("ENGRAM_RECALL_PIPELINE", "bogus")
-    get_settings.cache_clear()
-    _unknown_pipeline_warned.clear()
-
-    store = _make_store()
-    _flat_tier2_facts(store)
-
-    calls = _patch_complete(
-        monkeypatch,
-        [
-            ("## DIRECT\n1. ok (id:f00)\n## CONTEXTUAL\n(none)\n## TEMPORAL\n(none)\n", 100, 0),
+            (
+                "## DIRECT\n1. ok (id:f00)\n## CONTEXTUAL\n(none)\n## TEMPORAL\n(none)\n",
+                100,
+                0,
+            ),
             ("done\n[quality: low]", 100, 0),
         ],
     )
 
     from engram.retriever import recall
 
-    try:
-        with caplog.at_level("WARNING", logger="engram.retriever"):
-            asyncio.run(recall("retrieval", store=store))
-    finally:
-        monkeypatch.delenv("ENGRAM_RECALL_PIPELINE", raising=False)
-        get_settings.cache_clear()
+    asyncio.run(recall("retrieval", store=async_store))
 
-    assert any("bogus" in rec.message for rec in caplog.records)
-    assert calls["n"] == 2  # fell back to multilens
+    assert calls["n"] == 2
+    records = store.load_recall_log()
+    assert records[0].tier == 2
+    assert records[0].llm_calls == 2
+    assert records[0].quality == "low"
 
 
 def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
@@ -490,15 +456,26 @@ def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
 
     captured: list[dict] = []
 
-    async def fake(prompt, system="", model=None, temperature=None, response_format=None, cache_prefix=None):
-        captured.append({"prompt": prompt, "cache_prefix": cache_prefix, "system": system})
+    async def fake(
+        prompt,
+        system="",
+        model=None,
+        temperature=None,
+        response_format=None,
+        cache_prefix=None,
+    ):
+        captured.append(
+            {"prompt": prompt, "cache_prefix": cache_prefix, "system": system}
+        )
         if len(captured) == 1:
             return Completion(
                 text="## DIRECT\n1. x (id:f00)\n## CONTEXTUAL\n(none)\n## TEMPORAL\n(none)\n",
                 input_tokens=100,
                 cached_tokens=0,
             )
-        return Completion(text="done\n[quality: high]", input_tokens=100, cached_tokens=50)
+        return Completion(
+            text="done\n[quality: high]", input_tokens=100, cached_tokens=50
+        )
 
     monkeypatch.setattr("engram.retriever.complete_with_usage", fake)
 
@@ -514,11 +491,9 @@ def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
     assert captured[1]["prompt"].startswith(captured[1]["cache_prefix"])
 
 
-def test_recall_tier0_weak_match_logs_low_quality():
-    """Tier 0 recall with only sub-threshold matches logs quality='low'."""
+def test_recall_tier0_unrelated_boost_only_fact_logs_no_quality():
+    """Tier 0 recall does not treat recency/confidence boosts as relevance."""
     store = _make_store()
-    # No keyword overlap with the query, but recency (+2) and confidence (+1) boosts
-    # produce a score of 1-3 (> 0 but < RELEVANCE_FLOOR=5) → quality="low", not "high" or "none"
     store.append_facts(
         [
             Fact(
@@ -532,9 +507,11 @@ def test_recall_tier0_weak_match_logs_low_quality():
 
     from engram.retriever import recall
 
-    asyncio.run(recall("zagblort xylophone", store=store))
+    answer = asyncio.run(recall("zagblort xylophone", store=store))
 
     records = store.load_recall_log()
+    assert "No relevant memories" in answer
     assert len(records) == 1
     assert records[0].tier == 0
-    assert records[0].quality == "low"
+    assert records[0].prefilter_count == 0
+    assert records[0].quality == "none"

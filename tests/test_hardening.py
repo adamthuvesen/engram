@@ -11,8 +11,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import engram.server as server
-from engram.models import Fact, FactCategory, MemoryCandidate
-from engram.store import FactStore
+from engram.models import (
+    CandidateStatus,
+    Fact,
+    FactCategory,
+    MemoryCandidate,
+    RecallRecord,
+    TransactionStatus,
+)
+from engram.store import AsyncFactStore, FactStore
 
 
 def _make_store() -> FactStore:
@@ -177,6 +184,120 @@ def test_approve_candidates_batched_writes():
     )
 
 
+def test_approve_candidates_writes_transaction_markers():
+    store = _make_store()
+    store.append_candidates([_make_candidate(id="cand1", content="Remember this")])
+
+    approved = store.approve_candidates(["cand1"])
+
+    assert len(approved) == 1
+    transactions = store._load_transactions()
+    assert [tx.status for tx in transactions] == [
+        TransactionStatus.prepared,
+        TransactionStatus.committed,
+    ]
+    assert transactions[0].id == transactions[1].id
+    assert transactions[0].new_facts[0].id == approved[0].id
+
+
+def test_recover_prepared_approval_transaction_on_startup():
+    store = _make_store()
+    old = _make_fact(id="old1", content="Old preference")
+    candidate = _make_candidate(
+        id="cand1",
+        content="New preference",
+        supersedes="old1",
+    )
+    store.append_facts([old])
+    store.append_candidates([candidate])
+
+    transaction = store._prepare_approval_transaction(["cand1"])
+    assert transaction is not None
+    store._append_transaction(transaction)
+
+    recovered = FactStore(data_dir=store.data_dir)
+
+    facts = recovered.load_facts()
+    assert len(facts) == 2
+    assert next(f for f in facts if f.id == "old1").confidence == 0.3
+    assert next(f for f in facts if f.id != "old1").supersedes == "old1"
+    assert recovered.load_candidates(status=CandidateStatus.pending) == []
+    assert len(recovered.load_candidates(status=CandidateStatus.approved)) == 1
+    assert recovered._pending_transactions() == []
+
+
+def test_approval_recovers_when_apply_fails_after_prepare():
+    store = _make_store()
+    store.append_candidates([_make_candidate(id="cand1", content="Remember this")])
+
+    def fail_apply(transaction):
+        raise OSError("simulated crash after prepare")
+
+    store._apply_approval_transaction = fail_apply
+
+    with pytest.raises(OSError, match="simulated crash after prepare"):
+        store.approve_candidates(["cand1"])
+
+    assert store.load_active_facts() == []
+    assert len(store.load_candidates(status=CandidateStatus.pending)) == 1
+
+    recovered = FactStore(data_dir=store.data_dir)
+
+    facts = recovered.load_active_facts()
+    assert len(facts) == 1
+    assert facts[0].content == "Remember this"
+    assert len(recovered.load_candidates(status=CandidateStatus.approved)) == 1
+    assert recovered._pending_transactions() == []
+
+
+def test_approval_recovery_does_not_duplicate_fact_after_commit_marker_failure():
+    store = _make_store()
+    store.append_candidates([_make_candidate(id="cand1", content="Remember this")])
+
+    original_append_transaction = store._append_transaction
+
+    def fail_commit_marker(transaction):
+        if transaction.status == TransactionStatus.committed:
+            raise OSError("simulated crash before commit marker")
+        original_append_transaction(transaction)
+
+    store._append_transaction = fail_commit_marker
+
+    with pytest.raises(OSError, match="simulated crash before commit marker"):
+        store.approve_candidates(["cand1"])
+
+    assert len(store.load_active_facts()) == 1
+    assert len(store.load_candidates(status=CandidateStatus.approved)) == 1
+
+    recovered = FactStore(data_dir=store.data_dir)
+
+    facts = recovered.load_active_facts()
+    assert len(facts) == 1
+    assert facts[0].content == "Remember this"
+    assert recovered._pending_transactions() == []
+
+
+def test_reject_candidates_batched_writes():
+    """Rejecting many candidates rewrites the candidate file at most once."""
+    store = _make_store()
+    candidates = [_make_candidate(id=f"cand{i}") for i in range(5)]
+    store.append_candidates(candidates)
+
+    rewrite_calls = []
+    original_rewrite = store._rewrite
+
+    def tracking_rewrite(records, path=None):
+        rewrite_calls.append(path or store.facts_path)
+        return original_rewrite(records, path=path)
+
+    store._rewrite = tracking_rewrite
+
+    rejected = store.reject_candidates([f"cand{i}" for i in range(5)], reason="Nope")
+
+    assert len(rejected) == 5
+    assert len(rewrite_calls) == 1
+
+
 # ---------------------------------------------------------------------------
 # 3.4 complete_json parsing cascade
 # ---------------------------------------------------------------------------
@@ -292,78 +413,215 @@ def test_recall_context_prompt_mode_smoke():
     assert "Adam prefers concise terminal summaries" in text
 
 
-# ---------------------------------------------------------------------------
-# 4.4 One recall agent fails — others still synthesize
-# ---------------------------------------------------------------------------
-
-
-def test_full_agentic_recall_one_agent_fails(monkeypatch):
-    """If one of the three agents raises, the other two still feed synthesis."""
-    from engram import retriever
-    from engram.llm import Completion
-
-    async def fake_complete(prompt, system="", **kwargs):
-        if "DIRECT" in system:
-            raise RuntimeError("Agent A failed")
-        if "CONTEXTUAL" in system:
-            return Completion(text="Context findings")
-        if "TEMPORAL" in system:
-            return Completion(text="Temporal findings")
-        return Completion(text="Synthesized answer [quality: medium]")
-
-    monkeypatch.setattr(retriever, "complete_with_usage", fake_complete)
-
+def test_recall_context_prompt_mode_omits_unrelated_fallbacks():
     store = _make_store()
-    store.append_facts([_make_fact(content="some fact")])
-    scored = store.prefilter_facts("test query")
-
-    settings = MagicMock()
-    settings.retrieval_timeout = 15.0
-    settings.parallel_agents = True
-
-    answer, quality, totals = asyncio.run(
-        retriever._full_agentic_recall(scored, "test query", settings, parallel=True)
-    )
-    assert "Synthesized" in answer
-    assert quality == "medium"
-    assert totals["llm_calls"] == 3  # B, C, and synthesis — A raised
-
-
-# ---------------------------------------------------------------------------
-# 4.5 All recall agents fail — error surfaced
-# ---------------------------------------------------------------------------
-
-
-def test_full_agentic_recall_all_agents_fail(monkeypatch):
-    """If all three agents fail, a single RuntimeError is raised."""
-    from engram import retriever
-    from engram.llm import Completion
-
-    async def fake_complete(prompt, system="", **kwargs):
-        if system in (
-            retriever.AGENT_A_SYSTEM,
-            retriever.AGENT_B_SYSTEM,
-            retriever.AGENT_C_SYSTEM,
-        ):
-            raise RuntimeError("Agent down")
-        return Completion(text="fallback")
-
-    monkeypatch.setattr(retriever, "complete_with_usage", fake_complete)
-
-    store = _make_store()
-    store.append_facts([_make_fact(content="some fact")])
-    scored = store.prefilter_facts("test query")
-
-    settings = MagicMock()
-    settings.retrieval_timeout = 15.0
-    settings.parallel_agents = True
-
-    with pytest.raises(RuntimeError, match="All 3 recall agents failed"):
-        asyncio.run(
-            retriever._full_agentic_recall(
-                scored, "test query", settings, parallel=True
+    store.append_facts(
+        [
+            _make_fact(
+                content="Adam prefers concise terminal summaries",
+                project="engram",
             )
+        ]
+    )
+    server._store = store
+
+    result = asyncio.run(
+        server.mcp._call_tool_mcp(
+            "recall_context",
+            {
+                "query": "What database warehouse should we use?",
+                "project": "engram",
+                "mode": "prompt",
+            },
         )
+    )
+
+    text = str(result)
+    assert "# Memory Context" not in text
+    assert "Adam prefers concise terminal summaries" not in text
+    assert "No relevant memories" in text
+
+
+def test_import_memories_empty_directory_returns_message(tmp_path, monkeypatch):
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    monkeypatch.setattr(
+        "engram.importer.get_settings",
+        lambda: MagicMock(claude_projects_dir=projects_dir),
+    )
+
+    store = _make_store()
+    server._store = store
+    result = asyncio.run(
+        server.mcp._call_tool_mcp("import_memories", {"source": "claude_code"})
+    )
+
+    assert "No memory files found to import" in str(result)
+
+
+def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
+    from engram.importer import import_claude_code_memories
+
+    projects_dir = tmp_path / "projects"
+    memory_dir = projects_dir / "-Users-adam-dev-menti-engram" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "async-storage.md").write_text(
+        "---\n"
+        "type: note\n"
+        "name: Async Storage\n"
+        "description: Storage migration\n"
+        "---\n"
+        "Engram routes MCP storage through AsyncFactStore.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "engram.importer.get_settings",
+        lambda: MagicMock(claude_projects_dir=projects_dir),
+    )
+
+    async def fake_complete_json(prompt: str, system: str = "", model=None):
+        return {
+            "facts": [
+                {
+                    "content": "Engram routes MCP storage through AsyncFactStore",
+                    "category": "project",
+                    "tags": ["storage"],
+                    "why_store": "Documents the architecture",
+                    "expires_at": None,
+                }
+            ]
+        }
+
+    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+
+    store = _make_store()
+    result = asyncio.run(import_claude_code_memories(store=AsyncFactStore(store)))
+
+    assert result["total_facts"] == 1
+    assert store.load_active_facts()[0].content == (
+        "Engram routes MCP storage through AsyncFactStore"
+    )
+
+
+def test_list_candidates_search_filters_before_limit():
+    store = _make_store()
+    candidates = [
+        _make_candidate(
+            id=f"cand{i}",
+            content=f"Routine candidate {i}",
+            status=CandidateStatus.pending,
+        )
+        for i in range(55)
+    ]
+    target = _make_candidate(
+        id="target",
+        content="Needle candidate for search",
+        status=CandidateStatus.pending,
+    )
+    store.append_candidates([target, *candidates])
+    server._store = store
+
+    result = asyncio.run(
+        server.mcp._call_tool_mcp(
+            "list_candidates",
+            {"status": "pending", "search": "Needle", "limit": 5},
+        )
+    )
+
+    text = str(result)
+    assert "Needle candidate for search" in text
+    assert "Routine candidate" not in text
+
+
+def test_mcp_candidate_approval_and_rejection_use_async_store():
+    store = _make_store()
+    store.append_candidates(
+        [
+            _make_candidate(id="approve-me", content="Approved async candidate"),
+            _make_candidate(id="reject-me", content="Rejected async candidate"),
+        ]
+    )
+    server._store = AsyncFactStore(store)
+
+    approved = asyncio.run(
+        server.mcp._call_tool_mcp(
+            "approve_candidates",
+            {"candidate_ids": ["approve-me"]},
+        )
+    )
+    rejected = asyncio.run(
+        server.mcp._call_tool_mcp(
+            "reject_candidates",
+            {"candidate_ids": ["reject-me"], "reason": "not durable"},
+        )
+    )
+
+    assert "Approved 1 candidate" in str(approved)
+    assert "Rejected 1 candidate" in str(rejected)
+    assert len(store.load_candidates(status=CandidateStatus.approved)) == 1
+    assert len(store.load_candidates(status=CandidateStatus.rejected)) == 1
+
+
+def test_inspect_invalid_category_returns_helpful_message():
+    server._store = _make_store()
+
+    result = asyncio.run(
+        server.mcp._call_tool_mcp(
+            "inspect",
+            {"category": "bogus"},
+        )
+    )
+
+    assert "Invalid category: bogus" in str(result)
+
+
+def test_mcp_inspect_stats_purge_and_rename_use_async_store():
+    store = _make_store()
+    active = _make_fact(content="Project fact", project="old-project")
+    forgotten = _make_fact(content="Forgotten fact", confidence=0.0)
+    candidate = _make_candidate(id="rename-cand", project="old-project")
+    store.append_facts([active, forgotten])
+    store.append_candidates([candidate])
+    server._store = AsyncFactStore(store)
+
+    renamed = asyncio.run(
+        server.mcp._call_tool_mcp(
+            "rename_project",
+            {"old_project": "old-project", "new_project": "new-project"},
+        )
+    )
+    inspected = asyncio.run(
+        server.mcp._call_tool_mcp(
+            "inspect",
+            {"project": "new-project"},
+        )
+    )
+    stats = asyncio.run(server.mcp._call_tool_mcp("memory_stats", {}))
+    purged = asyncio.run(server.mcp._call_tool_mcp("purge", {}))
+
+    assert "Renamed 2 record" in str(renamed)
+    assert "Project fact" in str(inspected)
+    assert "**Total facts:** 2" in str(stats)
+    assert "Purged 1 facts" in str(purged)
+
+
+def test_recall_stats_reports_zero_llm_calls():
+    store = _make_store()
+    store.log_recall(
+        RecallRecord(
+            query="direct",
+            tier=0,
+            prefilter_count=1,
+            latency_ms=1,
+            quality="high",
+            llm_calls=0,
+        )
+    )
+    server._store = store
+
+    result = asyncio.run(server.mcp._call_tool_mcp("recall_stats", {}))
+
+    assert "LLM calls (reported): 0" in str(result)
 
 
 # ---------------------------------------------------------------------------
