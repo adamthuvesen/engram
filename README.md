@@ -96,8 +96,9 @@ All settings via `ENGRAM_*` env vars. Key knobs:
 | `ENGRAM_LLM_MODEL` | `openai/gpt-5.4-mini` | LLM for extraction & search |
 | `ENGRAM_MAX_FACTS_PER_AGENT` | `200` | Facts fed to each search agent |
 | `ENGRAM_RETRIEVAL_TIMEOUT` | `15.0` | Search agent timeout (seconds) |
-| `ENGRAM_TIER_RULES` | `v2` | `v2` caps tier-2 on small prefilter; `v1` pre-cap behaviour |
+| `ENGRAM_TIER_RULES` | `v2` | `v2` caps tier-2 on small prefilter; `v1` uses pre-cap behavior |
 | `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11` | Min prefilter matches for tier-2 under v2 (`0` disables) |
+| `ENGRAM_TIER2_MODE` | `single` | Tier-2 strategy: `single` or `multilens` |
 | `ENGRAM_DATA_DIR` | `~/.engram/data` | Storage directory |
 
 ## Data

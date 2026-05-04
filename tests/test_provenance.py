@@ -108,8 +108,12 @@ def test_default_recall_no_provenance_in_text():
 
 
 def test_tier2_with_provenance_makes_exactly_two_calls(monkeypatch):
+    from engram.config import get_settings
+
     store = _make_store()
     _flat_tier2(store)
+    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
+    get_settings.cache_clear()
 
     calls = _patch_complete(
         monkeypatch,
@@ -129,9 +133,13 @@ def test_tier2_with_provenance_makes_exactly_two_calls(monkeypatch):
         ],
     )
 
-    answer, quality, provenance, trace = asyncio.run(
-        recall_with_provenance("retrieval", store=store)
-    )
+    try:
+        answer, quality, provenance, trace = asyncio.run(
+            recall_with_provenance("retrieval", store=store)
+        )
+    finally:
+        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
+        get_settings.cache_clear()
 
     assert calls["n"] == 2
     assert isinstance(provenance, RecallProvenance)
@@ -145,8 +153,12 @@ def test_tier2_with_provenance_makes_exactly_two_calls(monkeypatch):
 
 
 def test_tier2_with_trace_still_two_calls(monkeypatch):
+    from engram.config import get_settings
+
     store = _make_store()
     _flat_tier2(store)
+    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
+    get_settings.cache_clear()
 
     calls = _patch_complete(
         monkeypatch,
@@ -160,9 +172,13 @@ def test_tier2_with_trace_still_two_calls(monkeypatch):
         ],
     )
 
-    _, _, provenance, trace = asyncio.run(
-        recall_with_provenance("retrieval", store=store, with_trace=True)
-    )
+    try:
+        _, _, provenance, trace = asyncio.run(
+            recall_with_provenance("retrieval", store=store, with_trace=True)
+        )
+    finally:
+        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
+        get_settings.cache_clear()
 
     assert calls["n"] == 2
     assert isinstance(trace, RecallTrace)

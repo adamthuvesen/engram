@@ -86,6 +86,20 @@ Write naturally, as if briefing someone. Keep it concise but complete.
 At the very end of your answer, on a new line, add a quality rating in the format:
 [quality: high|medium|low|none]"""
 
+TIER2_SINGLE_SYSTEM = """You are a memory search and synthesis agent. Given a broad query and stored facts,
+reason through the evidence from three perspectives before answering:
+
+- Direct: facts that directly answer the query
+- Contextual: useful background, related preferences, and connected facts
+- Temporal: current vs. stale information, supersessions, contradictions, and timelines
+
+Do the perspective work internally, then write only the final concise answer.
+Cite fact IDs for traceability. Prefer newer, non-expired facts when evidence conflicts.
+If the evidence is weak or contradictory, say so instead of guessing.
+
+At the very end of your answer, on a new line, add a quality rating in the format:
+[quality: high|medium|low|none]"""
+
 # ---------------------------------------------------------------------------
 # Tier thresholds
 # ---------------------------------------------------------------------------
@@ -227,6 +241,14 @@ def _resolve_tier_rules(raw: str) -> str:
         logger.warning("Unknown ENGRAM_TIER_RULES=%r; falling back to 'v2'", raw)
         _unknown_tier_rules_warned.add(raw)
     return "v2"
+
+
+def _resolve_tier2_mode(raw: str) -> str:
+    """Map the tier-2 mode setting to a supported value."""
+    if raw in ("multilens", "single"):
+        return raw
+    logger.warning("Unknown ENGRAM_TIER2_MODE=%r; falling back to 'multilens'", raw)
+    return "multilens"
 
 
 def _format_direct(scored_facts: list[tuple[int, Fact]], query: str) -> str:
@@ -564,21 +586,39 @@ async def recall_with_provenance(
             output_chars=output_chars,
         )
     else:
-        (
-            answer,
-            quality,
-            usage_totals,
-            cited_ids,
-            call_traces,
-            truncated_any,
-        ) = await _multilens_recall(
-            scored_facts,
-            query,
-            settings,
-            with_trace=with_trace,
-            excerpt_chars=excerpt_chars,
-            output_chars=output_chars,
-        )
+        tier2_mode = _resolve_tier2_mode(settings.tier2_mode)
+        if tier2_mode == "single":
+            (
+                answer,
+                quality,
+                usage_totals,
+                cited_ids,
+                call_traces,
+                truncated_any,
+            ) = await _single_call_tier2_recall(
+                scored_facts,
+                query,
+                settings,
+                with_trace=with_trace,
+                excerpt_chars=excerpt_chars,
+                output_chars=output_chars,
+            )
+        else:
+            (
+                answer,
+                quality,
+                usage_totals,
+                cited_ids,
+                call_traces,
+                truncated_any,
+            ) = await _multilens_recall(
+                scored_facts,
+                query,
+                settings,
+                with_trace=with_trace,
+                excerpt_chars=excerpt_chars,
+                output_chars=output_chars,
+            )
 
     latency_ms = (time.monotonic() - t0) * 1000
 
@@ -879,6 +919,63 @@ async def _multilens_recall(
     return answer, quality, totals, cited_ids, traces, truncated_any
 
 
+async def _single_call_tier2_recall(
+    scored_facts: list[tuple[int, Fact]],
+    query: str,
+    settings,
+    *,
+    with_trace: bool = False,
+    excerpt_chars: int = DEFAULT_PROMPT_EXCERPT_CHARS,
+    output_chars: int = DEFAULT_OUTPUT_EXCERPT_CHARS,
+) -> tuple[str, str, dict[str, int | None], list[str], list[LLMCallTrace], bool]:
+    """Tier 2: single-call broad recall."""
+    facts = [f for _, f in scored_facts]
+    facts_text = format_facts_for_llm(facts)
+    prompt = (
+        f"QUERY: {query}\n\n"
+        f"STORED FACTS:\n{facts_text}\n\n"
+        "Answer the query using the stored facts."
+    )
+
+    totals: dict[str, int | None] = {
+        "llm_calls": 0,
+        "input_tokens": None,
+        "cached_tokens": None,
+        "output_tokens": None,
+    }
+    t_call = time.monotonic()
+    completion = await asyncio.wait_for(
+        complete_with_usage(prompt=prompt, system=TIER2_SINGLE_SYSTEM),
+        timeout=settings.retrieval_timeout,
+    )
+    elapsed_ms = (time.monotonic() - t_call) * 1000
+    _accumulate(totals, completion)
+    answer, quality = _extract_quality(completion.text)
+
+    candidate_ids = {f.id for f in facts}
+    cited_ids = _extract_cited_ids(completion.text, candidate_ids)
+
+    traces: list[LLMCallTrace] = []
+    truncated_any = False
+    if with_trace:
+        prompt_excerpt, prompt_truncated = excerpt(prompt, excerpt_chars)
+        output_excerpt, output_truncated = excerpt(completion.text, output_chars)
+        traces.append(
+            LLMCallTrace(
+                name="tier2_single",
+                system_excerpt=excerpt(TIER2_SINGLE_SYSTEM, excerpt_chars)[0],
+                prompt_excerpt=prompt_excerpt,
+                output_excerpt=output_excerpt,
+                elapsed_ms=elapsed_ms,
+                input_tokens=completion.input_tokens,
+                cached_tokens=completion.cached_tokens,
+            )
+        )
+        truncated_any = prompt_truncated or output_truncated
+
+    return answer, quality, totals, cited_ids, traces, truncated_any
+
+
 # Re-export `complete` at module level for external importers/mocks.
 __all__ = [
     "recall",
@@ -892,6 +989,8 @@ __all__ = [
     "_build_prefix",
     "_parse_multilens_sections",
     "_resolve_tier_rules",
+    "_resolve_tier2_mode",
     "MULTI_LENS_SYSTEM",
     "SYNTHESIS_SYSTEM",
+    "TIER2_SINGLE_SYSTEM",
 ]
