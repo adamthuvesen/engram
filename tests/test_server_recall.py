@@ -190,7 +190,11 @@ def test_recall_warns_on_stale(monkeypatch):
 
 
 def test_recall_trace_success(monkeypatch):
+    from engram.config import get_settings
+
     store = _setup_store(monkeypatch)
+    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
+    get_settings.cache_clear()
     # Seed enough facts for tier-2 to fire.
     store.append_facts(
         [
@@ -215,7 +219,11 @@ def test_recall_trace_success(monkeypatch):
         ],
     )
 
-    result = asyncio.run(_call(server.recall_trace, query="trace"))
+    try:
+        result = asyncio.run(_call(server.recall_trace, query="trace"))
+    finally:
+        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
+        get_settings.cache_clear()
     parsed = json.loads(result)
     assert parsed["status"] == "ok"
     trace = parsed["data"]["trace"]

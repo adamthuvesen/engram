@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     # Under v2, tier-2 requires at least this many strictly-positive-scored
     # prefilter matches. Set to 0 to disable the cap even under v2.
     tier2_min_prefilter_count: int = 11
+    # Tier-2 execution strategy: "single" (one call) or "multilens" (two calls).
+    tier2_mode: str = "single"
 
     # Synthesis
     synthesis_batch_size: int = 25

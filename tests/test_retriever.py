@@ -11,6 +11,7 @@ from engram.retriever import (
     _extract_quality,
     _format_direct,
     _parse_multilens_sections,
+    _resolve_tier2_mode,
     _resolve_tier_rules,
     _select_tier,
     _unknown_tier_rules_warned,
@@ -192,6 +193,12 @@ def test_recall_tier0_logs_to_store():
 def test_resolve_tier_rules_valid():
     assert _resolve_tier_rules("v1") == "v1"
     assert _resolve_tier_rules("v2") == "v2"
+
+
+def test_resolve_tier2_mode_valid():
+    assert _resolve_tier2_mode("multilens") == "multilens"
+    assert _resolve_tier2_mode("single") == "single"
+    assert _resolve_tier2_mode("nonsense") == "multilens"
 
 
 def test_resolve_tier_rules_unknown_falls_back_with_single_warning(caplog):
@@ -390,8 +397,12 @@ def test_parse_multilens_malformed_treated_as_direct():
 
 
 def test_recall_tier2_multilens_makes_two_llm_calls(monkeypatch):
+    from engram.config import get_settings
+
     store = _make_store()
     _flat_tier2_facts(store)
+    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
+    get_settings.cache_clear()
 
     multilens_response = (
         "## DIRECT\n1. f00 is about retrieval (id:f00)\n\n"
@@ -409,7 +420,11 @@ def test_recall_tier2_multilens_makes_two_llm_calls(monkeypatch):
 
     from engram.retriever import recall
 
-    asyncio.run(recall("retrieval", store=store))
+    try:
+        asyncio.run(recall("retrieval", store=store))
+    finally:
+        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
+        get_settings.cache_clear()
 
     assert calls["n"] == 2
     records = store.load_recall_log()
@@ -422,9 +437,13 @@ def test_recall_tier2_multilens_makes_two_llm_calls(monkeypatch):
 
 
 def test_recall_tier2_with_async_store_makes_two_llm_calls(monkeypatch):
+    from engram.config import get_settings
+
     store = _make_store()
     _flat_tier2_facts(store)
     async_store = AsyncFactStore(store)
+    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
+    get_settings.cache_clear()
 
     calls = _patch_complete(
         monkeypatch,
@@ -440,7 +459,11 @@ def test_recall_tier2_with_async_store_makes_two_llm_calls(monkeypatch):
 
     from engram.retriever import recall
 
-    asyncio.run(recall("retrieval", store=async_store))
+    try:
+        asyncio.run(recall("retrieval", store=async_store))
+    finally:
+        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
+        get_settings.cache_clear()
 
     assert calls["n"] == 2
     records = store.load_recall_log()
@@ -451,8 +474,12 @@ def test_recall_tier2_with_async_store_makes_two_llm_calls(monkeypatch):
 
 def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
     """Both calls in tier-2 multilens must pass the same cache_prefix."""
+    from engram.config import get_settings
+
     store = _make_store()
     _flat_tier2_facts(store)
+    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
+    get_settings.cache_clear()
 
     captured: list[dict] = []
 
@@ -481,7 +508,11 @@ def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
 
     from engram.retriever import recall
 
-    asyncio.run(recall("retrieval", store=store))
+    try:
+        asyncio.run(recall("retrieval", store=store))
+    finally:
+        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
+        get_settings.cache_clear()
 
     assert len(captured) == 2
     assert captured[0]["cache_prefix"] is not None
@@ -489,6 +520,29 @@ def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
     # The cache_prefix must actually be a prefix of each call's prompt.
     assert captured[0]["prompt"].startswith(captured[0]["cache_prefix"])
     assert captured[1]["prompt"].startswith(captured[1]["cache_prefix"])
+
+
+def test_recall_tier2_default_single_mode_makes_one_llm_call(monkeypatch):
+    from engram.retriever import recall_with_provenance
+
+    store = _make_store()
+    _flat_tier2_facts(store)
+
+    calls = _patch_complete(
+        monkeypatch,
+        [("Retrieval notes are available (id:f00).\n[quality: high]", 500, 0)],
+    )
+
+    _answer, quality, provenance, trace = asyncio.run(
+        recall_with_provenance("retrieval", store=store, with_trace=True)
+    )
+
+    assert calls["n"] == 1
+    assert quality == "high"
+    assert provenance.tier == 2
+    assert provenance.usage.llm_calls == 1
+    assert trace is not None
+    assert [call.name for call in trace.calls] == ["tier2_single"]
 
 
 def test_recall_tier0_unrelated_boost_only_fact_logs_no_quality():

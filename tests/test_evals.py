@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from engram.config import get_settings
 from engram.evals import (
     EvalBudget,
     EvalFactSpec,
@@ -114,6 +115,8 @@ def test_eval_fails_on_tier_budget_exceeded(monkeypatch):
 
 
 def test_eval_fails_on_llm_call_budget(monkeypatch):
+    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
+    get_settings.cache_clear()
     fixture = EvalFixture(
         name="llm_budget",
         query="retrieval",
@@ -135,7 +138,11 @@ def test_eval_fails_on_llm_call_budget(monkeypatch):
             ("ok\n[quality: low]", 100, 0),
         ],
     )
-    result = run_fixture_sync(fixture)
+    try:
+        result = run_fixture_sync(fixture)
+    finally:
+        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
+        get_settings.cache_clear()
     assert result.passed is False
     call_check = next(c for c in result.checks if c.name == "max_llm_calls")
     assert call_check.passed is False
