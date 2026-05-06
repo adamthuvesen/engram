@@ -40,9 +40,14 @@ def test_is_cli_invocation_true_for_known_subcommand():
     assert cli.is_cli_invocation(["doctor"]) is True
 
 
-def test_is_cli_invocation_false_for_empty_or_unknown():
+def test_is_cli_invocation_false_for_empty_argv():
     assert cli.is_cli_invocation([]) is False
-    assert cli.is_cli_invocation(["mysterious"]) is False
+
+
+def test_is_cli_invocation_true_for_unknown_argv():
+    # Treat any non-empty argv as CLI intent so typos surface as argparse
+    # errors instead of silently launching the MCP stdio server.
+    assert cli.is_cli_invocation(["mysterious"]) is True
 
 
 # ---------------------------------------------------------------------------
