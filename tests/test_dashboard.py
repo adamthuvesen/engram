@@ -93,6 +93,34 @@ def test_expired_facts_classified(store):
     assert data.expired_count == 1
 
 
+def test_stale_facts_excluded_from_active_rollups(store):
+    store.append_facts(
+        [
+            _fact("active", category=FactCategory.preference, project="alpha"),
+            _fact(
+                "stale",
+                category=FactCategory.preference,
+                project="alpha",
+                stale=True,
+            ),
+        ]
+    )
+    data = load_dashboard_data(store)
+
+    assert data.total == 2
+    assert data.active_count == 1
+    assert [fact.content for fact in data.active_facts] == ["active"]
+    assert data.by_category["preference"] == 1
+    assert data.by_project["alpha"] == 1
+
+    health = data.project_health["alpha"]
+    assert health.total == 2
+    assert health.active == 1
+    assert health.forgotten == 0
+    assert health.expired == 0
+    assert health.categories["preference"] == 1
+
+
 def test_category_distribution(store):
     store.append_facts(
         [

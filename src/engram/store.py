@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _THREAD_LOCKS: dict[Path, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
+_STORE_LOCK_DEPTHS = threading.local()
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -76,6 +77,24 @@ def _content_hash(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+def _is_expired_fact(fact: Fact, now: datetime) -> bool:
+    return fact.expires_at is not None and fact.expires_at < now
+
+
+def _is_active_fact(
+    fact: Fact,
+    now: datetime,
+    *,
+    include_stale: bool = False,
+    min_confidence: float = MIN_ACTIVE_CONFIDENCE,
+) -> bool:
+    return (
+        fact.confidence >= min_confidence
+        and not _is_expired_fact(fact, now)
+        and (include_stale or not fact.stale)
+    )
+
+
 def _thread_lock_for(path: Path) -> threading.RLock:
     """Return a process-local lock for the given filesystem lock path."""
     with _THREAD_LOCKS_GUARD:
@@ -84,6 +103,14 @@ def _thread_lock_for(path: Path) -> threading.RLock:
             lock = threading.RLock()
             _THREAD_LOCKS[path] = lock
         return lock
+
+
+def _store_lock_depths() -> dict[Path, int]:
+    depths = getattr(_STORE_LOCK_DEPTHS, "depths", None)
+    if depths is None:
+        depths = {}
+        _STORE_LOCK_DEPTHS.depths = depths
+    return depths
 
 
 def format_facts_for_llm(facts: list[Fact]) -> str:
@@ -130,11 +157,29 @@ def _locked_store(data_dir: Path):
     lock_path = data_dir / "store.lock"
     thread_lock = _thread_lock_for(lock_path)
     with thread_lock:
+        depths = _store_lock_depths()
+        depth = depths.get(lock_path, 0)
+        if depth > 0:
+            depths[lock_path] = depth + 1
+            try:
+                yield
+            finally:
+                next_depth = depths[lock_path] - 1
+                if next_depth:
+                    depths[lock_path] = next_depth
+                else:
+                    depths.pop(lock_path, None)
+            return
+
+        depths[lock_path] = 1
         if sys.platform == "win32":
-            logger.warning(
-                "File locking not supported on Windows; store transactions are not serialized"
-            )
-            yield
+            try:
+                logger.warning(
+                    "File locking not supported on Windows; store transactions are not serialized"
+                )
+                yield
+            finally:
+                depths.pop(lock_path, None)
             return
 
         lock_fd = lock_path.open("a")
@@ -142,6 +187,7 @@ def _locked_store(data_dir: Path):
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             yield
         finally:
+            depths.pop(lock_path, None)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
 
@@ -239,11 +285,12 @@ class FactStore:
         now = datetime.now(timezone.utc)
         facts = []
         for fact in self.load_facts():
-            if fact.confidence < min_confidence:
-                continue
-            if fact.expires_at and fact.expires_at < now:
-                continue
-            if not include_stale and fact.stale:
+            if not _is_active_fact(
+                fact,
+                now,
+                include_stale=include_stale,
+                min_confidence=min_confidence,
+            ):
                 continue
             if category and fact.category != category:
                 continue
@@ -336,20 +383,22 @@ class FactStore:
 
     def append_facts(self, facts: list[Fact]) -> None:
         """Append facts to the JSONL store."""
-        with _locked_write(self.facts_path):
-            self._ensure_trailing_newline(self.facts_path)
-            with self.facts_path.open("a") as f:
-                for fact in facts:
-                    f.write(fact.model_dump_json() + "\n")
+        with _locked_store(self.data_dir):
+            with _locked_write(self.facts_path):
+                self._ensure_trailing_newline(self.facts_path)
+                with self.facts_path.open("a") as f:
+                    for fact in facts:
+                        f.write(fact.model_dump_json() + "\n")
         logger.info("Appended %d facts to store", len(facts))
 
     def append_candidates(self, candidates: list[MemoryCandidate]) -> None:
         """Append memory candidates to the queue."""
-        with _locked_write(self.candidates_path):
-            self._ensure_trailing_newline(self.candidates_path)
-            with self.candidates_path.open("a") as f:
-                for candidate in candidates:
-                    f.write(candidate.model_dump_json() + "\n")
+        with _locked_store(self.data_dir):
+            with _locked_write(self.candidates_path):
+                self._ensure_trailing_newline(self.candidates_path)
+                with self.candidates_path.open("a") as f:
+                    for candidate in candidates:
+                        f.write(candidate.model_dump_json() + "\n")
         logger.info("Appended %d memory candidate(s) to queue", len(candidates))
 
     def update_fact(self, fact_id: str, **updates) -> Fact | None:
@@ -358,81 +407,82 @@ class FactStore:
         Returns None if the fact is not found or is forgotten (confidence == 0.0),
         unless the update explicitly sets confidence (e.g. forget/restore operations).
         """
-        facts = self.load_facts()
-        updated = None
-        for i, fact in enumerate(facts):
-            if fact.id == fact_id:
-                # Refuse to edit forgotten facts unless the caller is changing confidence
-                if fact.confidence == 0.0 and "confidence" not in updates:
-                    return None
-                for key, value in updates.items():
-                    setattr(fact, key, value)
-                fact.updated_at = datetime.now(timezone.utc)
-                facts[i] = fact
-                updated = fact
-                break
+        with _locked_store(self.data_dir):
+            facts = self.load_facts()
+            updated = None
+            for i, fact in enumerate(facts):
+                if fact.id == fact_id:
+                    # Refuse to edit forgotten facts unless the caller is changing confidence
+                    if fact.confidence == 0.0 and "confidence" not in updates:
+                        return None
+                    for key, value in updates.items():
+                        setattr(fact, key, value)
+                    fact.updated_at = datetime.now(timezone.utc)
+                    facts[i] = fact
+                    updated = fact
+                    break
 
-        if updated:
-            self._rewrite(facts)
-        return updated
+            if updated:
+                self._rewrite(facts)
+            return updated
 
     def update_candidate(self, candidate_id: str, **updates) -> MemoryCandidate | None:
         """Update a candidate in-place by rewriting the candidate JSONL file."""
-        candidates = self.load_candidates()
-        updated = None
-        for i, candidate in enumerate(candidates):
-            if candidate.id == candidate_id:
-                for key, value in updates.items():
-                    setattr(candidate, key, value)
-                candidate.updated_at = datetime.now(timezone.utc)
-                candidates[i] = candidate
-                updated = candidate
-                break
+        with _locked_store(self.data_dir):
+            candidates = self.load_candidates()
+            updated = None
+            for i, candidate in enumerate(candidates):
+                if candidate.id == candidate_id:
+                    for key, value in updates.items():
+                        setattr(candidate, key, value)
+                    candidate.updated_at = datetime.now(timezone.utc)
+                    candidates[i] = candidate
+                    updated = candidate
+                    break
 
-        if updated:
-            self._rewrite(candidates, path=self.candidates_path)
-        return updated
+            if updated:
+                self._rewrite(candidates, path=self.candidates_path)
+            return updated
 
     def rename_project(self, old_project: str, new_project: str) -> int:
         """Bulk-rename the project field on all facts and candidates."""
-        # Rename in facts
-        facts = self.load_facts()
-        fact_count = 0
-        now = datetime.now(timezone.utc)
-        for i, fact in enumerate(facts):
-            if fact.project == old_project:
-                fact.project = new_project
-                fact.updated_at = now
-                facts[i] = fact
-                fact_count += 1
-        if fact_count > 0:
-            self._rewrite(facts)
-            logger.info(
-                "Renamed project %s → %s for %d fact(s)",
-                old_project,
-                new_project,
-                fact_count,
-            )
+        with _locked_store(self.data_dir):
+            facts = self.load_facts()
+            fact_count = 0
+            now = datetime.now(timezone.utc)
+            for i, fact in enumerate(facts):
+                if fact.project == old_project:
+                    fact.project = new_project
+                    fact.updated_at = now
+                    facts[i] = fact
+                    fact_count += 1
+            if fact_count > 0:
+                self._rewrite(facts)
+                logger.info(
+                    "Renamed project %s → %s for %d fact(s)",
+                    old_project,
+                    new_project,
+                    fact_count,
+                )
 
-        # Rename in candidates
-        candidates = self.load_candidates()
-        cand_count = 0
-        for i, candidate in enumerate(candidates):
-            if candidate.project == old_project:
-                candidate.project = new_project
-                candidate.updated_at = now
-                candidates[i] = candidate
-                cand_count += 1
-        if cand_count > 0:
-            self._rewrite(candidates, path=self.candidates_path)
-            logger.info(
-                "Renamed project %s → %s for %d candidate(s)",
-                old_project,
-                new_project,
-                cand_count,
-            )
+            candidates = self.load_candidates()
+            cand_count = 0
+            for i, candidate in enumerate(candidates):
+                if candidate.project == old_project:
+                    candidate.project = new_project
+                    candidate.updated_at = now
+                    candidates[i] = candidate
+                    cand_count += 1
+            if cand_count > 0:
+                self._rewrite(candidates, path=self.candidates_path)
+                logger.info(
+                    "Renamed project %s → %s for %d candidate(s)",
+                    old_project,
+                    new_project,
+                    cand_count,
+                )
 
-        return fact_count + cand_count
+            return fact_count + cand_count
 
     def batch_update_facts(self, updates: dict[str, dict]) -> list[Fact]:
         """Apply multiple fact updates in a single JSONL rewrite.
@@ -446,23 +496,24 @@ class FactStore:
         if not updates:
             return []
 
-        facts = self.load_facts()
-        now = datetime.now(timezone.utc)
-        updated: list[Fact] = []
+        with _locked_store(self.data_dir):
+            facts = self.load_facts()
+            now = datetime.now(timezone.utc)
+            updated: list[Fact] = []
 
-        for i, fact in enumerate(facts):
-            if fact.id in updates:
-                for key, value in updates[fact.id].items():
-                    setattr(fact, key, value)
-                fact.updated_at = now
-                facts[i] = fact
-                updated.append(fact)
+            for i, fact in enumerate(facts):
+                if fact.id in updates:
+                    for key, value in updates[fact.id].items():
+                        setattr(fact, key, value)
+                    fact.updated_at = now
+                    facts[i] = fact
+                    updated.append(fact)
 
-        if updated:
-            self._rewrite(facts)
-            logger.info("Batch-updated %d facts in single rewrite", len(updated))
+            if updated:
+                self._rewrite(facts)
+                logger.info("Batch-updated %d facts in single rewrite", len(updated))
 
-        return updated
+            return updated
 
     def batch_update_candidates(
         self, updates: dict[str, dict]
@@ -478,25 +529,28 @@ class FactStore:
         if not updates:
             return []
 
-        candidates = self.load_candidates()
-        now = datetime.now(timezone.utc)
-        updated: list[MemoryCandidate] = []
+        with _locked_store(self.data_dir):
+            candidates = self.load_candidates()
+            now = datetime.now(timezone.utc)
+            updated: list[MemoryCandidate] = []
 
-        for i, candidate in enumerate(candidates):
-            if candidate.id in updates:
-                for key, value in updates[candidate.id].items():
-                    if key == "status":
-                        value = CandidateStatus(value)
-                    setattr(candidate, key, value)
-                candidate.updated_at = now
-                candidates[i] = candidate
-                updated.append(candidate)
+            for i, candidate in enumerate(candidates):
+                if candidate.id in updates:
+                    for key, value in updates[candidate.id].items():
+                        if key == "status":
+                            value = CandidateStatus(value)
+                        setattr(candidate, key, value)
+                    candidate.updated_at = now
+                    candidates[i] = candidate
+                    updated.append(candidate)
 
-        if updated:
-            self._rewrite(candidates, path=self.candidates_path)
-            logger.info("Batch-updated %d candidates in single rewrite", len(updated))
+            if updated:
+                self._rewrite(candidates, path=self.candidates_path)
+                logger.info(
+                    "Batch-updated %d candidates in single rewrite", len(updated)
+                )
 
-        return updated
+            return updated
 
     def forget(self, fact_id: str, reason: str = "") -> Fact | None:
         """Soft-delete a fact by setting confidence to 0."""
@@ -525,31 +579,40 @@ class FactStore:
         Returns the new fact, or ``None`` if the original fact was not found
         or was already forgotten.
         """
-        existing = next((f for f in self.load_facts() if f.id == fact_id), None)
-        if existing is None or existing.confidence == 0.0:
-            return None
+        with _locked_store(self.data_dir):
+            facts = self.load_facts()
+            existing_index = next(
+                (i for i, fact in enumerate(facts) if fact.id == fact_id), None
+            )
+            if existing_index is None:
+                return None
 
-        now = datetime.now(timezone.utc)
-        new_fact = Fact(
-            id=uuid4().hex[:12],
-            category=category or existing.category,
-            content=new_content,
-            source=existing.source,
-            confidence=existing.confidence,
-            created_at=now,
-            updated_at=now,
-            observed_at=now,
-            project=project if project is not None else existing.project,
-            tags=tags if tags is not None else list(existing.tags),
-            supersedes=fact_id,
-            evidence_kind=existing.evidence_kind,
-            why_store=reason or existing.why_store,
-        )
-        self.append_facts([new_fact])
-        # Mark the old fact superseded by reducing its confidence so default
-        # recall paths (min_confidence=0.1) skip it. Audit trail is preserved
-        # via the supersedes link on the new fact.
-        self.update_fact(fact_id, confidence=0.05)
+            existing = facts[existing_index]
+            if existing.confidence == 0.0:
+                return None
+
+            now = datetime.now(timezone.utc)
+            new_fact = Fact(
+                id=uuid4().hex[:12],
+                category=category or existing.category,
+                content=new_content,
+                source=existing.source,
+                confidence=existing.confidence,
+                created_at=now,
+                updated_at=now,
+                observed_at=now,
+                project=project if project is not None else existing.project,
+                tags=tags if tags is not None else list(existing.tags),
+                supersedes=fact_id,
+                evidence_kind=existing.evidence_kind,
+                why_store=reason or existing.why_store,
+            )
+            existing.confidence = 0.05
+            existing.updated_at = now
+            facts[existing_index] = existing
+            facts.append(new_fact)
+            self._rewrite(facts)
+
         self.log_ingestion(
             IngestionRecord(
                 source="correct_fact",
@@ -589,41 +652,47 @@ class FactStore:
         if len(unique_ids) < 2:
             return None
 
-        all_facts = {f.id: f for f in self.load_facts()}
-        sources: list[Fact] = []
-        for sid in unique_ids:
-            fact = all_facts.get(sid)
-            if fact is None or fact.confidence == 0.0:
+        with _locked_store(self.data_dir):
+            facts = self.load_facts()
+            by_id = {fact.id: (i, fact) for i, fact in enumerate(facts)}
+            sources: list[Fact] = []
+            source_indexes: list[int] = []
+            for sid in unique_ids:
+                matched = by_id.get(sid)
+                if matched is None:
+                    return None
+                index, fact = matched
+                if fact.confidence == 0.0:
+                    return None
+                sources.append(fact)
+                source_indexes.append(index)
+
+            scopes = {fact.project for fact in sources}
+            if len(scopes) > 1:
                 return None
-            sources.append(fact)
 
-        # Same project scope across sources or merge is ambiguous.
-        scopes = {f.project for f in sources}
-        if len(scopes) > 1:
-            return None
-
-        primary = sources[0]
-        now = datetime.now(timezone.utc)
-        new_fact = Fact(
-            id=uuid4().hex[:12],
-            category=category or primary.category,
-            content=merged_content,
-            source=primary.source,
-            confidence=max(f.confidence for f in sources),
-            created_at=now,
-            updated_at=now,
-            observed_at=now,
-            project=project if project is not None else primary.project,
-            tags=tags if tags is not None else list(primary.tags),
-            supersedes=primary.id,
-            evidence_kind=primary.evidence_kind,
-            why_store=reason or "merged",
-        )
-        self.append_facts([new_fact])
-
-        # Reduce confidence on every source so they fall out of active recall.
-        updates = {sid: {"confidence": 0.05} for sid in unique_ids}
-        self.batch_update_facts(updates)
+            primary = sources[0]
+            now = datetime.now(timezone.utc)
+            new_fact = Fact(
+                id=uuid4().hex[:12],
+                category=category or primary.category,
+                content=merged_content,
+                source=primary.source,
+                confidence=max(f.confidence for f in sources),
+                created_at=now,
+                updated_at=now,
+                observed_at=now,
+                project=project if project is not None else primary.project,
+                tags=tags if tags is not None else list(primary.tags),
+                supersedes=primary.id,
+                evidence_kind=primary.evidence_kind,
+                why_store=reason or "merged",
+            )
+            for index in source_indexes:
+                facts[index].confidence = 0.05
+                facts[index].updated_at = now
+            facts.append(new_fact)
+            self._rewrite(facts)
 
         self.log_ingestion(
             IngestionRecord(
@@ -677,17 +746,18 @@ class FactStore:
         self, candidate_ids: list[str], reason: str = ""
     ) -> list[MemoryCandidate]:
         """Reject candidates without promoting them into active facts."""
-        pending_candidates = {
-            c.id: c for c in self.load_candidates(status=CandidateStatus.pending)
-        }
-        updates: dict[str, dict] = {}
-        for candidate_id in candidate_ids:
-            if candidate_id in pending_candidates:
-                updates[candidate_id] = {
-                    "status": CandidateStatus.rejected,
-                    "review_note": reason,
-                }
-        return self.batch_update_candidates(updates)
+        with _locked_store(self.data_dir):
+            pending_candidates = {
+                c.id: c for c in self.load_candidates(status=CandidateStatus.pending)
+            }
+            updates: dict[str, dict] = {}
+            for candidate_id in candidate_ids:
+                if candidate_id in pending_candidates:
+                    updates[candidate_id] = {
+                        "status": CandidateStatus.rejected,
+                        "review_note": reason,
+                    }
+            return self.batch_update_candidates(updates)
 
     def recover_transactions(self) -> int:
         """Roll forward any prepared store transactions that lack a commit marker."""
@@ -838,41 +908,36 @@ class FactStore:
 
         Returns counts of purged and retained facts.
         """
-        facts = self.load_facts()
-        now = datetime.now(timezone.utc)
-        kept = []
-        purged = 0
-        for fact in facts:
-            is_forgotten = fact.confidence < MIN_ACTIVE_CONFIDENCE
-            is_expired = fact.expires_at is not None and fact.expires_at < now
-            if is_forgotten or is_expired:
-                purged += 1
-            else:
-                kept.append(fact)
+        with _locked_store(self.data_dir):
+            facts = self.load_facts()
+            now = datetime.now(timezone.utc)
+            kept = []
+            purged = 0
+            for fact in facts:
+                is_forgotten = fact.confidence < MIN_ACTIVE_CONFIDENCE
+                is_expired = _is_expired_fact(fact, now)
+                if is_forgotten or is_expired:
+                    purged += 1
+                else:
+                    kept.append(fact)
 
-        if purged > 0:
-            self._rewrite(kept)
-            logger.info("Purged %d facts (%d retained)", purged, len(kept))
+            if purged > 0:
+                self._rewrite(kept)
+                logger.info("Purged %d facts (%d retained)", purged, len(kept))
 
-        return {"purged": purged, "retained": len(kept)}
+            return {"purged": purged, "retained": len(kept)}
 
     def stats(self) -> dict:
         """Get store statistics."""
         facts = self.load_facts()
         now = datetime.now(timezone.utc)
-        active = [
-            f
-            for f in facts
-            if f.confidence >= MIN_ACTIVE_CONFIDENCE
-            and not (f.expires_at and f.expires_at < now)
-        ]
+        active = [f for f in facts if _is_active_fact(f, now)]
         forgotten = [f for f in facts if f.confidence < MIN_ACTIVE_CONFIDENCE]
         expired = [
             f
             for f in facts
             if f.confidence >= MIN_ACTIVE_CONFIDENCE
-            and f.expires_at
-            and f.expires_at < now
+            and _is_expired_fact(f, now)
         ]
         by_category = Counter(f.category.value for f in active)
         by_project = Counter(f.project or "(none)" for f in active)
