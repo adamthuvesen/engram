@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from engram.dashboard.constants import MIN_ACTIVE_CONFIDENCE, NO_PROJECT_LABEL
 from engram.models import CandidateStatus, Fact, MemoryCandidate
-from engram.store import FactStore
+from engram.store import FactStore, _is_active_fact, _is_expired_fact
 
 
 @dataclass
@@ -83,12 +83,11 @@ def load_dashboard_data(store: FactStore | None = None) -> DashboardData:
 
     for fact in data.all_facts:
         is_forgotten = fact.confidence < MIN_ACTIVE_CONFIDENCE
-        is_expired = fact.expires_at is not None and fact.expires_at < now
         if is_forgotten:
             data.forgotten_facts.append(fact)
-        elif is_expired:
+        elif _is_expired_fact(fact, now):
             data.expired_facts.append(fact)
-        else:
+        elif _is_active_fact(fact, now):
             data.active_facts.append(fact)
 
     data.total = len(data.all_facts)
@@ -198,12 +197,11 @@ def _compute_project_health(data: DashboardData, now: datetime) -> None:
         supersedes_ids = set()
         for f in facts:
             is_forgotten = f.confidence < MIN_ACTIVE_CONFIDENCE
-            is_expired = f.expires_at is not None and f.expires_at < now
             if is_forgotten:
                 health.forgotten += 1
-            elif is_expired:
+            elif _is_expired_fact(f, now):
                 health.expired += 1
-            else:
+            elif _is_active_fact(f, now):
                 health.active += 1
                 cat = f.category.value
                 health.categories[cat] = health.categories.get(cat, 0) + 1

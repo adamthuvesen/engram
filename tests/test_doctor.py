@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from engram import server
@@ -152,6 +153,7 @@ def test_doctor_skips_provider_by_default():
 
 def test_doctor_counts_active_stale_forgotten():
     store = _make_store()
+    past = datetime.now(timezone.utc) - timedelta(days=1)
     store.append_facts(
         [
             Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a"),
@@ -166,6 +168,12 @@ def test_doctor_counts_active_stale_forgotten():
                 category=FactCategory.preference,
                 content="c",
                 confidence=0.0,
+            ),
+            Fact(
+                id="dddddddddddd",
+                category=FactCategory.preference,
+                content="d",
+                expires_at=past,
             ),
         ]
     )

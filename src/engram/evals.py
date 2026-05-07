@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -163,27 +163,27 @@ async def run_fixture(
                 skip_reason="provider mode disabled (set ENGRAM_EVAL_PROVIDER=1)",
             )
 
-    tmp = Path(tempfile.mkdtemp())
-    store = FactStore(data_dir=tmp)
-    facts = _materialize_facts(fixture.facts)
-    if facts:
-        store.append_facts(facts)
+    with TemporaryDirectory() as tmp_dir:
+        store = FactStore(data_dir=Path(tmp_dir))
+        facts = _materialize_facts(fixture.facts)
+        if facts:
+            store.append_facts(facts)
 
-    import engram.retriever as retriever_mod
+        import engram.retriever as retriever_mod
 
-    saved = retriever_mod.complete_with_usage
-    # Tier-0 evals run without LLM calls; only patch when tier-1/2 mocks exist.
-    if fixture.mode == "deterministic" and fixture.mocked_responses:
-        _patch_completions(retriever_mod, fixture.mocked_responses)
+        saved = retriever_mod.complete_with_usage
+        # Tier-0 evals run without LLM calls; only patch when tier-1/2 mocks exist.
+        if fixture.mode == "deterministic" and fixture.mocked_responses:
+            _patch_completions(retriever_mod, fixture.mocked_responses)
 
-    try:
-        answer, quality, provenance, _ = await recall_with_provenance(
-            fixture.query,
-            project=fixture.project,
-            store=store,
-        )
-    finally:
-        retriever_mod.complete_with_usage = saved
+        try:
+            answer, quality, provenance, _ = await recall_with_provenance(
+                fixture.query,
+                project=fixture.project,
+                store=store,
+            )
+        finally:
+            retriever_mod.complete_with_usage = saved
 
     checks: list[EvalCheck] = []
 
