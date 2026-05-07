@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 from engram.config import get_settings
 from engram.evals import (
     EvalBudget,
@@ -190,6 +193,49 @@ def test_provider_eval_runs_when_enabled(monkeypatch):
     result = run_fixture_sync(fixture, enable_provider=True)
     assert result.skipped is False
     assert result.passed is True
+
+
+def test_eval_fixture_temp_store_is_cleaned_up(monkeypatch):
+    tracked_path: Path | None = None
+    exited = False
+
+    class TrackingTemporaryDirectory:
+        def __init__(self):
+            nonlocal tracked_path
+            self._tmp = TemporaryDirectory()
+            tracked_path = Path(self._tmp.name)
+
+        def __enter__(self):
+            return self._tmp.__enter__()
+
+        def __exit__(self, exc_type, exc, tb):
+            nonlocal exited
+            exited = True
+            return self._tmp.__exit__(exc_type, exc, tb)
+
+    monkeypatch.setattr("engram.evals.TemporaryDirectory", TrackingTemporaryDirectory)
+
+    fixture = EvalFixture(
+        name="cleanup",
+        query="prefers tabs",
+        facts=[
+            EvalFactSpec(
+                id="aaaaaaaaaaaa",
+                category=FactCategory.preference,
+                content="prefers tabs",
+                tags=["tabs"],
+            )
+        ],
+        expected_source_ids=["aaaaaaaaaaaa"],
+        budget=EvalBudget(max_tier=0, max_llm_calls=0),
+    )
+
+    result = run_fixture_sync(fixture)
+
+    assert result.passed is True
+    assert exited is True
+    assert tracked_path is not None
+    assert not tracked_path.exists()
 
 
 # ---------------------------------------------------------------------------

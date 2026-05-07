@@ -32,7 +32,7 @@ from engram.models import (
     StoreTransaction,
     TransactionStatus,
 )
-from engram.store import AsyncFactStore, FactStore
+from engram.store import AsyncFactStore, FactStore, _is_active_fact
 
 logger = logging.getLogger(__name__)
 
@@ -422,12 +422,11 @@ def run_doctor(
     else:
         status = "ok"
 
+    now = datetime.now(timezone.utc)
     counts: dict[str, int] = {
         "facts_valid": facts_valid,
         "candidates_valid": candidates_valid,
-        "active_facts": sum(
-            1 for f in facts if f.confidence >= MIN_ACTIVE_CONFIDENCE and not f.stale
-        ),
+        "active_facts": sum(1 for f in facts if _is_active_fact(f, now)),
         "stale_facts": sum(1 for f in facts if f.stale),
         "forgotten_facts": sum(1 for f in facts if f.confidence == 0.0),
         "issues": len(issues),
