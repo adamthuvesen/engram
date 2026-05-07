@@ -7,6 +7,8 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from engram import server
 from engram.models import Fact, FactCategory
 from engram.store import AsyncFactStore, FactStore
@@ -72,6 +74,60 @@ def test_correct_fact_returns_none_for_forgotten():
     )
     store.append_facts([fact])
     assert store.correct_fact("forgottenfac", "y") is None
+
+
+def test_correct_fact_rewrite_failure_leaves_original_active(monkeypatch):
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="oldaaaaaaaaa",
+                category=FactCategory.preference,
+                content="prefers vim",
+            )
+        ]
+    )
+
+    def fail_rewrite(records, path=None):
+        raise OSError("rewrite failed")
+
+    monkeypatch.setattr(store, "_rewrite", fail_rewrite)
+
+    with pytest.raises(OSError, match="rewrite failed"):
+        store.correct_fact("oldaaaaaaaaa", "prefers neovim")
+
+    active = store.load_active_facts()
+    assert len(active) == 1
+    assert active[0].id == "oldaaaaaaaaa"
+    assert active[0].content == "prefers vim"
+
+
+def test_correct_fact_log_failure_keeps_single_active_replacement(monkeypatch):
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="oldaaaaaaaaa",
+                category=FactCategory.preference,
+                content="prefers vim",
+            )
+        ]
+    )
+
+    def fail_log(record):
+        raise OSError("audit failed")
+
+    monkeypatch.setattr(store, "log_ingestion", fail_log)
+
+    with pytest.raises(OSError, match="audit failed"):
+        store.correct_fact("oldaaaaaaaaa", "prefers neovim")
+
+    active = store.load_active_facts()
+    assert len(active) == 1
+    assert active[0].id != "oldaaaaaaaaa"
+    assert active[0].content == "prefers neovim"
+    old = next(f for f in store.load_facts() if f.id == "oldaaaaaaaaa")
+    assert old.confidence == 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +207,54 @@ def test_merge_rejects_mixed_projects():
         ]
     )
     assert store.merge_facts(["aaaaaaaaaaaa", "bbbbbbbbbbbb"], "merged") is None
+
+
+def test_merge_facts_rewrite_failure_leaves_sources_active(monkeypatch):
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(id="srcaaaaaaaaa", category=FactCategory.preference, content="a"),
+            Fact(id="srcbbbbbbbbb", category=FactCategory.preference, content="b"),
+        ]
+    )
+
+    def fail_rewrite(records, path=None):
+        raise OSError("rewrite failed")
+
+    monkeypatch.setattr(store, "_rewrite", fail_rewrite)
+
+    with pytest.raises(OSError, match="rewrite failed"):
+        store.merge_facts(["srcaaaaaaaaa", "srcbbbbbbbbb"], "merged")
+
+    active_ids = {fact.id for fact in store.load_active_facts()}
+    assert active_ids == {"srcaaaaaaaaa", "srcbbbbbbbbb"}
+
+
+def test_merge_facts_log_failure_keeps_single_active_replacement(monkeypatch):
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(id="srcaaaaaaaaa", category=FactCategory.preference, content="a"),
+            Fact(id="srcbbbbbbbbb", category=FactCategory.preference, content="b"),
+        ]
+    )
+
+    def fail_log(record):
+        raise OSError("audit failed")
+
+    monkeypatch.setattr(store, "log_ingestion", fail_log)
+
+    with pytest.raises(OSError, match="audit failed"):
+        store.merge_facts(["srcaaaaaaaaa", "srcbbbbbbbbb"], "merged")
+
+    active = store.load_active_facts()
+    assert len(active) == 1
+    assert active[0].content == "merged"
+    inactive = {
+        fact.id: fact for fact in store.load_facts() if fact.id != active[0].id
+    }
+    assert inactive["srcaaaaaaaaa"].confidence == 0.05
+    assert inactive["srcbbbbbbbbb"].confidence == 0.05
 
 
 # ---------------------------------------------------------------------------

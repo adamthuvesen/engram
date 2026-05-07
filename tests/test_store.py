@@ -1,8 +1,10 @@
 """Tests for the JSONL fact store."""
 
 import asyncio
-import time
 import tempfile
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -115,20 +117,78 @@ def test_update_fact():
 
 def test_stats():
     store = _make_store()
+    past = datetime.now(timezone.utc) - timedelta(days=1)
     store.append_facts(
         [
             Fact(category=FactCategory.preference, content="Pref 1"),
             Fact(category=FactCategory.personal_info, content="Info 1"),
             Fact(category=FactCategory.preference, content="Pref 2", confidence=0.0),
+            Fact(category=FactCategory.preference, content="Stale", stale=True),
+            Fact(category=FactCategory.workflow, content="Expired", expires_at=past),
         ]
     )
 
     stats = store.stats()
-    assert stats["total_facts"] == 3
+    assert stats["total_facts"] == 5
     assert stats["active_facts"] == 2
     assert stats["forgotten_facts"] == 1
+    assert stats["expired_facts"] == 1
     assert stats["by_category"]["preference"] == 1
     assert stats["by_category"]["personal_info"] == 1
+    assert "workflow" not in stats["by_category"]
+
+
+def test_update_fact_does_not_overwrite_concurrent_append():
+    store = _make_store()
+    original = Fact(
+        id="aaaaaaaaaaaa",
+        category=FactCategory.preference,
+        content="Original",
+    )
+    appended = Fact(
+        id="bbbbbbbbbbbb",
+        category=FactCategory.workflow,
+        content="Concurrent append",
+    )
+    store.append_facts([original])
+
+    original_rewrite = store._rewrite
+    rewrite_started = threading.Event()
+    allow_rewrite = threading.Event()
+    errors: list[BaseException] = []
+
+    def slow_rewrite(records, path=None):
+        rewrite_started.set()
+        assert allow_rewrite.wait(timeout=2)
+        return original_rewrite(records, path=path)
+
+    store._rewrite = slow_rewrite
+
+    def update_fact():
+        try:
+            store.update_fact("aaaaaaaaaaaa", content="Updated")
+        except BaseException as exc:
+            errors.append(exc)
+
+    update_thread = threading.Thread(target=update_fact)
+    update_thread.start()
+    assert rewrite_started.wait(timeout=2)
+
+    append_thread = threading.Thread(target=lambda: store.append_facts([appended]))
+    append_thread.start()
+    time.sleep(0.05)
+    allow_rewrite.set()
+
+    update_thread.join(timeout=2)
+    append_thread.join(timeout=2)
+
+    assert not update_thread.is_alive()
+    assert not append_thread.is_alive()
+    assert errors == []
+
+    facts = {fact.id: fact for fact in store.load_facts()}
+    assert facts["aaaaaaaaaaaa"].content == "Updated"
+    assert facts["bbbbbbbbbbbb"].content == "Concurrent append"
 
 
 def test_candidate_approval_promotes_fact():
