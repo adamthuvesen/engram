@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from engram import cli
 from engram.config import get_settings
-from engram.models import Fact, FactCategory
+from engram.models import Fact, FactCategory, RecallRecord
+from engram.store import FactStore
 
 
 @pytest.fixture
@@ -24,8 +26,6 @@ def cli_env(monkeypatch):
 
 
 def _seed(tmp: Path, facts: list[Fact]) -> None:
-    from engram.store import FactStore
-
     store = FactStore(data_dir=tmp)
     store.append_facts(facts)
 
@@ -93,6 +93,30 @@ def test_cli_doctor_json_with_corrupt_jsonl(cli_env, capsys):
     assert "facts_jsonl_corrupt" in codes
 
 
+def test_cli_doctor_repairs_orphaned_supersessions(cli_env, capsys):
+    store = FactStore(data_dir=cli_env)
+    store.append_facts(
+        [
+            Fact(
+                id="orphanaaaaaa",
+                category=FactCategory.preference,
+                content="orphan",
+                supersedes="missingmissi",
+            )
+        ]
+    )
+
+    exit_code = cli.run(
+        ["doctor", "--repair", "--repair-orphaned-supersessions", "--json"]
+    )
+    parsed = json.loads(capsys.readouterr().out)
+    repaired = FactStore(data_dir=cli_env).load_facts()[0]
+
+    assert exit_code == cli.EXIT_OK
+    assert parsed["data"]["repair"]["orphaned_supersessions"]["cleared"] == 1
+    assert repaired.supersedes is None
+
+
 # ---------------------------------------------------------------------------
 # correct
 # ---------------------------------------------------------------------------
@@ -120,6 +144,47 @@ def test_cli_correct_json_not_found(cli_env, capsys):
     parsed = json.loads(capsys.readouterr().out)
     assert exit_code == cli.EXIT_NOT_FOUND
     assert parsed["errors"][0]["code"] == "not_found"
+
+
+def test_cli_recall_stats_aggregate_and_include_records(cli_env, capsys):
+    store = FactStore(data_dir=cli_env)
+    now = datetime.now(timezone.utc)
+    store.log_recall(
+        RecallRecord(
+            query="old",
+            tier=0,
+            prefilter_count=1,
+            latency_ms=10,
+            timestamp=now - timedelta(days=2),
+        )
+    )
+    store.log_recall(
+        RecallRecord(
+            query="new",
+            tier=1,
+            prefilter_count=2,
+            latency_ms=20,
+            timestamp=now,
+        )
+    )
+
+    exit_code = cli.run(["recall-stats", "--json", "--limit", "1"])
+    aggregate = json.loads(capsys.readouterr().out)
+    records_exit = cli.run(
+        [
+            "recall-stats",
+            "--json",
+            "--include-records",
+            "--since",
+            (now - timedelta(days=1)).isoformat(),
+        ]
+    )
+    with_records = json.loads(capsys.readouterr().out)
+
+    assert exit_code == records_exit == cli.EXIT_OK
+    assert aggregate["data"]["total_queries"] == 1
+    assert "records" not in aggregate["data"]
+    assert with_records["data"]["records"][0]["query"] == "new"
 
 
 # ---------------------------------------------------------------------------

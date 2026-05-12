@@ -12,9 +12,7 @@ from engram.retriever import (
     _format_direct,
     _parse_multilens_sections,
     _resolve_tier2_mode,
-    _resolve_tier_rules,
     _select_tier,
-    _unknown_tier_rules_warned,
 )
 from engram.store import AsyncFactStore, FactStore
 
@@ -190,83 +188,40 @@ def test_recall_tier0_logs_to_store():
     assert records[0].quality == "high"
 
 
-def test_resolve_tier_rules_valid():
-    assert _resolve_tier_rules("v1") == "v1"
-    assert _resolve_tier_rules("v2") == "v2"
-
-
 def test_resolve_tier2_mode_valid():
     assert _resolve_tier2_mode("multilens") == "multilens"
     assert _resolve_tier2_mode("single") == "single"
     assert _resolve_tier2_mode("nonsense") == "multilens"
 
 
-def test_resolve_tier_rules_unknown_falls_back_with_single_warning(caplog):
-    _unknown_tier_rules_warned.clear()
-    with caplog.at_level("WARNING", logger="engram.retriever"):
-        assert _resolve_tier_rules("v99") == "v2"
-    assert any("v99" in rec.message for rec in caplog.records)
-    caplog.clear()
-    with caplog.at_level("WARNING", logger="engram.retriever"):
-        assert _resolve_tier_rules("v99") == "v2"
-    assert not caplog.records
-
-
-def test_select_tier_v2_caps_small_corpus_to_tier_1():
-    """v2 demotes would-be-tier-2 queries with < threshold positive scores."""
-    # Flat distribution over 8 facts → would be tier 2 under v1.
+def test_select_tier_caps_small_corpus_to_tier_1():
+    """The small-corpus cap demotes would-be-tier-2 queries below threshold."""
+    # Flat distribution over 8 facts would be tier 2 without the cap.
     scored = [
         (12, Fact(category=FactCategory.preference, content=f"fact {i}"))
         for i in range(8)
     ]
-    assert _select_tier(scored, rules="v1") == 2
-    assert _select_tier(scored, rules="v2", min_prefilter_for_tier2=11) == 1
+    assert _select_tier(scored, min_prefilter_for_tier2=0) == 2
+    assert _select_tier(scored, min_prefilter_for_tier2=11) == 1
 
 
-def test_select_tier_v2_preserves_tier_0():
+def test_select_tier_cap_preserves_tier_0():
     """The cap never promotes tier-0 decisions to tier-1."""
     scored = [
         (15, Fact(category=FactCategory.personal_info, content="only fact")),
     ]
-    assert _select_tier(scored, rules="v2", min_prefilter_for_tier2=11) == 0
+    assert _select_tier(scored, min_prefilter_for_tier2=11) == 0
 
 
-def test_select_tier_v2_large_corpus_unchanged():
-    """Above the threshold, v2 returns the same tier as v1."""
+def test_select_tier_large_corpus_unchanged_by_cap():
+    """Above the threshold, the cap does not change tier selection."""
     scored = [
         (12, Fact(category=FactCategory.preference, content=f"fact {i}"))
         for i in range(20)
     ]
-    v1 = _select_tier(scored, rules="v1")
-    v2 = _select_tier(scored, rules="v2", min_prefilter_for_tier2=11)
-    assert v1 == v2 == 2
-
-
-def test_select_tier_v1_matches_legacy_behaviour():
-    """v1 branch must return the same tier as the pre-v2 selector on a suite
-    of representative score distributions."""
-    cases = [
-        [],
-        [(3, Fact(category=FactCategory.preference, content="noise"))],
-        [
-            (20, Fact(category=FactCategory.personal_info, content="one")),
-            (8, Fact(category=FactCategory.preference, content="two")),
-        ],
-        [(25, Fact(category=FactCategory.preference, content="winner"))]
-        + [
-            (8, Fact(category=FactCategory.preference, content=f"n{i}"))
-            for i in range(20)
-        ],
-        [
-            (12, Fact(category=FactCategory.preference, content=f"f{i}"))
-            for i in range(20)
-        ],
-    ]
-    # v1 should always match itself regardless of min_prefilter_for_tier2.
-    for case in cases:
-        assert _select_tier(
-            case, rules="v1", min_prefilter_for_tier2=99
-        ) == _select_tier(case)
+    uncapped = _select_tier(scored, min_prefilter_for_tier2=0)
+    capped = _select_tier(scored, min_prefilter_for_tier2=11)
+    assert uncapped == capped == 2
 
 
 def test_select_tier_threshold_zero_disables_cap():
@@ -275,11 +230,11 @@ def test_select_tier_threshold_zero_disables_cap():
         (12, Fact(category=FactCategory.preference, content=f"fact {i}"))
         for i in range(5)
     ]
-    assert _select_tier(scored, rules="v2", min_prefilter_for_tier2=0) == 2
+    assert _select_tier(scored, min_prefilter_for_tier2=0) == 2
 
 
-def test_recall_stamps_selector_version(monkeypatch):
-    """Default recall stamps v2 on the log; tier-rule flag stamps v1."""
+def test_recall_stamps_selector_version():
+    """Recall logs keep selector_version='v2' for stats continuity."""
     from engram.config import get_settings
 
     store = _make_store()
@@ -300,17 +255,6 @@ def test_recall_stamps_selector_version(monkeypatch):
     asyncio.run(recall("zagblort xylophone", store=store))
     records = store.load_recall_log()
     assert records[0].selector_version == "v2"
-
-    monkeypatch.setenv("ENGRAM_TIER_RULES", "v1")
-    get_settings.cache_clear()
-    try:
-        asyncio.run(recall("zagblort xylophone", store=store))
-    finally:
-        monkeypatch.delenv("ENGRAM_TIER_RULES", raising=False)
-        get_settings.cache_clear()
-    records = store.load_recall_log()
-    # Most recent first
-    assert records[0].selector_version == "v1"
 
 
 def _flat_tier2_facts(store: FactStore, count: int = 15) -> None:

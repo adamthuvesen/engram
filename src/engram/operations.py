@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from engram.config import get_settings
 from engram.doctor import check_provider, repair_store, run_doctor
@@ -924,6 +925,7 @@ async def doctor(
     repair: bool = False,
     repair_jsonl: bool = False,
     recover_transactions: bool = False,
+    repair_orphaned_supersessions: bool = False,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
     store_obj = async_store(store)
@@ -937,11 +939,17 @@ async def doctor(
     )
 
     repair_summary = None
-    if repair and (repair_jsonl or recover_transactions):
+    repair_requested = (
+        repair or repair_jsonl or recover_transactions or repair_orphaned_supersessions
+    )
+    if repair_requested and (
+        repair_jsonl or recover_transactions or repair_orphaned_supersessions
+    ):
         repair_summary = repair_store(
             store_obj,
             repair_jsonl=repair_jsonl,
             recover_transactions=recover_transactions,
+            repair_orphaned_supersessions=repair_orphaned_supersessions,
         )
 
     text_lines = [f"Doctor: {report.status}"]
@@ -982,15 +990,18 @@ async def memory_stats(
         for proj, count in stats["by_project"].items():
             lines.append(f"- {proj}: {count}")
 
-    return OperationResult(envelope=Envelope.success(data=stats), text="\n".join(lines))
+    return OperationResult(
+        envelope=Envelope.success(data=stats),
+        text="\n".join(lines),
+    )
 
 
-def _format_recall_summary(records: list[RecallRecord], heading: str) -> list[str]:
+def _recall_stats_payload(records: list[RecallRecord]) -> dict:
     total = len(records)
     tier_counts = Counter(r.tier for r in records)
     quality_counts = Counter(r.quality for r in records if r.quality)
     latencies = [r.latency_ms for r in records]
-    avg_latency = sum(latencies) / total
+    avg_latency = sum(latencies) / total if total else 0.0
 
     tier_latency: dict[int, list[float]] = {}
     for r in records:
@@ -1003,6 +1014,42 @@ def _format_recall_summary(records: list[RecallRecord], heading: str) -> list[st
     sum_input = sum(input_totals)
     sum_cached = sum(cached_totals)
     cache_hit_ratio = (sum_cached / sum_input) if sum_input > 0 else None
+    selector_versions = sorted(
+        {r.selector_version for r in records if r.selector_version}
+    )
+
+    return {
+        "total_queries": total,
+        "selector_versions": selector_versions,
+        "avg_latency_ms": avg_latency,
+        "by_tier": {
+            str(tier): {
+                "count": count,
+                "percent": count / total * 100 if total else 0.0,
+                "avg_latency_ms": sum(tier_latency[tier]) / count,
+            }
+            for tier, count in sorted(tier_counts.items())
+        },
+        "by_quality": {
+            quality: {
+                "count": count,
+                "percent": count / total * 100 if total else 0.0,
+            }
+            for quality, count in sorted(quality_counts.items())
+        },
+        "token_usage": {
+            "llm_calls": total_llm_calls if llm_call_totals else None,
+            "input_tokens": sum_input if input_totals else None,
+            "cached_input_tokens": sum_cached if cached_totals else None,
+            "cache_hit_ratio": cache_hit_ratio,
+        },
+    }
+
+
+def _format_recall_summary(records: list[RecallRecord], heading: str) -> list[str]:
+    payload = _recall_stats_payload(records)
+    total = payload["total_queries"]
+    avg_latency = payload["avg_latency_ms"]
 
     lines = [
         f"{heading}",
@@ -1010,54 +1057,114 @@ def _format_recall_summary(records: list[RecallRecord], heading: str) -> list[st
         f"**Avg latency:** {avg_latency:.0f}ms\n",
         "## By Tier",
     ]
-    for tier in sorted(tier_counts):
-        count = tier_counts[tier]
-        avg = sum(tier_latency[tier]) / count
-        pct = count / total * 100
+    for tier, stats in payload["by_tier"].items():
+        count = stats["count"]
+        avg = stats["avg_latency_ms"]
+        pct = stats["percent"]
         lines.append(f"- Tier {tier}: {count} ({pct:.0f}%) — avg {avg:.0f}ms")
 
-    if quality_counts:
+    if payload["by_quality"]:
         lines.append("\n## By Quality")
         for quality in ("high", "medium", "low", "none"):
-            if quality in quality_counts:
-                count = quality_counts[quality]
-                pct = count / total * 100
+            if quality in payload["by_quality"]:
+                count = payload["by_quality"][quality]["count"]
+                pct = payload["by_quality"][quality]["percent"]
                 lines.append(f"- {quality}: {count} ({pct:.0f}%)")
 
+    token_usage = payload["token_usage"]
     lines.append("\n## Token Usage")
+    llm_calls = token_usage["llm_calls"]
     lines.append(
-        f"- LLM calls (reported): {total_llm_calls if llm_call_totals else '-'}"
+        f"- LLM calls (reported): {llm_calls if llm_calls is not None else '-'}"
     )
     lines.append(
-        f"- Input tokens: {sum_input:,}" if input_totals else "- Input tokens: -"
+        f"- Input tokens: {token_usage['input_tokens']:,}"
+        if token_usage["input_tokens"] is not None
+        else "- Input tokens: -"
     )
     lines.append(
-        f"- Cached input tokens: {sum_cached:,}"
-        if cached_totals
+        f"- Cached input tokens: {token_usage['cached_input_tokens']:,}"
+        if token_usage["cached_input_tokens"] is not None
         else "- Cached input tokens: -"
     )
-    if cache_hit_ratio is not None:
-        lines.append(f"- Cache hit ratio: {cache_hit_ratio * 100:.1f}%")
+    if token_usage["cache_hit_ratio"] is not None:
+        lines.append(
+            f"- Cache hit ratio: {token_usage['cache_hit_ratio'] * 100:.1f}%"
+        )
     else:
         lines.append("- Cache hit ratio: -")
     return lines
 
 
+def _parse_since(value: str | datetime | None) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("since must be an ISO-8601 datetime or date") from exc
+    if parsed and parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 async def recall_stats(
+    *,
+    limit: int = 500,
+    since: str | datetime | None = None,
+    include_records: bool = False,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    records = await async_store(store).load_recall_log(limit=500)
+    if limit < 1:
+        return OperationResult(
+            envelope=Envelope.failure(
+                validation_error("limit must be greater than zero")
+            ),
+            text="limit must be greater than zero",
+            exit_code=EXIT_VALIDATION,
+        )
+
+    try:
+        since_dt = _parse_since(since)
+    except ValueError as exc:
+        return OperationResult(
+            envelope=Envelope.failure(
+                validation_error(str(exc), details={"parameter": "since"})
+            ),
+            text=str(exc),
+            exit_code=EXIT_VALIDATION,
+        )
+
+    all_records = await async_store(store).load_recall_log(limit=None)
+    filtered_records = [
+        record
+        for record in all_records
+        if since_dt is None or record.timestamp >= since_dt
+    ]
+    records = filtered_records[:limit]
     if not records:
         text = "No recall data yet."
+        data = {**_recall_stats_payload(records), "message": text}
+        if include_records:
+            data["records"] = []
         return OperationResult(
-            envelope=Envelope.success(data={"records": [], "message": text}),
+            envelope=Envelope.success(
+                data=data,
+                meta=EnvelopeMeta(
+                    limit=limit,
+                    requested_limit=limit,
+                    returned=0,
+                    total=len(filtered_records),
+                    truncated=False,
+                ),
+            ),
             text=text,
         )
 
     lines = _format_recall_summary(records, "# Recall Stats\n")
-    selector_versions = sorted(
-        {r.selector_version for r in records if r.selector_version}
-    )
+    payload = _recall_stats_payload(records)
+    selector_versions = payload["selector_versions"]
     if len(selector_versions) >= 2:
         for version in selector_versions:
             subset = [r for r in records if r.selector_version == version]
@@ -1068,12 +1175,25 @@ async def recall_stats(
     elif selector_versions:
         lines.insert(1, f"*Selector version:* `{selector_versions[0]}`")
 
-    data = {
-        "total_queries": len(records),
-        "selector_versions": selector_versions,
-        "records": [record.model_dump(mode="json") for record in records],
-    }
-    return OperationResult(envelope=Envelope.success(data=data), text="\n".join(lines))
+    if include_records:
+        payload["records"] = [record.model_dump(mode="json") for record in records]
+
+    return OperationResult(
+        envelope=Envelope.success(
+            data=payload,
+            meta=EnvelopeMeta(
+                limit=limit,
+                requested_limit=limit,
+                returned=len(records),
+                total=len(filtered_records),
+                truncated=len(filtered_records) > len(records),
+                truncation_reason=(
+                    "limit" if len(filtered_records) > len(records) else None
+                ),
+            ),
+        ),
+        text="\n".join(lines),
+    )
 
 
 __all__ = [

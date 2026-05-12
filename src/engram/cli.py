@@ -251,9 +251,15 @@ async def cmd_synthesize(args: argparse.Namespace) -> OperationResult:
 async def cmd_doctor(args: argparse.Namespace) -> OperationResult:
     return await op_doctor(
         check_provider_flag=args.check_provider,
-        repair=args.repair or args.repair_jsonl or args.recover_transactions,
+        repair=(
+            args.repair
+            or args.repair_jsonl
+            or args.recover_transactions
+            or args.repair_orphaned_supersessions
+        ),
         repair_jsonl=args.repair_jsonl,
         recover_transactions=args.recover_transactions,
+        repair_orphaned_supersessions=args.repair_orphaned_supersessions,
     )
 
 
@@ -262,7 +268,11 @@ async def cmd_memory_stats(args: argparse.Namespace) -> OperationResult:
 
 
 async def cmd_recall_stats(args: argparse.Namespace) -> OperationResult:
-    return await op_recall_stats()
+    return await op_recall_stats(
+        limit=args.limit,
+        since=args.since,
+        include_records=args.include_records,
+    )
 
 
 HANDLERS: dict[str, CommandHandler] = {
@@ -455,10 +465,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument("--repair", action="store_true")
     p_doctor.add_argument("--repair-jsonl", action="store_true")
     p_doctor.add_argument("--recover-transactions", action="store_true")
+    p_doctor.add_argument("--repair-orphaned-supersessions", action="store_true")
     _add_json_flag(p_doctor)
 
     _add_json_flag(sub.add_parser("memory-stats", help="Show memory stats"))
-    _add_json_flag(sub.add_parser("recall-stats", help="Show recall stats"))
+    p_recall_stats = sub.add_parser("recall-stats", help="Show recall stats")
+    p_recall_stats.add_argument("--limit", type=int, default=500)
+    p_recall_stats.add_argument("--since", default=None)
+    p_recall_stats.add_argument("--include-records", action="store_true")
+    _add_json_flag(p_recall_stats)
     return parser
 
 

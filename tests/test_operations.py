@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from engram import operations
-from engram.models import CandidateStatus, Fact, FactCategory, MemoryCandidate
+from engram.models import CandidateStatus, Fact, FactCategory, MemoryCandidate, RecallRecord
 from engram.store import AsyncFactStore, FactStore
 
 
@@ -111,3 +112,64 @@ def test_approve_candidates_applies_valid_edits():
 
     assert result.exit_code == operations.EXIT_OK
     assert result.envelope.data["facts"][0]["content"] == "edited content"
+
+
+def test_recall_stats_json_defaults_to_aggregate_only():
+    store = _store()
+    store.log_recall(
+        RecallRecord(
+            query="direct",
+            tier=0,
+            prefilter_count=1,
+            latency_ms=10,
+            quality="high",
+            llm_calls=0,
+            selector_version="v2",
+        )
+    )
+
+    result = asyncio.run(operations.recall_stats(store=AsyncFactStore(store)))
+
+    assert result.exit_code == operations.EXIT_OK
+    assert result.envelope.data["total_queries"] == 1
+    assert result.envelope.data["by_tier"]["0"]["count"] == 1
+    assert result.envelope.data["token_usage"]["llm_calls"] == 0
+    assert "records" not in result.envelope.data
+
+
+def test_recall_stats_can_include_records_and_filter_window():
+    store = _store()
+    now = datetime.now(timezone.utc)
+    store.log_recall(
+        RecallRecord(
+            query="old",
+            tier=0,
+            prefilter_count=1,
+            latency_ms=10,
+            timestamp=now - timedelta(days=2),
+        )
+    )
+    store.log_recall(
+        RecallRecord(
+            query="new",
+            tier=1,
+            prefilter_count=3,
+            latency_ms=20,
+            quality="medium",
+            timestamp=now,
+        )
+    )
+
+    result = asyncio.run(
+        operations.recall_stats(
+            limit=1,
+            since=(now - timedelta(days=1)).isoformat(),
+            include_records=True,
+            store=AsyncFactStore(store),
+        )
+    )
+
+    assert result.envelope.data["total_queries"] == 1
+    assert result.envelope.data["records"][0]["query"] == "new"
+    assert result.envelope.meta.returned == 1
+    assert result.envelope.meta.total == 1

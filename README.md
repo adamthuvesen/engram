@@ -50,11 +50,14 @@ uv run --extra dev pytest tests/ -v              # run tests
 
 ### Agent-first output
 
-Default responses are concise text. Opt into JSON envelopes:
+Default responses are concise text. MCP tools also expose the same envelope as
+`structuredContent`, so agent clients do not need to parse JSON out of text.
+Opt into JSON envelopes in CLI or text content when needed:
 
 - `recall(query, format="json", with_provenance=True)` →
   `{status, data: {answer, tier, source_fact_ids, cited_fact_ids, provenance, usage}, warnings, errors, meta}`
 - Maintenance tools (`correct_memory`, `merge_memories`, `mark_stale`, `doctor`) always return JSON with stable `status` and error codes (`validation_error`, `not_found`, `provider_error`, `storage_error`, `conflict`).
+- `recall-stats --json` returns aggregate statistics by default; pass `--include-records` for raw recall log records.
 - Lists carry default safety caps; truncation is reported in `meta.truncated`.
 
 Stable codes (`stale_fact`, `superseded_fact`, `forgotten_fact`, `conflicting_facts`, `truncated_output`, `provider_unavailable`) live in `engram.interfaces`.
@@ -67,6 +70,8 @@ The same surfaces are exposed as `engram` subcommands; bare `engram` starts the 
 engram recall "what does alex prefer for editors?" --json --with-provenance
 engram recall-trace "what does alex prefer for editors?" --json
 engram doctor --check-provider --json
+engram doctor --repair --repair-orphaned-supersessions --json
+engram recall-stats --json --limit 100 --since 2026-05-01
 engram correct-memory <fact_id> "new content" --reason "user updated"
 engram merge-memories <id1> <id2> --content "merged" --reason "dedupe"
 engram mark-stale <fact_id> --reason "outdated"
@@ -101,8 +106,7 @@ All settings via `ENGRAM_*` env vars. Key knobs:
 | `ENGRAM_LLM_MODEL` | `openai/gpt-5.4-mini` | LLM for extraction & search |
 | `ENGRAM_MAX_FACTS_PER_AGENT` | `200` | Facts fed to each search agent |
 | `ENGRAM_RETRIEVAL_TIMEOUT` | `15.0` | Search agent timeout (seconds) |
-| `ENGRAM_TIER_RULES` | `v2` | `v2` caps tier-2 on small prefilter; `v1` uses pre-cap behavior |
-| `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11` | Min prefilter matches for tier-2 under v2 (`0` disables) |
+| `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11` | Min prefilter matches for tier-2 (`0` disables the small-corpus cap) |
 | `ENGRAM_TIER2_MODE` | `single` | Tier-2 strategy: `single` or `multilens` |
 | `ENGRAM_DATA_DIR` | `~/.engram/data` | Storage directory |
 

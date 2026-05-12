@@ -23,12 +23,8 @@ class Settings(BaseSettings):
     # Retrieval
     max_facts_per_agent: int = 200
     retrieval_timeout: float = 15.0
-    # Tier selector rules. "v2" (default) caps tier at 1 when the prefilter
-    # returns fewer than `tier2_min_prefilter_count` facts. "v1" restores the
-    # pre-small-corpus-cap behaviour. Unknown values warn and fall back to v2.
-    tier_rules: str = "v2"
-    # Under v2, tier-2 requires at least this many strictly-positive-scored
-    # prefilter matches. Set to 0 to disable the cap even under v2.
+    # Tier-2 requires at least this many strictly-positive-scored prefilter
+    # matches. Set to 0 to disable the small-corpus cap.
     tier2_min_prefilter_count: int = 11
     # Tier-2 execution strategy: "single" (one call) or "multilens" (two calls).
     tier2_mode: str = "single"

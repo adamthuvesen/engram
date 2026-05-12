@@ -985,7 +985,7 @@ class FactStore:
             with self.recall_log_path.open("a") as f:
                 f.write(record.model_dump_json() + "\n")
 
-    def load_recall_log(self, limit: int = 500) -> list[RecallRecord]:
+    def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
         """Load recent recall log entries."""
         if not self.recall_log_path.exists():
             return []
@@ -1000,7 +1000,7 @@ class FactStore:
                 except Exception:
                     continue
         records.sort(key=lambda r: r.timestamp, reverse=True)
-        return records[:limit]
+        return records[:limit] if limit is not None else records
 
     def repair(self) -> dict:
         """Recover from truncated/corrupt JSONL lines.
@@ -1257,7 +1257,7 @@ class AsyncFactStore:
     async def log_recall(self, record: RecallRecord) -> None:
         await self._run(self.sync_store.log_recall, record)
 
-    async def load_recall_log(self, limit: int = 500) -> list[RecallRecord]:
+    async def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
         return await self._run(self.sync_store.load_recall_log, limit)
 
     async def repair(self) -> dict:

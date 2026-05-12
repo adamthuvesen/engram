@@ -72,8 +72,7 @@ All settings via `ENGRAM_*` env vars (pydantic-settings). Key knobs:
 | `ENGRAM_LLM_MODEL`           | `openai/gpt-5.4-mini` | LLM for extraction & search agents |
 | `ENGRAM_MAX_FACTS_PER_AGENT` | `200`                 | Facts fed to each search agent     |
 | `ENGRAM_RETRIEVAL_TIMEOUT`   | `15.0`                | Search agent timeout (seconds)     |
-| `ENGRAM_TIER_RULES`          | `v2`                  | Tier selector rules: `v2` (default, caps tier-2 when prefilter is small) or `v1` (pre-cap behaviour) |
-| `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11`            | Under v2, tier-2 requires at least this many positive-scoring prefilter matches. `0` disables the cap. |
+| `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11`            | Tier-2 requires at least this many positive-scoring prefilter matches. `0` disables the small-corpus cap. |
 | `ENGRAM_DATA_DIR`            | `~/.engram/data`      | Storage directory                  |
 
 The MCP `recall_stats` tool summarises LLM usage pulled from the recall log:
@@ -81,10 +80,8 @@ total LLM calls, input tokens, cached (prefix-hit) input tokens, and the
 resulting cache hit ratio. Providers that don't report usage leave those
 fields blank — the stats view renders `-` for any column with no data.
 
-When the log contains recalls from more than one selector version (`v1` and
-`v2`), `recall_stats` renders a separate breakdown per version so you can
-A/B the tier thresholds on real traffic. Single-version logs get a single
-summary with the active version noted inline.
+Recall logs keep `selector_version="v2"` for continuity with existing
+`recall_stats` output.
 
 
 ## Dev Notes
@@ -94,4 +91,3 @@ summary with the active version noted inline.
 - litellm for model-agnostic LLM calls
 - All MCP tools are async; storage I/O is synchronous behind an `AsyncFactStore` `asyncio.to_thread` facade
 - Facts have: category, content, confidence, timestamps, project scope, supersession chain, source metadata
-

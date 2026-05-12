@@ -116,7 +116,7 @@ TIER_1_MAX_RELEVANT = 20
 TIER_1_MIN_TOP_SCORE = 8
 TIER_1_MIN_GAP = 1.5  # top score must be ≥1.5x the 5th score
 
-_unknown_tier_rules_warned: set[str] = set()
+SELECTOR_VERSION = "v2"
 
 # Multi-lens response heading parser.
 _MULTILENS_HEADING_RE = re.compile(
@@ -130,7 +130,6 @@ _CITED_ID_RE = re.compile(r"\b([0-9a-f]{12})\b")
 
 def _select_tier_with_decision(
     scored_facts: list[tuple[int, Fact]],
-    rules: str = "v1",
     min_prefilter_for_tier2: int = 0,
 ) -> TierDecision:
     """Select retrieval tier and return the decision with its inputs.
@@ -141,7 +140,7 @@ def _select_tier_with_decision(
     if not scored_facts:
         return TierDecision(
             tier=0,
-            rules=rules,
+            rules=SELECTOR_VERSION,
             relevant_count=0,
             top_score=None,
             gap_ratio=None,
@@ -153,7 +152,7 @@ def _select_tier_with_decision(
     if not relevant:
         return TierDecision(
             tier=0,
-            rules=rules,
+            rules=SELECTOR_VERSION,
             relevant_count=0,
             top_score=scored_facts[0][0] if scored_facts else None,
             gap_ratio=None,
@@ -169,7 +168,7 @@ def _select_tier_with_decision(
     if len(relevant) <= TIER_0_MAX_RELEVANT and top >= TIER_0_MIN_SCORE:
         return TierDecision(
             tier=0,
-            rules=rules,
+            rules=SELECTOR_VERSION,
             relevant_count=len(relevant),
             top_score=top,
             gap_ratio=gap if gap != float("inf") else None,
@@ -179,7 +178,7 @@ def _select_tier_with_decision(
     if top >= 15 and gap >= TIER_1_MIN_GAP:
         return TierDecision(
             tier=1,
-            rules=rules,
+            rules=SELECTOR_VERSION,
             relevant_count=len(relevant),
             top_score=top,
             gap_ratio=gap if gap != float("inf") else None,
@@ -188,7 +187,7 @@ def _select_tier_with_decision(
 
     chosen = 2
     cap_applied = False
-    if rules == "v2" and min_prefilter_for_tier2 > 0:
+    if min_prefilter_for_tier2 > 0:
         positive = sum(1 for s, _ in scored_facts if s > 0)
         if positive < min_prefilter_for_tier2:
             chosen = 1
@@ -196,7 +195,7 @@ def _select_tier_with_decision(
 
     return TierDecision(
         tier=chosen,
-        rules=rules,
+        rules=SELECTOR_VERSION,
         relevant_count=len(relevant),
         top_score=top,
         gap_ratio=gap if gap != float("inf") else None,
@@ -206,7 +205,6 @@ def _select_tier_with_decision(
 
 def _select_tier(
     scored_facts: list[tuple[int, Fact]],
-    rules: str = "v1",
     min_prefilter_for_tier2: int = 0,
 ) -> int:
     """Select retrieval tier based on score distribution shape.
@@ -220,27 +218,14 @@ def _select_tier(
 
     Zero relevant matches → Tier 0 (direct).
 
-    When ``rules == "v2"`` and ``min_prefilter_for_tier2 > 0``, an additional cap
-    applies: queries whose prefilter produced fewer than ``min_prefilter_for_tier2``
-    strictly-positive-scored facts are downgraded from tier-2 to tier-1. Tier-0
-    decisions are never touched by the cap.
+    When ``min_prefilter_for_tier2 > 0``, an additional cap applies: queries
+    whose prefilter produced fewer than ``min_prefilter_for_tier2``
+    strictly-positive-scored facts are downgraded from tier-2 to tier-1.
+    Tier-0 decisions are never touched by the cap.
     """
     return _select_tier_with_decision(
-        scored_facts, rules=rules, min_prefilter_for_tier2=min_prefilter_for_tier2
+        scored_facts, min_prefilter_for_tier2=min_prefilter_for_tier2
     ).tier
-
-
-# TODO(small-corpus-tier-cap-cleanup): after one release of clean v2 data in
-# recall_log, remove the v1 branch, the `rules` parameter on `_select_tier`,
-# and the `ENGRAM_TIER_RULES` setting. Keep the configurable threshold.
-def _resolve_tier_rules(raw: str) -> str:
-    """Map the tier_rules setting to a supported value, warning once on unknowns."""
-    if raw in ("v1", "v2"):
-        return raw
-    if raw not in _unknown_tier_rules_warned:
-        logger.warning("Unknown ENGRAM_TIER_RULES=%r; falling back to 'v2'", raw)
-        _unknown_tier_rules_warned.add(raw)
-    return "v2"
 
 
 def _resolve_tier2_mode(raw: str) -> str:
@@ -529,10 +514,8 @@ async def recall_with_provenance(
         limit=settings.max_facts_per_agent,
     )
 
-    tier_rules = _resolve_tier_rules(settings.tier_rules)
     decision = _select_tier_with_decision(
         scored_facts,
-        rules=tier_rules,
         min_prefilter_for_tier2=settings.tier2_min_prefilter_count,
     )
     tier = decision.tier
@@ -673,7 +656,7 @@ async def recall_with_provenance(
                 llm_calls=usage_totals.get("llm_calls"),
                 input_tokens=usage_totals.get("input_tokens"),
                 cached_tokens=usage_totals.get("cached_tokens"),
-                selector_version=tier_rules,
+                selector_version=SELECTOR_VERSION,
             ),
         )
     except Exception:
@@ -988,7 +971,6 @@ __all__ = [
     "_select_tier_with_decision",
     "_build_prefix",
     "_parse_multilens_sections",
-    "_resolve_tier_rules",
     "_resolve_tier2_mode",
     "MULTI_LENS_SYSTEM",
     "SYNTHESIS_SYSTEM",

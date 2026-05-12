@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -79,6 +78,8 @@ def test_doctor_detects_orphaned_supersession():
     report = run_doctor(store)
     codes = [issue.code for issue in report.issues]
     assert "orphaned_supersession" in codes
+    issue = next(i for i in report.issues if i.code == "orphaned_supersession")
+    assert issue.repairable is True
 
 
 def test_doctor_detects_circular_supersession():
@@ -218,6 +219,41 @@ def test_repair_jsonl_drops_corrupt_lines():
     assert summary["jsonl_repair"]["facts_corrupt"] == 1
 
 
+def test_repair_orphaned_supersessions_clears_only_broken_links():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="parentaaaaaa",
+                category=FactCategory.preference,
+                content="parent",
+            ),
+            Fact(
+                id="validchildaa",
+                category=FactCategory.preference,
+                content="valid child",
+                supersedes="parentaaaaaa",
+            ),
+            Fact(
+                id="orphanchild",
+                category=FactCategory.preference,
+                content="orphan child",
+                supersedes="missingmissi",
+            ),
+        ]
+    )
+
+    summary = repair_store(store, repair_orphaned_supersessions=True)
+    facts = {fact.id: fact for fact in store.load_facts()}
+
+    assert summary["orphaned_supersessions"] == {
+        "cleared": 1,
+        "ids": ["orphanchild"],
+    }
+    assert facts["orphanchild"].supersedes is None
+    assert facts["validchildaa"].supersedes == "parentaaaaaa"
+
+
 # ---------------------------------------------------------------------------
 # MCP doctor surface
 # ---------------------------------------------------------------------------
@@ -225,14 +261,10 @@ def test_repair_jsonl_drops_corrupt_lines():
 
 def test_doctor_mcp_returns_envelope(monkeypatch):
     store = _make_store()
-    monkeypatch.setattr(server, "_store", AsyncFactStore(store), raising=False)
+    app = server.create_mcp(AsyncFactStore(store))
 
-    async def call():
-        fn = getattr(server.doctor, "fn", server.doctor)
-        return await fn()
-
-    result = asyncio.run(call())
-    parsed = json.loads(result)
+    result = asyncio.run(app._call_tool_mcp("doctor", {}))
+    parsed = result[1]
     assert parsed["status"] == "ok"
     assert "report" in parsed["data"]
     assert parsed["data"]["report"]["status"] in ("ok", "warning", "error")

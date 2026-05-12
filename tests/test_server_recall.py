@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import tempfile
 from pathlib import Path
 
@@ -16,7 +15,12 @@ from engram.store import AsyncFactStore, FactStore
 def _setup_store(monkeypatch) -> FactStore:
     tmp = Path(tempfile.mkdtemp())
     store = FactStore(data_dir=tmp)
-    monkeypatch.setattr(server, "_store", AsyncFactStore(store), raising=False)
+    monkeypatch.setattr(
+        server,
+        "mcp",
+        server.create_mcp(AsyncFactStore(store)),
+        raising=False,
+    )
     return store
 
 
@@ -37,12 +41,16 @@ def _patch_complete(monkeypatch, responses):
     monkeypatch.setattr("engram.retriever.complete_with_usage", fake)
 
 
-async def _call(tool, **kwargs):
-    """Invoke an MCP tool function regardless of FastMCP wrapping."""
-    fn = getattr(tool, "fn", tool)
-    if asyncio.iscoroutinefunction(fn):
-        return await fn(**kwargs)
-    return fn(**kwargs)
+async def _call(tool_name: str, **kwargs):
+    return await server.mcp._call_tool_mcp(tool_name, kwargs)
+
+
+def _text(result) -> str:
+    return result[0][0].text
+
+
+def _structured(result):
+    return result[1]
 
 
 def test_recall_default_text(monkeypatch):
@@ -58,10 +66,11 @@ def test_recall_default_text(monkeypatch):
         ]
     )
 
-    result = asyncio.run(_call(server.recall, query="zagblort xylophone"))
-    assert isinstance(result, str)
+    result = asyncio.run(_call("recall", query="zagblort xylophone"))
+    text = _text(result)
     # Default text mode must NOT be JSON.
-    assert not result.lstrip().startswith("{")
+    assert not text.lstrip().startswith("{")
+    assert _structured(result)["status"] == "ok"
 
 
 def test_recall_json_mode_returns_envelope(monkeypatch):
@@ -78,9 +87,9 @@ def test_recall_json_mode_returns_envelope(monkeypatch):
     )
 
     result = asyncio.run(
-        _call(server.recall, query="zagblort xylophone", format="json")
+        _call("recall", query="zagblort xylophone", format="json")
     )
-    parsed = json.loads(result)
+    parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert "answer" in parsed["data"]
     assert "tier" in parsed["data"]
@@ -92,8 +101,8 @@ def test_recall_json_mode_returns_envelope(monkeypatch):
 def test_recall_json_no_match(monkeypatch):
     """Empty memory store returns OK envelope with quality=none."""
     _setup_store(monkeypatch)
-    result = asyncio.run(_call(server.recall, query="anything", format="json"))
-    parsed = json.loads(result)
+    result = asyncio.run(_call("recall", query="anything", format="json"))
+    parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert parsed["data"]["quality"] == "none"
     assert parsed["data"]["source_fact_ids"] == []
@@ -114,13 +123,13 @@ def test_recall_json_with_provenance(monkeypatch):
 
     result = asyncio.run(
         _call(
-            server.recall,
+            "recall",
             query="zagblort xylophone",
             format="json",
             with_provenance=True,
         )
     )
-    parsed = json.loads(result)
+    parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert "provenance" in parsed["data"]
     assert parsed["data"]["provenance"]["tier"] == 0
@@ -129,8 +138,8 @@ def test_recall_json_with_provenance(monkeypatch):
 
 def test_recall_invalid_format_returns_validation_error(monkeypatch):
     _setup_store(monkeypatch)
-    result = asyncio.run(_call(server.recall, query="x", format="yaml"))
-    parsed = json.loads(result)
+    result = asyncio.run(_call("recall", query="x", format="yaml"))
+    parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "validation_error"
 
@@ -155,8 +164,8 @@ def test_recall_warns_on_superseded(monkeypatch):
         ]
     )
 
-    result = asyncio.run(_call(server.recall, query="zagblort editor", format="json"))
-    parsed = json.loads(result)
+    result = asyncio.run(_call("recall", query="zagblort editor", format="json"))
+    parsed = _structured(result)
     codes = [w["code"] for w in parsed["warnings"]]
     assert "superseded_fact" in codes
 
@@ -183,8 +192,8 @@ def test_recall_warns_on_stale(monkeypatch):
     # include_stale=False (the MCP recall tool already excludes stale, so the
     # stale fact won't appear in the prefilter and no stale warning fires —
     # which is correct for the active path). Verify recall still succeeds.
-    result = asyncio.run(_call(server.recall, query="legacy preference", format="json"))
-    parsed = json.loads(result)
+    result = asyncio.run(_call("recall", query="legacy preference", format="json"))
+    parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert "staleaaaaaaa" not in parsed["data"]["cited_fact_ids"]
 
@@ -220,11 +229,11 @@ def test_recall_trace_success(monkeypatch):
     )
 
     try:
-        result = asyncio.run(_call(server.recall_trace, query="trace"))
+        result = asyncio.run(_call("recall_trace", query="trace"))
     finally:
         monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
         get_settings.cache_clear()
-    parsed = json.loads(result)
+    parsed = _structured(result)
     assert parsed["status"] == "ok"
     trace = parsed["data"]["trace"]
     assert trace is not None
@@ -252,8 +261,8 @@ def test_recall_trace_provider_failure(monkeypatch):
 
     monkeypatch.setattr("engram.retriever.complete_with_usage", boom)
 
-    result = asyncio.run(_call(server.recall_trace, query="failure"))
-    parsed = json.loads(result)
+    result = asyncio.run(_call("recall_trace", query="failure"))
+    parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "provider_error"
 
@@ -270,8 +279,8 @@ def test_recall_json_meta_fields_populated(monkeypatch):
             )
         ]
     )
-    result = asyncio.run(_call(server.recall, query="abc xyz", format="json"))
-    parsed = json.loads(result)
+    result = asyncio.run(_call("recall", query="abc xyz", format="json"))
+    parsed = _structured(result)
     assert "meta" in parsed
     assert parsed["meta"]["limit"] == 25  # default max_sources
     assert parsed["meta"]["returned"] >= 0

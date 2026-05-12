@@ -30,11 +30,12 @@ def _seed(tmp: Path, facts: list[Fact]) -> FactStore:
     return store
 
 
-async def _call(tool, **kwargs):
-    fn = getattr(tool, "fn", tool)
-    if asyncio.iscoroutinefunction(fn):
-        return await fn(**kwargs)
-    return fn(**kwargs)
+async def _mcp_call(app, tool_name: str, **kwargs):
+    return await app._call_tool_mcp(tool_name, kwargs)
+
+
+def _structured(result):
+    return result[1]
 
 
 def test_canonical_cli_commands_match_mcp_tools():
@@ -75,12 +76,12 @@ def test_cli_and_mcp_inspect_json_have_matching_shape(cli_env, capsys):
         cli_env,
         [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="uses vim")],
     )
-    server._store = AsyncFactStore(FactStore(data_dir=cli_env))
+    app = server.create_mcp(AsyncFactStore(FactStore(data_dir=cli_env)))
 
     cli_exit = cli.run(["inspect", "--json"])
     cli_payload = json.loads(capsys.readouterr().out)
-    mcp_payload = json.loads(
-        asyncio.run(_call(server.inspect, format="json", limit=50))
+    mcp_payload = _structured(
+        asyncio.run(_mcp_call(app, "inspect", format="json", limit=50))
     )
 
     assert cli_exit == cli.EXIT_OK
@@ -99,14 +100,15 @@ def test_cli_and_mcp_correct_memory_json_have_matching_shape(cli_env, capsys):
         mcp_tmp,
         [Fact(id="oldaaaaaaaaa", category=FactCategory.preference, content="vim")],
     )
-    server._store = AsyncFactStore(FactStore(data_dir=mcp_tmp))
+    app = server.create_mcp(AsyncFactStore(FactStore(data_dir=mcp_tmp)))
 
     cli_exit = cli.run(["correct-memory", "oldaaaaaaaaa", "neovim", "--json"])
     cli_payload = json.loads(capsys.readouterr().out)
-    mcp_payload = json.loads(
+    mcp_payload = _structured(
         asyncio.run(
-            _call(
-                server.correct_memory,
+            _mcp_call(
+                app,
+                "correct_memory",
                 fact_id="oldaaaaaaaaa",
                 new_content="neovim",
             )
@@ -130,13 +132,13 @@ def test_cli_and_mcp_mark_stale_json_have_matching_payload(cli_env, capsys):
         mcp_tmp,
         [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")],
     )
-    server._store = AsyncFactStore(FactStore(data_dir=mcp_tmp))
+    app = server.create_mcp(AsyncFactStore(FactStore(data_dir=mcp_tmp)))
 
     cli_exit = cli.run(["mark-stale", "aaaaaaaaaaaa", "--reason", "old", "--json"])
     cli_payload = json.loads(capsys.readouterr().out)
-    mcp_payload = json.loads(
+    mcp_payload = _structured(
         asyncio.run(
-            _call(server.mark_stale, fact_id="aaaaaaaaaaaa", reason="old")
+            _mcp_call(app, "mark_stale", fact_id="aaaaaaaaaaaa", reason="old")
         )
     )
 
@@ -162,16 +164,22 @@ def test_cli_and_mcp_memory_stats_json_have_matching_shape(cli_env, capsys):
             llm_calls=0,
         )
     )
-    server._store = AsyncFactStore(FactStore(data_dir=cli_env))
+    app = server.create_mcp(AsyncFactStore(FactStore(data_dir=cli_env)))
 
     cli_stats_exit = cli.run(["memory-stats", "--json"])
     cli_stats = json.loads(capsys.readouterr().out)
-    mcp_stats = json.loads(asyncio.run(_call(server.memory_stats, format="json")))
+    mcp_stats = _structured(
+        asyncio.run(_mcp_call(app, "memory_stats", format="json"))
+    )
 
     cli_recall_exit = cli.run(["recall-stats", "--json"])
     cli_recall = json.loads(capsys.readouterr().out)
-    mcp_recall = json.loads(asyncio.run(_call(server.recall_stats, format="json")))
+    mcp_recall = _structured(
+        asyncio.run(_mcp_call(app, "recall_stats", format="json"))
+    )
 
     assert cli_stats_exit == cli_recall_exit == cli.EXIT_OK
     assert cli_stats["data"].keys() == mcp_stats["data"].keys()
     assert cli_recall["data"].keys() == mcp_recall["data"].keys()
+    assert "records" not in cli_recall["data"]
+    assert "records" not in mcp_recall["data"]

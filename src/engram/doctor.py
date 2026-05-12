@@ -6,6 +6,7 @@ recoverable issues is opt-in and limited to well-tested operations:
 - Recovering prepared (uncommitted) transactions by rolling them forward.
 - Repairing JSONL files with corrupt lines via ``FactStore.repair`` (drops
   unparseable lines after copying valid records).
+- Clearing supersession links that point to missing ancestor facts.
 
 Provider readiness is reported separately so a missing API key never masks
 storage health and vice versa.
@@ -264,7 +265,11 @@ def _check_facts_relationships(
                 category="facts",
                 message=f"{len(orphans)} fact(s) reference a missing supersession ancestor.",
                 ids=orphans,
-                repair="Either restore the missing fact or clear the supersedes field.",
+                repair=(
+                    "Run `engram doctor --repair --repair-orphaned-supersessions` "
+                    "to clear missing supersedes links."
+                ),
+                repairable=True,
             )
         )
 
@@ -446,6 +451,7 @@ def repair_store(
     *,
     repair_jsonl: bool = False,
     recover_transactions: bool = False,
+    repair_orphaned_supersessions: bool = False,
 ) -> dict[str, Any]:
     """Run safe, opt-in repairs and return a summary."""
     sync_store = _resolve_store(store)
@@ -456,6 +462,22 @@ def repair_store(
 
     if repair_jsonl:
         summary["jsonl_repair"] = sync_store.repair()
+
+    if repair_orphaned_supersessions:
+        facts = sync_store.load_facts()
+        fact_ids = {fact.id for fact in facts}
+        orphan_ids = [
+            fact.id
+            for fact in facts
+            if fact.supersedes and fact.supersedes not in fact_ids
+        ]
+        updated = sync_store.batch_update_facts(
+            {fact_id: {"supersedes": None} for fact_id in orphan_ids}
+        )
+        summary["orphaned_supersessions"] = {
+            "cleared": len(updated),
+            "ids": [fact.id for fact in updated],
+        }
 
     return summary
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import tempfile
 from pathlib import Path
 
@@ -20,15 +19,21 @@ def _make_store() -> FactStore:
 
 def _setup_server(monkeypatch) -> FactStore:
     store = _make_store()
-    monkeypatch.setattr(server, "_store", AsyncFactStore(store), raising=False)
+    monkeypatch.setattr(
+        server,
+        "mcp",
+        server.create_mcp(AsyncFactStore(store)),
+        raising=False,
+    )
     return store
 
 
-async def _call(tool, **kwargs):
-    fn = getattr(tool, "fn", tool)
-    if asyncio.iscoroutinefunction(fn):
-        return await fn(**kwargs)
-    return fn(**kwargs)
+async def _call(tool_name: str, **kwargs):
+    return await server.mcp._call_tool_mcp(tool_name, kwargs)
+
+
+def _structured(result):
+    return result[1]
 
 
 # ---------------------------------------------------------------------------
@@ -319,13 +324,13 @@ def test_correct_memory_mcp_success(monkeypatch):
     )
     result = asyncio.run(
         _call(
-            server.correct_memory,
+            "correct_memory",
             fact_id="oldaaaaaaaaa",
             new_content="neovim",
             reason="updated",
         )
     )
-    parsed = json.loads(result)
+    parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert parsed["data"]["superseded_fact_id"] == "oldaaaaaaaaa"
 
@@ -333,9 +338,9 @@ def test_correct_memory_mcp_success(monkeypatch):
 def test_correct_memory_mcp_not_found(monkeypatch):
     _setup_server(monkeypatch)
     result = asyncio.run(
-        _call(server.correct_memory, fact_id="missingmissi", new_content="x")
+        _call("correct_memory", fact_id="missingmissi", new_content="x")
     )
-    parsed = json.loads(result)
+    parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "not_found"
 
@@ -350,12 +355,12 @@ def test_merge_memories_mcp_success(monkeypatch):
     )
     result = asyncio.run(
         _call(
-            server.merge_memories,
+            "merge_memories",
             source_ids=["aaaaaaaaaaaa", "bbbbbbbbbbbb"],
             merged_content="merged",
         )
     )
-    parsed = json.loads(result)
+    parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert set(parsed["data"]["superseded_fact_ids"]) == {
         "aaaaaaaaaaaa",
@@ -366,9 +371,9 @@ def test_merge_memories_mcp_success(monkeypatch):
 def test_merge_memories_mcp_validation_for_one_source(monkeypatch):
     _setup_server(monkeypatch)
     result = asyncio.run(
-        _call(server.merge_memories, source_ids=["onlyoneonlyo"], merged_content="x")
+        _call("merge_memories", source_ids=["onlyoneonlyo"], merged_content="x")
     )
-    parsed = json.loads(result)
+    parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "validation_error"
 
@@ -378,8 +383,8 @@ def test_mark_stale_mcp(monkeypatch):
     store.append_facts(
         [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")]
     )
-    result = asyncio.run(_call(server.mark_stale, fact_id="aaaaaaaaaaaa", reason="old"))
-    parsed = json.loads(result)
+    result = asyncio.run(_call("mark_stale", fact_id="aaaaaaaaaaaa", reason="old"))
+    parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert parsed["data"]["stale"] is True
 
@@ -401,8 +406,8 @@ def test_inspect_excludes_stale_by_default(monkeypatch):
             ),
         ]
     )
-    result = asyncio.run(_call(server.inspect, format="json"))
-    parsed = json.loads(result)
+    result = asyncio.run(_call("inspect", format="json"))
+    parsed = _structured(result)
     ids = [f["id"] for f in parsed["data"]]
     assert "liveaaaaaaaa" in ids
     assert "staleaaaaaaa" not in ids
@@ -421,8 +426,8 @@ def test_inspect_with_include_stale_shows_stale(monkeypatch):
             ),
         ]
     )
-    result = asyncio.run(_call(server.inspect, format="json", include_stale=True))
-    parsed = json.loads(result)
+    result = asyncio.run(_call("inspect", format="json", include_stale=True))
+    parsed = _structured(result)
     ids = [f["id"] for f in parsed["data"]]
     assert "staleaaaaaaa" in ids
     entry = next(f for f in parsed["data"] if f["id"] == "staleaaaaaaa")
