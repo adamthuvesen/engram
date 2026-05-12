@@ -1,13 +1,16 @@
 """LLM client wrapper using litellm for multi-provider support."""
 
 import importlib
-import json
 import logging
 from dataclasses import dataclass
+from typing import TypeVar
+
+from pydantic import BaseModel
 
 from engram.config import ensure_openai_api_key, get_settings
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass
@@ -110,6 +113,34 @@ async def complete(
     return result.text
 
 
+async def complete_model(
+    prompt: str,
+    system: str,
+    response_model: type[T],
+    model: str | None = None,
+) -> T:
+    """Make an LLM call expecting JSON matching a Pydantic model."""
+    raw = await complete(
+        prompt=prompt,
+        system=system,
+        model=model,
+        response_format=_response_format_for_model(response_model),
+    )
+    return response_model.model_validate_json(raw or "")
+
+
+def _response_format_for_model(response_model: type[BaseModel]) -> dict:
+    """Build LiteLLM's strict JSON-schema response_format payload."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": response_model.__name__,
+            "strict": True,
+            "schema": response_model.model_json_schema(),
+        },
+    }
+
+
 async def complete_with_usage(
     prompt: str,
     system: str = "",
@@ -149,62 +180,3 @@ async def complete_with_usage(
         input_tokens=input_tokens,
         cached_tokens=cached_tokens,
     )
-
-
-async def complete_json(
-    prompt: str,
-    system: str = "",
-    model: str | None = None,
-) -> list | dict:
-    """Make an LLM call expecting JSON output. Parses and returns the result."""
-    raw = await complete(
-        prompt=prompt,
-        system=system,
-        model=model,
-        response_format={"type": "json_object"},
-    )
-
-    text = (raw or "").strip()
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Strip markdown code fences and retry.
-    if "```" in text:
-        lines = [
-            line for line in text.split("\n") if not line.strip().startswith("```")
-        ]
-        stripped = "\n".join(lines).strip()
-    else:
-        stripped = text
-
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-
-    embedded = _decode_first_json_value(stripped)
-    if embedded is not None:
-        return embedded
-
-    logger.warning(
-        "complete_json: could not parse LLM response as JSON: %s", text[:200]
-    )
-    return {}
-
-
-def _decode_first_json_value(text: str) -> list | dict | None:
-    """Return the first JSON object/array embedded in text, if one exists."""
-    decoder = json.JSONDecoder()
-    for i, char in enumerate(text):
-        if char not in "{[":
-            continue
-        try:
-            value, _ = decoder.raw_decode(text[i:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, (dict, list)):
-            return value
-    return None

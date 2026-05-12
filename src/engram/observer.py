@@ -4,17 +4,19 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from pydantic import ValidationError
+
 from engram.config import get_settings
-from engram.llm import complete_json
+from engram.llm import complete_model
 from engram.models import (
     CandidateStatus,
     EvidenceKind,
     Fact,
-    FactCategory,
     IngestionRecord,
     MemoryCandidate,
 )
 from engram.store import AsyncFactStore, FactStore, _content_hash, _stem, _TOKEN_RE
+from engram.structured_outputs import DedupResponse, ExtractionResponse
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +135,17 @@ async def _extract_candidate_facts(
 ) -> list[Fact]:
     """Run extraction without persisting the results."""
     prompt = f"Extract structured facts from the following input:\n\n{content}"
-    result = await complete_json(prompt=prompt, system=EXTRACTION_SYSTEM)
+    try:
+        result = await complete_model(
+            prompt=prompt,
+            system=EXTRACTION_SYSTEM,
+            response_model=ExtractionResponse,
+        )
+    except ValidationError as e:
+        logger.warning("Skipping invalid extraction response: %s", e)
+        return []
 
-    raw_facts = result.get("facts", [])
+    raw_facts = result.facts
     if not raw_facts:
         logger.info("No facts extracted from input")
         return []
@@ -143,33 +153,20 @@ async def _extract_candidate_facts(
     now = datetime.now(timezone.utc)
     extracted: list[Fact] = []
     for raw in raw_facts:
-        fact_content = raw.get("content")
-        if not fact_content:
-            logger.warning("Skipping fact with missing content: %s", raw)
-            continue
-
-        try:
-            category = FactCategory(raw["category"])
-        except (ValueError, KeyError):
-            logger.warning(
-                "Skipping fact with invalid category: %s", raw.get("category")
-            )
-            continue
-
         fact = Fact(
-            category=category,
-            content=fact_content,
+            category=raw.category,
+            content=raw.content,
             source=source,
             project=project,
-            tags=raw.get("tags", []),
+            tags=raw.tags,
             created_at=now,
             updated_at=now,
             observed_at=now,
-            effective_at=_parse_datetime(raw.get("effective_at")),
-            expires_at=_parse_datetime(raw.get("expires_at")),
+            effective_at=raw.effective_at,
+            expires_at=raw.expires_at,
             evidence_kind=_infer_evidence_kind(source),
             source_ref=source,
-            why_store=raw.get("why_store", ""),
+            why_store=raw.why_store,
         )
         extracted.append(fact)
 
@@ -211,33 +208,28 @@ NEW CANDIDATE FACTS:
 
 Classify each new fact as genuinely new, a duplicate, or an update to an existing fact."""
 
-    result = await complete_json(prompt=prompt, system=DEDUP_SYSTEM)
-    if not isinstance(result, dict):
-        logger.warning("Dedup response was not an object, keeping all candidates")
-        return after_exact
+    result = await complete_model(
+        prompt=prompt,
+        system=DEDUP_SYSTEM,
+        response_model=DedupResponse,
+    )
 
     new_indices = {
         idx
-        for idx in (result.get("new", []) or [])
+        for idx in result.new
         if isinstance(idx, int) and 0 <= idx < len(after_exact)
     }
     duplicate_indices = {
         idx
-        for idx in (result.get("duplicates", []) or [])
+        for idx in result.duplicates
         if isinstance(idx, int) and 0 <= idx < len(after_exact)
     }
-    updates = result.get("updates", [])
-    if not isinstance(updates, list):
-        updates = []
 
     near_ids = {fact.id for fact in near_matches}
     raw_update_map: dict[int, str] = {}
-    for update in updates:
-        if not isinstance(update, dict):
-            logger.warning("Skipping malformed dedup update entry: %s", update)
-            continue
-        new_idx = update.get("new_idx")
-        existing_id = update.get("existing_id")
+    for update in result.updates:
+        new_idx = update.new_idx
+        existing_id = update.existing_id
         if not isinstance(new_idx, int) or not 0 <= new_idx < len(after_exact):
             logger.warning("Skipping dedup update with invalid new_idx: %s", update)
             continue
@@ -408,16 +400,6 @@ def _dedup_against_candidates(
         for fact in facts
         if (fact.project, fact.category, fact.content.lower()) not in existing_keys
     ]
-
-
-def _parse_datetime(value: str | None) -> datetime | None:
-    """Parse an ISO datetime string, returning None on failure."""
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
 
 
 def _infer_evidence_kind(source: str) -> EvidenceKind:

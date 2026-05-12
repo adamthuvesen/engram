@@ -15,27 +15,36 @@ def _make_store() -> FactStore:
     return FactStore(data_dir=tmp)
 
 
+def _structured(response_model, data):
+    return response_model.model_validate(data)
+
+
 def test_suggest_memories_queues_pending_candidates(monkeypatch):
     store = _make_store()
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
         if "Classify each new fact" in prompt:
-            return {"new": [0], "updates": [], "duplicates": []}
-        return {
-            "facts": [
-                {
-                    "content": "The user prefers concise summaries",
-                    "category": "preference",
-                    "tags": ["style"],
-                    "why_store": "Useful for future responses",
-                    "expires_at": None,
-                }
-            ]
-        }
+            return _structured(
+                response_model, {"new": [0], "updates": [], "duplicates": []}
+            )
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "content": "The user prefers concise summaries",
+                        "category": "preference",
+                        "tags": ["style"],
+                        "why_store": "Useful for future responses",
+                        "expires_at": None,
+                    }
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     candidates = asyncio.run(
         suggest_memories(
@@ -56,22 +65,25 @@ def test_suggest_memories_queues_pending_candidates(monkeypatch):
 def test_suggest_memories_accepts_async_store(monkeypatch):
     store = _make_store()
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
-        return {
-            "facts": [
-                {
-                    "content": "The user prefers async storage",
-                    "category": "preference",
-                    "tags": ["storage"],
-                    "why_store": "Guides storage changes",
-                    "expires_at": None,
-                }
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "content": "The user prefers async storage",
+                        "category": "preference",
+                        "tags": ["storage"],
+                        "why_store": "Guides storage changes",
+                        "expires_at": None,
+                    }
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     candidates = asyncio.run(
         suggest_memories("User prefers async storage.", store=AsyncFactStore(store))
@@ -95,28 +107,34 @@ def test_extract_facts_marks_updates_and_softens_superseded_fact(monkeypatch):
         ]
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
         if "Classify each new fact" in prompt:
-            return {
-                "new": [],
-                "updates": [{"new_idx": 0, "existing_id": "oldfact"}],
-                "duplicates": [],
-            }
-        return {
-            "facts": [
+            return _structured(
+                response_model,
                 {
-                    "content": "The user prefers polars",
-                    "category": "preference",
-                    "tags": ["python"],
-                    "why_store": "Reflects the current dataframe preference",
-                    "expires_at": None,
-                }
-            ]
-        }
+                    "new": [],
+                    "updates": [{"new_idx": 0, "existing_id": "oldfact"}],
+                    "duplicates": [],
+                },
+            )
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "content": "The user prefers polars",
+                        "category": "preference",
+                        "tags": ["python"],
+                        "why_store": "Reflects the current dataframe preference",
+                        "expires_at": None,
+                    }
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     facts = asyncio.run(extract_facts("The user prefers polars now.", store=store))
 
@@ -142,28 +160,34 @@ def test_extract_facts_accepts_async_store_for_dedup_and_persist(monkeypatch):
         ]
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
         if "Classify each new fact" in prompt:
-            return {
-                "new": [],
-                "updates": [{"new_idx": 0, "existing_id": "oldfact"}],
-                "duplicates": [],
-            }
-        return {
-            "facts": [
+            return _structured(
+                response_model,
                 {
-                    "content": "The user prefers async storage",
-                    "category": "preference",
-                    "tags": ["storage"],
-                    "why_store": "Reflects current architecture",
-                    "expires_at": None,
-                }
-            ]
-        }
+                    "new": [],
+                    "updates": [{"new_idx": 0, "existing_id": "oldfact"}],
+                    "duplicates": [],
+                },
+            )
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "content": "The user prefers async storage",
+                        "category": "preference",
+                        "tags": ["storage"],
+                        "why_store": "Reflects current architecture",
+                        "expires_at": None,
+                    }
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     facts = asyncio.run(
         extract_facts("User prefers async storage.", store=AsyncFactStore(store))
@@ -190,20 +214,23 @@ def test_dedup_ignores_malformed_update_entries(monkeypatch):
         )
     ]
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
-        return {
-            "new": [],
-            "updates": [
-                {"new_idx": 99, "existing_id": "oldfact"},
-                {"new_idx": "0", "existing_id": "oldfact"},
-                {"new_idx": 0},
-            ],
-            "duplicates": [],
-        }
+        return _structured(
+            response_model,
+            {
+                "new": [],
+                "updates": [
+                    {"new_idx": 99, "existing_id": "oldfact"},
+                    {"new_idx": "0", "existing_id": "oldfact"},
+                    {"new_idx": 0},
+                ],
+                "duplicates": [],
+            },
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     kept = asyncio.run(_dedup(candidates, existing, store=None))
 
@@ -223,24 +250,27 @@ def test_extract_facts_dedup_respects_project_scope(monkeypatch):
         ]
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
         if "Classify each new fact" in prompt:
             raise AssertionError("Different project scopes should not be deduped")
-        return {
-            "facts": [
-                {
-                    "content": "The user prefers polars",
-                    "category": "preference",
-                    "tags": ["python"],
-                    "why_store": "Library preference",
-                    "expires_at": None,
-                }
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "content": "The user prefers polars",
+                        "category": "preference",
+                        "tags": ["python"],
+                        "why_store": "Library preference",
+                        "expires_at": None,
+                    }
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     facts = asyncio.run(
         extract_facts("User prefers polars.", project="alpha", store=store)
@@ -299,24 +329,27 @@ def test_extract_facts_dedups_against_older_than_200_exact_match(monkeypatch):
     ]
     store.append_facts([old_duplicate, *newer_facts])
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
         if "Classify each new fact" in prompt:
             raise AssertionError("Exact duplicate should not need LLM dedup")
-        return {
-            "facts": [
-                {
-                    "content": "The user prefers polars",
-                    "category": "preference",
-                    "tags": ["python"],
-                    "why_store": "Library preference",
-                    "expires_at": None,
-                }
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "content": "The user prefers polars",
+                        "category": "preference",
+                        "tags": ["python"],
+                        "why_store": "Library preference",
+                        "expires_at": None,
+                    }
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     facts = asyncio.run(extract_facts("User prefers polars.", store=store))
 
@@ -324,62 +357,69 @@ def test_extract_facts_dedups_against_older_than_200_exact_match(monkeypatch):
     assert len(store.load_active_facts()) == 201
 
 
-def test_extract_facts_skips_fact_missing_content(monkeypatch):
-    """A fact without a content field is skipped; others in the batch are extracted."""
+def test_extract_facts_validation_error_returns_no_facts(monkeypatch):
+    """Invalid structured extraction responses are dropped as a batch."""
     store = _make_store()
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
-        return {
-            "facts": [
-                {
-                    "category": "preference",
-                    "tags": [],
-                    "why_store": "no content here",
-                    # 'content' is intentionally missing
-                },
-                {
-                    "content": "The user prefers dark mode",
-                    "category": "preference",
-                    "tags": ["ui"],
-                    "why_store": "UX preference",
-                    "expires_at": None,
-                },
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "category": "preference",
+                        "tags": [],
+                        "why_store": "no content here",
+                        # 'content' is intentionally missing
+                    },
+                    {
+                        "content": "The user prefers dark mode",
+                        "category": "preference",
+                        "tags": ["ui"],
+                        "why_store": "UX preference",
+                        "expires_at": None,
+                    },
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     facts = asyncio.run(extract_facts("User likes dark mode.", store=store))
 
-    assert len(facts) == 1
-    assert facts[0].content == "The user prefers dark mode"
+    assert facts == []
 
 
 def test_dedup_against_candidates_ignores_rejected(monkeypatch):
     """Rejected candidates do not block deduplication of new facts."""
     store = _make_store()
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
         # No dedup needed from existing active facts
         if "Classify each new fact" in prompt:
-            return {"new": [0], "updates": [], "duplicates": []}
-        return {
-            "facts": [
-                {
-                    "content": "The user prefers polars",
-                    "category": "preference",
-                    "tags": ["python"],
-                    "why_store": "Library preference",
-                    "expires_at": None,
-                }
-            ]
-        }
+            return _structured(
+                response_model, {"new": [0], "updates": [], "duplicates": []}
+            )
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "content": "The user prefers polars",
+                        "category": "preference",
+                        "tags": ["python"],
+                        "why_store": "Library preference",
+                        "expires_at": None,
+                    }
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     from engram.models import MemoryCandidate
 

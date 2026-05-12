@@ -18,6 +18,10 @@ def _seed_facts(store: FactStore, facts: list[Fact]) -> None:
     store.append_facts(facts)
 
 
+def _structured(response_model, data):
+    return response_model.model_validate(data)
+
+
 def test_empty_store_returns_zero_counts():
     store = _make_store()
     result = asyncio.run(synthesize(store=store))
@@ -43,24 +47,31 @@ def test_dry_run_does_not_modify_store(monkeypatch):
         ],
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
-        return {
-            "actions": [
-                {
-                    "fact_id": "fact1",
-                    "action": "merge",
-                    "merge_with": ["fact2"],
-                    "merged_content": "User likes Python",
-                    "merged_tags": ["python"],
-                    "reason": "duplicates",
-                },
-                {"fact_id": "fact2", "action": "merge_source", "merge_target": "fact1"},
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "actions": [
+                    {
+                        "fact_id": "fact1",
+                        "action": "merge",
+                        "merge_with": ["fact2"],
+                        "merged_content": "User likes Python",
+                        "merged_tags": ["python"],
+                        "reason": "duplicates",
+                    },
+                    {
+                        "fact_id": "fact2",
+                        "action": "merge_source",
+                        "merge_target": "fact1",
+                    },
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
 
     result = asyncio.run(synthesize(dry_run=True, store=store))
     assert result.merged_groups == 1
@@ -86,21 +97,24 @@ def test_removes_stale_facts(monkeypatch):
         ],
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
-        return {
-            "actions": [
-                {
-                    "fact_id": "stale1",
-                    "action": "remove",
-                    "reason": "no longer relevant",
-                },
-                {"fact_id": "good1", "action": "keep"},
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "actions": [
+                    {
+                        "fact_id": "stale1",
+                        "action": "remove",
+                        "reason": "no longer relevant",
+                    },
+                    {"fact_id": "good1", "action": "keep"},
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.removed == 1
@@ -124,20 +138,23 @@ def test_synthesize_accepts_async_store(monkeypatch):
         ],
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
-        return {
-            "actions": [
-                {
-                    "fact_id": "stale1",
-                    "action": "remove",
-                    "reason": "no longer relevant",
-                }
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "actions": [
+                    {
+                        "fact_id": "stale1",
+                        "action": "remove",
+                        "reason": "no longer relevant",
+                    }
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
 
     result = asyncio.run(synthesize(dry_run=False, store=AsyncFactStore(store)))
 
@@ -154,22 +171,25 @@ def test_rewrites_facts(monkeypatch):
         ],
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
-        return {
-            "actions": [
-                {
-                    "fact_id": "vague1",
-                    "action": "rewrite",
-                    "new_content": "The user prefers TypeScript over JavaScript for new projects",
-                    "new_tags": ["typescript", "preference"],
-                    "reason": "improved clarity",
-                },
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "actions": [
+                    {
+                        "fact_id": "vague1",
+                        "action": "rewrite",
+                        "new_content": "The user prefers TypeScript over JavaScript for new projects",
+                        "new_tags": ["typescript", "preference"],
+                        "reason": "improved clarity",
+                    },
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.rewritten == 1
@@ -197,24 +217,31 @@ def test_merges_duplicate_facts(monkeypatch):
         ],
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
-        return {
-            "actions": [
-                {
-                    "fact_id": "dup1",
-                    "action": "merge",
-                    "merge_with": ["dup2"],
-                    "merged_content": "Engram persists facts as JSONL files in ~/.engram/data/",
-                    "merged_tags": ["engram", "storage"],
-                    "reason": "duplicate information",
-                },
-                {"fact_id": "dup2", "action": "merge_source", "merge_target": "dup1"},
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "actions": [
+                    {
+                        "fact_id": "dup1",
+                        "action": "merge",
+                        "merge_with": ["dup2"],
+                        "merged_content": "Engram persists facts as JSONL files in ~/.engram/data/",
+                        "merged_tags": ["engram", "storage"],
+                        "reason": "duplicate information",
+                    },
+                    {
+                        "fact_id": "dup2",
+                        "action": "merge_source",
+                        "merge_target": "dup1",
+                    },
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.merged_groups == 1
@@ -261,17 +288,20 @@ def test_project_filter_only_processes_matching(monkeypatch):
 
     calls = []
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
         calls.append(prompt)
-        return {
-            "actions": [
-                {"fact_id": "proj_a", "action": "keep"},
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "actions": [
+                    {"fact_id": "proj_a", "action": "keep"},
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
 
     result = asyncio.run(synthesize(project="alpha", store=store))
     assert result.total_analyzed == 1
@@ -296,17 +326,20 @@ def test_invalid_llm_response_defaults_to_keep(monkeypatch):
         ],
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
         # LLM only returns action for one fact, misses the other
-        return {
-            "actions": [
-                {"fact_id": "ok1", "action": "keep"},
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "actions": [
+                    {"fact_id": "ok1", "action": "keep"},
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.kept == 2  # both kept (one explicit, one defaulted)
@@ -326,12 +359,12 @@ def test_llm_error_defaults_all_to_keep(monkeypatch):
         ],
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
         raise RuntimeError("API error")
 
-    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.kept == 1
@@ -354,33 +387,36 @@ def test_three_way_merge_preserves_all_absorbed_ids(monkeypatch):
         ],
     )
 
-    async def fake_complete_json(
-        prompt: str, system: str = "", model: str | None = None
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
     ):
-        return {
-            "actions": [
-                {
-                    "fact_id": "survivor",
-                    "action": "merge",
-                    "merge_with": ["src1", "src2"],
-                    "merged_content": "Consolidated fact",
-                    "merged_tags": ["merged"],
-                    "reason": "three duplicates",
-                },
-                {
-                    "fact_id": "src1",
-                    "action": "merge_source",
-                    "merge_target": "survivor",
-                },
-                {
-                    "fact_id": "src2",
-                    "action": "merge_source",
-                    "merge_target": "survivor",
-                },
-            ]
-        }
+        return _structured(
+            response_model,
+            {
+                "actions": [
+                    {
+                        "fact_id": "survivor",
+                        "action": "merge",
+                        "merge_with": ["src1", "src2"],
+                        "merged_content": "Consolidated fact",
+                        "merged_tags": ["merged"],
+                        "reason": "three duplicates",
+                    },
+                    {
+                        "fact_id": "src1",
+                        "action": "merge_source",
+                        "merge_target": "survivor",
+                    },
+                    {
+                        "fact_id": "src2",
+                        "action": "merge_source",
+                        "merge_target": "survivor",
+                    },
+                ]
+            },
+        )
 
-    monkeypatch.setattr("engram.synthesizer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
 
     asyncio.run(synthesize(dry_run=False, store=store))
 

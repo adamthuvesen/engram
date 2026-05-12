@@ -5,15 +5,21 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
 from engram.llm import (
     Completion,
     _build_user_content,
     _extract_usage,
     _is_anthropic_model,
-    complete_json,
+    _response_format_for_model,
+    complete_model,
     complete_with_usage,
 )
+
+
+class _StructuredAnswer(BaseModel):
+    answer: int
 
 
 # ---------------------------------------------------------------------------
@@ -257,12 +263,51 @@ def test_complete_with_usage_missing_usage_returns_none(monkeypatch, fresh_setti
     assert result.cached_tokens is None
 
 
-def test_complete_json_embedded_multiple_objects_uses_first(monkeypatch):
+def test_response_format_for_model_uses_strict_json_schema():
+    response_format = _response_format_for_model(_StructuredAnswer)
+
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["name"] == "_StructuredAnswer"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["schema"] == (
+        _StructuredAnswer.model_json_schema()
+    )
+
+
+def test_complete_model_returns_validated_model(monkeypatch):
+    captured_kwargs: dict = {}
+
     async def fake_complete(**kwargs):
-        return 'First: {"answer": 42} second: {"ignored": true}'
+        captured_kwargs.update(kwargs)
+        return '{"answer": 42}'
 
     monkeypatch.setattr("engram.llm.complete", fake_complete)
 
-    result = asyncio.run(complete_json(prompt="test"))
+    result = asyncio.run(
+        complete_model(
+            prompt="test",
+            system="sys",
+            response_model=_StructuredAnswer,
+        )
+    )
 
-    assert result == {"answer": 42}
+    assert result == _StructuredAnswer(answer=42)
+    assert captured_kwargs["response_format"] == _response_format_for_model(
+        _StructuredAnswer
+    )
+
+
+def test_complete_model_invalid_json_raises_validation_error(monkeypatch):
+    async def fake_complete(**kwargs):
+        return "This is not JSON at all!"
+
+    monkeypatch.setattr("engram.llm.complete", fake_complete)
+
+    with pytest.raises(ValidationError):
+        asyncio.run(
+            complete_model(
+                prompt="test",
+                system="sys",
+                response_model=_StructuredAnswer,
+            )
+        )

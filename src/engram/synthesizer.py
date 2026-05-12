@@ -7,9 +7,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from engram.config import get_settings
-from engram.llm import complete_json
+from engram.llm import complete_model
 from engram.models import Fact
 from engram.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.structured_outputs import SynthesisResponse
 
 logger = logging.getLogger(__name__)
 
@@ -128,12 +129,16 @@ async def _synthesize_batch(batch: list[Fact], store: FactStore) -> list[dict]:
     prompt = f"Analyze these facts and decide what to do with each one:\n\n{facts_text}"
 
     try:
-        response = await complete_json(prompt=prompt, system=SYNTHESIS_SYSTEM)
+        response = await complete_model(
+            prompt=prompt,
+            system=SYNTHESIS_SYSTEM,
+            response_model=SynthesisResponse,
+        )
     except Exception as e:
         logger.error("Synthesis LLM call failed: %s", e)
         return [{"fact_id": f.id, "action": "keep"} for f in batch]
 
-    actions = response.get("actions", [])
+    actions = [action.model_dump(exclude_none=True) for action in response.actions]
 
     # Validate: every fact in the batch should have an action
     returned_ids = {a.get("fact_id") for a in actions}

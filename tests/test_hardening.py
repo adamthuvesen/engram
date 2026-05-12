@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
 import engram.server as server
 from engram.models import (
@@ -299,48 +300,34 @@ def test_reject_candidates_batched_writes():
 
 
 # ---------------------------------------------------------------------------
-# 3.4 complete_json parsing cascade
+# 3.4 structured LLM output validation
 # ---------------------------------------------------------------------------
 
 
-def test_complete_json_raw_parse(monkeypatch):
-    """Raw JSON is parsed directly."""
+class _HardeningStructuredResponse(BaseModel):
+    answer: int
+
+
+def test_complete_model_raw_json_parse(monkeypatch):
+    """Raw JSON is validated into the requested Pydantic model."""
     from engram import llm
 
     async def fake_complete(**kwargs):
-        return '{"facts": [1, 2, 3]}'
+        return '{"answer": 42}'
 
     monkeypatch.setattr(llm, "complete", fake_complete)
-    result = asyncio.run(llm.complete_json(prompt="test"))
-    assert result == {"facts": [1, 2, 3]}
+    result = asyncio.run(
+        llm.complete_model(
+            prompt="test",
+            system="sys",
+            response_model=_HardeningStructuredResponse,
+        )
+    )
+    assert result == _HardeningStructuredResponse(answer=42)
 
 
-def test_complete_json_fenced_parse(monkeypatch):
-    """JSON inside markdown fences is parsed correctly."""
-    from engram import llm
-
-    async def fake_complete(**kwargs):
-        return '```json\n{"key": "value"}\n```'
-
-    monkeypatch.setattr(llm, "complete", fake_complete)
-    result = asyncio.run(llm.complete_json(prompt="test"))
-    assert result == {"key": "value"}
-
-
-def test_complete_json_trailing_prose(monkeypatch):
-    """JSON followed by trailing prose is extracted correctly."""
-    from engram import llm
-
-    async def fake_complete(**kwargs):
-        return '{"answer": 42} Let me know if you need more.'
-
-    monkeypatch.setattr(llm, "complete", fake_complete)
-    result = asyncio.run(llm.complete_json(prompt="test"))
-    assert result == {"answer": 42}
-
-
-def test_complete_json_unparseable_returns_empty(monkeypatch):
-    """Completely unparseable output returns {} and logs a warning."""
+def test_complete_model_unparseable_raises_validation_error(monkeypatch):
+    """Completely unparseable output fails loudly at the structured boundary."""
     from engram import llm
 
     async def fake_complete(**kwargs):
@@ -348,11 +335,14 @@ def test_complete_json_unparseable_returns_empty(monkeypatch):
 
     monkeypatch.setattr(llm, "complete", fake_complete)
 
-    with patch("engram.llm.logger") as mock_logger:
-        result = asyncio.run(llm.complete_json(prompt="test"))
-
-    assert result == {}
-    mock_logger.warning.assert_called_once()
+    with pytest.raises(ValidationError):
+        asyncio.run(
+            llm.complete_model(
+                prompt="test",
+                system="sys",
+                response_model=_HardeningStructuredResponse,
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -479,20 +469,22 @@ def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
         lambda: MagicMock(claude_projects_dir=projects_dir),
     )
 
-    async def fake_complete_json(prompt: str, system: str = "", model=None):
-        return {
-            "facts": [
-                {
-                    "content": "Engram routes MCP storage through AsyncFactStore",
-                    "category": "project",
-                    "tags": ["storage"],
-                    "why_store": "Documents the architecture",
-                    "expires_at": None,
-                }
-            ]
-        }
+    async def fake_complete_model(prompt: str, system: str, response_model, model=None):
+        return response_model.model_validate(
+            {
+                "facts": [
+                    {
+                        "content": "Engram routes MCP storage through AsyncFactStore",
+                        "category": "project",
+                        "tags": ["storage"],
+                        "why_store": "Documents the architecture",
+                        "expires_at": None,
+                    }
+                ]
+            }
+        )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     store = _make_store()
     result = asyncio.run(import_claude_code_memories(store=AsyncFactStore(store)))
@@ -642,22 +634,24 @@ def test_dedup_collision_keeps_best_candidate(monkeypatch):
 
     update_fact_calls = []
 
-    async def fake_complete_json(prompt, system="", **kwargs):
-        return {
-            "new": [],
-            "updates": [
-                {"new_idx": 0, "existing_id": "ancestor"},
-                {"new_idx": 1, "existing_id": "ancestor"},
-            ],
-            "duplicates": [],
-        }
+    async def fake_complete_model(prompt, system, response_model, **kwargs):
+        return response_model.model_validate(
+            {
+                "new": [],
+                "updates": [
+                    {"new_idx": 0, "existing_id": "ancestor"},
+                    {"new_idx": 1, "existing_id": "ancestor"},
+                ],
+                "duplicates": [],
+            }
+        )
 
     fake_store = MagicMock()
     fake_store.update_fact = MagicMock(
         side_effect=lambda fid, **kw: update_fact_calls.append(fid)
     )
 
-    monkeypatch.setattr("engram.observer.complete_json", fake_complete_json)
+    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
 
     with patch("engram.observer._find_near_matches", return_value=existing):
         kept = asyncio.run(_dedup(candidates, existing, store=fake_store))
