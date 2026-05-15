@@ -23,6 +23,7 @@ engram-dash = "engram.dashboard.app:main"
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "ruff>=0.15.0",
 ]
 
 [build-system]
