@@ -1,5 +1,6 @@
 """LLM client wrapper using litellm for multi-provider support."""
 
+import copy
 import importlib
 import logging
 from dataclasses import dataclass
@@ -136,9 +137,32 @@ def _response_format_for_model(response_model: type[BaseModel]) -> dict:
         "json_schema": {
             "name": response_model.__name__,
             "strict": True,
-            "schema": response_model.model_json_schema(),
+            "schema": _openai_strict_schema(response_model),
         },
     }
+
+
+def _openai_strict_schema(response_model: type[BaseModel]) -> dict:
+    """Return a JSON schema compatible with OpenAI strict structured outputs."""
+    schema = copy.deepcopy(response_model.model_json_schema())
+    _require_all_object_properties(schema)
+    return schema
+
+
+def _require_all_object_properties(schema: object) -> None:
+    if isinstance(schema, dict):
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            schema["additionalProperties"] = False
+            schema["required"] = list(properties)
+
+        schema.pop("default", None)
+
+        for value in schema.values():
+            _require_all_object_properties(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            _require_all_object_properties(item)
 
 
 async def complete_with_usage(
