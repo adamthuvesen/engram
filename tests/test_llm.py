@@ -12,10 +12,12 @@ from engram.llm import (
     _build_user_content,
     _extract_usage,
     _is_anthropic_model,
+    _openai_strict_schema,
     _response_format_for_model,
     complete_model,
     complete_with_usage,
 )
+from engram.structured_outputs import ExtractionResponse
 
 
 class _StructuredAnswer(BaseModel):
@@ -270,8 +272,32 @@ def test_response_format_for_model_uses_strict_json_schema():
     assert response_format["json_schema"]["name"] == "_StructuredAnswer"
     assert response_format["json_schema"]["strict"] is True
     assert response_format["json_schema"]["schema"] == (
-        _StructuredAnswer.model_json_schema()
+        _openai_strict_schema(_StructuredAnswer)
     )
+
+
+def test_openai_strict_schema_requires_all_extraction_properties():
+    schema = _openai_strict_schema(ExtractionResponse)
+    fact_schema = schema["$defs"]["ExtractedFact"]
+
+    assert schema["required"] == ["facts"]
+    assert fact_schema["required"] == list(fact_schema["properties"])
+    assert "tags" in fact_schema["required"]
+    assert "default" not in _schema_keys(schema)
+
+
+def _schema_keys(schema: object) -> set[str]:
+    if isinstance(schema, dict):
+        keys = set(schema)
+        for value in schema.values():
+            keys.update(_schema_keys(value))
+        return keys
+    if isinstance(schema, list):
+        keys = set()
+        for item in schema:
+            keys.update(_schema_keys(item))
+        return keys
+    return set()
 
 
 def test_complete_model_returns_validated_model(monkeypatch):

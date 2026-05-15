@@ -44,12 +44,13 @@ Return a JSON object with a "facts" array. Each fact has:
 - "category": one of the categories above
 - "tags": 1-3 relevant tags (lowercase)
 - "why_store": one short reason this would be useful for future agent behavior
+- "effective_at": ISO datetime if the fact became true at a known time, null otherwise
 - "expires_at": ISO datetime if this is temporal/time-bound, null otherwise
 
 Example output:
 {"facts": [
-  {"content": "The user works on a data platform team", "category": "personal_info", "tags": ["team", "role"], "why_store": "Useful background for project context", "expires_at": null},
-  {"content": "The user prefers polars over pandas for large datasets", "category": "preference", "tags": ["python", "data"], "why_store": "Guides future tool and library choices", "expires_at": null}
+  {"content": "The user works on a data platform team", "category": "personal_info", "tags": ["team", "role"], "why_store": "Useful background for project context", "effective_at": null, "expires_at": null},
+  {"content": "The user prefers polars over pandas for large datasets", "category": "preference", "tags": ["python", "data"], "why_store": "Guides future tool and library choices", "effective_at": null, "expires_at": null}
 ]}"""
 
 DEDUP_SYSTEM = """You are a deduplication agent. Given a list of EXISTING facts and a list of
