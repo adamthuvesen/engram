@@ -8,7 +8,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from engram import operations
-from engram.models import CandidateStatus, Fact, FactCategory, MemoryCandidate, RecallRecord
+from engram.models import (
+    CandidateStatus,
+    Fact,
+    FactCategory,
+    MemoryCandidate,
+    RecallRecord,
+)
 from engram.store import AsyncFactStore, FactStore
 
 

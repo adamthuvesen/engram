@@ -268,9 +268,7 @@ def test_merge_facts_log_failure_keeps_single_active_replacement(monkeypatch):
     active = store.load_active_facts()
     assert len(active) == 1
     assert active[0].content == "merged"
-    inactive = {
-        fact.id: fact for fact in store.load_facts() if fact.id != active[0].id
-    }
+    inactive = {fact.id: fact for fact in store.load_facts() if fact.id != active[0].id}
     # Superseded sources surface as confidence==0 in the materialized view.
     assert inactive["srcaaaaaaaaa"].confidence == 0.0
     assert inactive["srcbbbbbbbbb"].confidence == 0.0

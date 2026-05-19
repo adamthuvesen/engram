@@ -107,9 +107,7 @@ def _ensure_repo(data_dir: Path) -> None:
         )
 
 
-def _resolve_remote_and_branch(
-    data_dir: Path, timeout: float
-) -> tuple[str, str]:
+def _resolve_remote_and_branch(data_dir: Path, timeout: float) -> tuple[str, str]:
     """Determine the remote name and current branch for the data dir repo.
 
     The remote name is fixed to ``origin`` if present (the convention for
@@ -337,9 +335,7 @@ def sync(
     _ensure_managed_repo_setup(data_dir, timeout)
 
     # Snapshot the current HEAD so we can count pulled commits afterwards.
-    head_before_proc = _run_git(
-        ["rev-parse", "HEAD"], cwd=data_dir, timeout=timeout
-    )
+    head_before_proc = _run_git(["rev-parse", "HEAD"], cwd=data_dir, timeout=timeout)
     head_before = head_before_proc.stdout.strip()
 
     fetch_proc = _run_git(["fetch", remote, branch], cwd=data_dir, timeout=timeout)
@@ -370,9 +366,7 @@ def sync(
         else _count_commits(f"{head_before}..{head_after_pull}", data_dir, timeout)
     )
 
-    pushed_commits = _count_commits(
-        f"{remote}/{branch}..HEAD", data_dir, timeout
-    )
+    pushed_commits = _count_commits(f"{remote}/{branch}..HEAD", data_dir, timeout)
 
     push_proc = _run_git(["push", remote, branch], cwd=data_dir, timeout=timeout)
     if push_proc.returncode != 0:

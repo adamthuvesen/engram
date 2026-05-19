@@ -125,7 +125,11 @@ def test_replay_edit_only_touches_editable_fields():
             event_type=EventType.edited,
             fact_id="fact_a",
             timestamp=_at(1),
-            payload={"id": "stolen", "created_at": _at(99).isoformat(), "content": "v2"},
+            payload={
+                "id": "stolen",
+                "created_at": _at(99).isoformat(),
+                "content": "v2",
+            },
         ),
     ]
     result, _ = replay_fact(events)

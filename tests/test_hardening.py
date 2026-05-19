@@ -622,9 +622,7 @@ def test_mcp_tools_return_text_and_structured_content():
     store.append_facts([_make_fact(id="aaaaaaaaaaaa", content="Project fact")])
     app = server.create_mcp(AsyncFactStore(store))
 
-    content, structured = asyncio.run(
-        app._call_tool_mcp("inspect", {"format": "json"})
-    )
+    content, structured = asyncio.run(app._call_tool_mcp("inspect", {"format": "json"}))
 
     assert content[0].text.startswith('{"status":"ok"')
     assert structured["status"] == "ok"

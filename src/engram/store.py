@@ -262,9 +262,7 @@ class FactStore:
                 try:
                     events.append(FactEvent.model_validate_json(line))
                 except (ValueError, ValidationError) as exc:
-                    logger.warning(
-                        "Skipping corrupt event at line %d: %s", lineno, exc
-                    )
+                    logger.warning("Skipping corrupt event at line %d: %s", lineno, exc)
         return events
 
     def load_facts(self) -> list[Fact]:
@@ -855,9 +853,7 @@ class FactStore:
     def forget(self, fact_id: str, reason: str = "") -> Fact | None:
         """Soft-delete a fact by appending a ``forgotten`` event."""
         with _locked_store(self.data_dir):
-            existing = next(
-                (f for f in self.load_facts() if f.id == fact_id), None
-            )
+            existing = next((f for f in self.load_facts() if f.id == fact_id), None)
             if existing is None or existing.confidence == 0.0:
                 return None
             now = datetime.now(timezone.utc)
@@ -874,9 +870,7 @@ class FactStore:
             self._tok_cache.pop(fact_id, None)
             if reason:
                 logger.info("Forgot fact %s: %s", fact_id, reason)
-            return existing.model_copy(
-                update={"confidence": 0.0, "updated_at": now}
-            )
+            return existing.model_copy(update={"confidence": 0.0, "updated_at": now})
 
     def restore_fact(self, fact_id: str) -> Fact | None:
         """Reverse a prior ``forget`` by appending a ``restored`` event.
@@ -1079,9 +1073,7 @@ class FactStore:
     def mark_stale(self, fact_id: str, reason: str = "") -> Fact | None:
         """Mark a fact stale by appending a ``stale`` event."""
         with _locked_store(self.data_dir):
-            existing = next(
-                (f for f in self.load_facts() if f.id == fact_id), None
-            )
+            existing = next((f for f in self.load_facts() if f.id == fact_id), None)
             if existing is None or existing.confidence == 0.0:
                 return None
             now = datetime.now(timezone.utc)
@@ -1111,9 +1103,7 @@ class FactStore:
     def unmark_stale(self, fact_id: str) -> Fact | None:
         """Reverse a stale marking by appending an ``unstale`` event."""
         with _locked_store(self.data_dir):
-            existing = next(
-                (f for f in self.load_facts() if f.id == fact_id), None
-            )
+            existing = next((f for f in self.load_facts() if f.id == fact_id), None)
             if existing is None or existing.confidence == 0.0:
                 return None
             now = datetime.now(timezone.utc)
@@ -1306,9 +1296,7 @@ class FactStore:
             with self.ingestion_log_path.open("a") as f:
                 f.write(record.model_dump_json() + "\n")
 
-    def compact_event_log(
-        self, *, keep_tombstones: bool = True
-    ) -> dict[str, int]:
+    def compact_event_log(self, *, keep_tombstones: bool = True) -> dict[str, int]:
         """Collapse the event log to a minimal representation.
 
         For every active ``fact_id``, emit exactly one ``created`` event that
@@ -1456,8 +1444,7 @@ class FactStore:
         expired = [
             f
             for f in facts
-            if f.confidence >= MIN_ACTIVE_CONFIDENCE
-            and _is_expired_fact(f, now)
+            if f.confidence >= MIN_ACTIVE_CONFIDENCE and _is_expired_fact(f, now)
         ]
         by_category = Counter(f.category.value for f in active)
         by_project = Counter(f.project or "(none)" for f in active)
@@ -1556,9 +1543,7 @@ class FactStore:
                             events.append(FactEvent.model_validate_json(line))
                         except Exception:
                             corrupt += 1
-                            logger.warning(
-                                "Corrupt facts line dropped: %s", line[:80]
-                            )
+                            logger.warning("Corrupt facts line dropped: %s", line[:80])
                 if corrupt > 0:
                     meta = meta or EventLogMeta()
                     tmp_path: Path | None = None
@@ -1599,9 +1584,7 @@ class FactStore:
                             valid_facts.append(Fact.model_validate_json(line))
                         except Exception:
                             corrupt += 1
-                            logger.warning(
-                                "Corrupt facts line dropped: %s", line[:80]
-                            )
+                            logger.warning("Corrupt facts line dropped: %s", line[:80])
                 if corrupt > 0:
                     self._rewrite(valid_facts)
                 result["facts_valid"] = len(valid_facts)
@@ -1620,12 +1603,12 @@ class FactStore:
                     if not line:
                         continue
                     try:
-                        valid_candidates.append(MemoryCandidate.model_validate_json(line))
+                        valid_candidates.append(
+                            MemoryCandidate.model_validate_json(line)
+                        )
                     except Exception:
                         corrupt += 1
-                        logger.warning(
-                            "Corrupt candidates line dropped: %s", line[:80]
-                        )
+                        logger.warning("Corrupt candidates line dropped: %s", line[:80])
             if corrupt > 0:
                 self._rewrite(valid_candidates, path=self.candidates_path)
             result["candidates_valid"] = len(valid_candidates)

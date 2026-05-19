@@ -78,9 +78,7 @@ def _tool_result(
     force_json_text: bool = False,
 ) -> ToolResult:
     text = (
-        result.envelope.to_json()
-        if force_json_text
-        else _render(result, format=format)
+        result.envelope.to_json() if force_json_text else _render(result, format=format)
     )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
@@ -244,7 +242,9 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
             max_prefilter_matches=max_prefilter_matches,
             store=get_store(),
         )
-        return _tool_result(result, format=format, force_json_text=bool(result.exit_code))
+        return _tool_result(
+            result, format=format, force_json_text=bool(result.exit_code)
+        )
 
     @app.tool()
     async def recall_trace(

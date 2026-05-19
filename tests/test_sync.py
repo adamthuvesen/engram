@@ -310,9 +310,7 @@ async def test_auto_sync_loop_runs_sync_on_interval(tmp_path: Path):
 
     calls: list[object] = []
     task = asyncio.create_task(
-        auto_sync_loop(
-            clone, interval=0.05, timeout=5.0, on_result=calls.append
-        )
+        auto_sync_loop(clone, interval=0.05, timeout=5.0, on_result=calls.append)
     )
 
     # Each tick performs real git ops; give the loop a generous window to
@@ -356,9 +354,7 @@ async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatc
 
     results: list[object] = []
     task = asyncio.create_task(
-        auto_sync_loop(
-            clone, interval=0.1, timeout=5.0, on_result=results.append
-        )
+        auto_sync_loop(clone, interval=0.1, timeout=5.0, on_result=results.append)
     )
     await asyncio.sleep(0.45)
     task.cancel()

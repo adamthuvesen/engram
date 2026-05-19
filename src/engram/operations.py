@@ -513,7 +513,9 @@ async def recall_context(
     if not facts:
         text = "No relevant memories found for this query."
         return OperationResult(
-            envelope=Envelope.success(data={"facts": [], "mode": mode, "message": text}),
+            envelope=Envelope.success(
+                data={"facts": [], "mode": mode, "message": text}
+            ),
             text=text,
         )
 
@@ -887,7 +889,9 @@ async def rename_project(
     if count == 0:
         text = f"No facts or candidates found with project '{old_project}'."
     else:
-        text = f"Renamed {count} record(s) from project '{old_project}' → '{new_project}'."
+        text = (
+            f"Renamed {count} record(s) from project '{old_project}' → '{new_project}'."
+        )
     return OperationResult(
         envelope=Envelope.success(
             data={
@@ -906,7 +910,9 @@ async def synthesize(
     dry_run: bool = True,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    result = await _synthesize(project=project, dry_run=dry_run, store=async_store(store))
+    result = await _synthesize(
+        project=project, dry_run=dry_run, store=async_store(store)
+    )
     data = {
         "total_analyzed": result.total_analyzed,
         "kept": result.kept,
@@ -1093,9 +1099,7 @@ def _format_recall_summary(records: list[RecallRecord], heading: str) -> list[st
         else "- Cached input tokens: -"
     )
     if token_usage["cache_hit_ratio"] is not None:
-        lines.append(
-            f"- Cache hit ratio: {token_usage['cache_hit_ratio'] * 100:.1f}%"
-        )
+        lines.append(f"- Cache hit ratio: {token_usage['cache_hit_ratio'] * 100:.1f}%")
     else:
         lines.append("- Cache hit ratio: -")
     return lines
@@ -1222,9 +1226,7 @@ async def sync(
         if exc.git_stderr:
             details["git_stderr"] = exc.git_stderr
         env = Envelope.failure(storage_error(exc.message, details=details))
-        return OperationResult(
-            envelope=env, text=exc.message, exit_code=EXIT_RUNTIME
-        )
+        return OperationResult(envelope=env, text=exc.message, exit_code=EXIT_RUNTIME)
 
     if result.get("status") == "skipped":
         text = f"Sync skipped: {result.get('reason', 'unknown')}."

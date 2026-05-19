@@ -526,7 +526,9 @@ def run(argv: Sequence[str] | None = None) -> int:
                 details={"exception_type": type(exc).__name__},
             )
         )
-        result = OperationResult(envelope=env, text=env.to_json(), exit_code=EXIT_RUNTIME)
+        result = OperationResult(
+            envelope=env, text=env.to_json(), exit_code=EXIT_RUNTIME
+        )
     return _emit(result, as_json=args.json)
 
 
