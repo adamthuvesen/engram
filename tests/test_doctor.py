@@ -268,3 +268,46 @@ def test_doctor_mcp_returns_envelope(monkeypatch):
     assert parsed["status"] == "ok"
     assert "report" in parsed["data"]
     assert parsed["data"]["report"]["status"] in ("ok", "warning", "error")
+
+
+# ---------------------------------------------------------------------------
+# Sync diagnostics
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_sync_group_when_not_a_git_repo():
+    """A data directory with no .git folder reports remote_configured=False
+    and does not degrade overall health solely because sync is not set up."""
+    store = _make_store()
+    report = run_doctor(store)
+    assert "sync" in report.counts
+    sync = report.counts["sync"]
+    assert sync["remote_configured"] is False
+    assert sync["last_sync_at"] is None
+    assert sync["unpushed_commits"] == 0
+    assert sync["conflicting_facts"] == []
+    # "Sync not configured" must NOT bump overall status to warning/error.
+    assert report.status == "ok"
+
+
+def test_doctor_sync_group_is_local_only(monkeypatch):
+    """The sync check must not invoke ``git fetch`` or any network command."""
+    store = _make_store()
+
+    import subprocess as _subprocess
+
+    real_run = _subprocess.run
+    network_calls: list[list[str]] = []
+
+    def watching_run(cmd, *args, **kwargs):
+        if cmd and isinstance(cmd, list) and len(cmd) >= 2 and cmd[0] == "git":
+            # Allow read-only local subcommands; flag anything that would touch
+            # the network.
+            forbidden = {"fetch", "pull", "push", "ls-remote"}
+            if cmd[1] in forbidden:
+                network_calls.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr("engram.doctor.subprocess.run", watching_run)
+    run_doctor(store)
+    assert network_calls == []

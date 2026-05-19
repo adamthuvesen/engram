@@ -86,9 +86,7 @@ def test_recall_json_mode_returns_envelope(monkeypatch):
         ]
     )
 
-    result = asyncio.run(
-        _call("recall", query="zagblort xylophone", format="json")
-    )
+    result = asyncio.run(_call("recall", query="zagblort xylophone", format="json"))
     parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert "answer" in parsed["data"]

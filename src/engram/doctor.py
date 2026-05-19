@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +27,10 @@ from pydantic import BaseModel, Field, ValidationError
 from engram.config import get_settings
 from engram.models import (
     CandidateStatus,
+    EVENT_LOG_META_VERSION,
+    EventLogMeta,
     Fact,
+    FactEvent,
     MIN_ACTIVE_CONFIDENCE,
     MemoryCandidate,
     RecallRecord,
@@ -55,7 +59,7 @@ class DoctorReport(BaseModel):
 
     status: str
     issues: list[DoctorIssue] = Field(default_factory=list)
-    counts: dict[str, int] = Field(default_factory=dict)
+    counts: dict[str, Any] = Field(default_factory=dict)
     checks_run: list[str] = Field(default_factory=list)
     checks_skipped: list[str] = Field(default_factory=list)
 
@@ -98,18 +102,49 @@ def _check_jsonl_integrity(
     model_cls: type,
     issues: list[DoctorIssue],
 ) -> int:
-    """Return the count of valid records; emit issues for corrupt lines."""
+    """Return the count of valid records; emit issues for corrupt lines.
+
+    For ``facts.jsonl`` in event-log format, validates each non-empty line
+    against the ``FactEvent`` schema (with the first line allowed to be the
+    ``EventLogMeta`` sentinel).
+    """
     if not path.exists():
         return 0
+
+    is_event_log = False
+    if label == "facts":
+        with path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = EventLogMeta.model_validate_json(line)
+                    is_event_log = payload.meta == EVENT_LOG_META_VERSION
+                except (ValueError, ValidationError):
+                    is_event_log = False
+                break
+
     valid = 0
     corrupt: list[int] = []
+    first_data_line = True
     with path.open() as fh:
         for lineno, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
                 continue
+            if is_event_log and first_data_line:
+                first_data_line = False
+                try:
+                    EventLogMeta.model_validate_json(line)
+                    continue
+                except (ValueError, ValidationError):
+                    pass
             try:
-                model_cls.model_validate_json(line)
+                if is_event_log:
+                    FactEvent.model_validate_json(line)
+                else:
+                    model_cls.model_validate_json(line)
                 valid += 1
             except (ValueError, ValidationError):
                 corrupt.append(lineno)
@@ -200,6 +235,62 @@ def _check_recall_log(store: FactStore, issues: list[DoctorIssue]) -> None:
                 repair="Truncate recall_log.jsonl or drop the bad lines manually.",
             )
         )
+
+
+def _check_sync(
+    store: FactStore,
+    issues: list[DoctorIssue],
+    *,
+    counts: dict[str, object],
+) -> None:
+    """Populate sync diagnostics in ``counts['sync']``.
+
+    Local-only by default — no network calls. Reports whether the data dir
+    is a git repo, the configured remote (if any), the last sync timestamp
+    read from ``.engram-sync-state``, and the number of local commits ahead
+    of the upstream tracking branch.
+    """
+    from engram.sync import read_sync_state
+
+    sync_info: dict[str, object] = {
+        "remote_configured": False,
+        "last_sync_at": None,
+        "unpushed_commits": 0,
+        "conflicting_facts": [],
+    }
+
+    data_dir = store.data_dir
+    if not (data_dir / ".git").exists():
+        counts["sync"] = sync_info
+        return
+
+    # Remote configured?
+    remotes_proc = subprocess.run(
+        ["git", "remote"], cwd=data_dir, capture_output=True, text=True, check=False
+    )
+    sync_info["remote_configured"] = bool(remotes_proc.stdout.strip())
+
+    # Last successful sync timestamp (from local state file).
+    state = read_sync_state(data_dir)
+    if state:
+        sync_info["last_sync_at"] = state.get("completed_at")
+
+    # Local commits ahead of upstream — read-only, no network.
+    if sync_info["remote_configured"]:
+        ahead_proc = subprocess.run(
+            ["git", "rev-list", "--count", "@{upstream}..HEAD"],
+            cwd=data_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if ahead_proc.returncode == 0:
+            try:
+                sync_info["unpushed_commits"] = int(ahead_proc.stdout.strip() or "0")
+            except ValueError:
+                sync_info["unpushed_commits"] = 0
+
+    counts["sync"] = sync_info
 
 
 def _check_config(issues: list[DoctorIssue]) -> None:
@@ -428,7 +519,7 @@ def run_doctor(
         status = "ok"
 
     now = datetime.now(timezone.utc)
-    counts: dict[str, int] = {
+    counts: dict[str, Any] = {
         "facts_valid": facts_valid,
         "candidates_valid": candidates_valid,
         "active_facts": sum(1 for f in facts if _is_active_fact(f, now)),
@@ -436,6 +527,9 @@ def run_doctor(
         "forgotten_facts": sum(1 for f in facts if f.confidence == 0.0),
         "issues": len(issues),
     }
+
+    _check_sync(sync_store, issues, counts=counts)
+    checks_run.append("sync")
 
     return DoctorReport(
         status=status,

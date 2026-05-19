@@ -67,11 +67,12 @@ def test_concurrent_append_no_corruption():
     assert not errors, f"Thread errors: {errors}"
     loaded = store.load_facts()
     assert len(loaded) == 100
-    # Each line must be parseable (load_facts already validates)
+    # Each on-disk line must be parseable. The event-log layout is one meta
+    # sentinel followed by one ``created`` event per fact.
     raw_lines = [
         line for line in store.facts_path.read_text().splitlines() if line.strip()
     ]
-    assert len(raw_lines) == 100
+    assert len(raw_lines) == 101
     for line in raw_lines:
         json.loads(line)  # must not raise
 
@@ -621,9 +622,7 @@ def test_mcp_tools_return_text_and_structured_content():
     store.append_facts([_make_fact(id="aaaaaaaaaaaa", content="Project fact")])
     app = server.create_mcp(AsyncFactStore(store))
 
-    content, structured = asyncio.run(
-        app._call_tool_mcp("inspect", {"format": "json"})
-    )
+    content, structured = asyncio.run(app._call_tool_mcp("inspect", {"format": "json"}))
 
     assert content[0].text.startswith('{"status":"ok"')
     assert structured["status"] == "ok"

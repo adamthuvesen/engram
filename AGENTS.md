@@ -14,16 +14,18 @@ uv run --extra dev pytest tests/ -v              # run tests
 ## Architecture
 
 ```
-server.py      FastMCP entrypoint, tool definitions
-store.py       JSONL storage + AsyncFactStore facade, prefilter, candidate review,
-               transaction journal for candidate approval
+server.py      FastMCP entrypoint, tool definitions, auto-sync lifespan
+store.py       Append-only event-log storage + AsyncFactStore facade, prefilter,
+               candidate review, transaction journal for candidate approval
 observer.py    Fact extraction & suggestion queueing (LLM structured output)
 retriever.py   Tiered: deterministic fast paths → multi-lens search + synthesis
 synthesizer.py Batch LLM consolidation (keep/remove/rewrite/merge)
+sync.py        Git-backed sync of the data directory, optional background loop
 importer.py    Bootstrap from Claude Code memory files
 llm.py         litellm wrapper
 config.py      pydantic-settings (env prefix: ENGRAM_)
-models.py      Fact, MemoryCandidate, IngestionRecord, RecallRecord, StoreTransaction
+models.py      Fact, FactEvent, MemoryCandidate, IngestionRecord, RecallRecord,
+               StoreTransaction
 ```
 
 **Data flow:** natural language → `observer` extracts structured facts → `store` persists as JSONL via `AsyncFactStore` → `retriever` runs deterministic fast paths first, escalating to multi-lens search + synthesis only for complex queries.
@@ -50,17 +52,58 @@ models.py      Fact, MemoryCandidate, IngestionRecord, RecallRecord, StoreTransa
 | `synthesize`                               | Batch dedupe / merge / rewrite / prune                |
 | `purge` / `rename_project`                 | Permanently drop forgotten/expired or rename a scope  |
 | `doctor`                                   | Read-only health diagnostics (with opt-in `repair`)   |
+| `sync`                                     | Git-backed pull + push of the data directory          |
 
 
 ## Data
 
 All data lives under `~/.engram/data/`:
 
-- `facts.jsonl` — active + forgotten facts
+- `facts.jsonl` — append-only event log. First line is the
+  `{"meta":"event-log-v1",...}` sentinel; subsequent lines are typed
+  `FactEvent` records (`created`, `edited`, `forgotten`, `restored`, `stale`,
+  `unstale`, `superseded`). Current state per `fact_id` is materialized by
+  replaying events in order.
 - `candidates.jsonl` — suggested memories pending review
 - `ingestion_log.jsonl` — audit trail
 - `recall_log.jsonl` — recall quality / latency observability
 - `transactions.jsonl` — prepared/committed markers for crash-safe candidate approval
+- `facts.jsonl.pre-eventlog` — one-shot backup written the first time a legacy
+  (rewrite-format) store is migrated to the event log. Safe to delete after
+  you've verified the new file looks right.
+- `.engram-sync-state` — last successful sync timestamp + commit counts (only
+  exists when `engram sync` has been run).
+- `.gitignore` / `.gitattributes` — managed by `engram sync` on first run.
+  The gitignore excludes lock and per-machine state files; gitattributes
+  configures `merge=union` for the event-log files so parallel appends from
+  two machines auto-merge.
+
+### Sync across machines
+
+```bash
+# One-time setup on machine A
+cd ~/.engram/data
+git init -b main
+git remote add origin git@github.com:you/your-engram-data.git  # private!
+engram sync       # writes managed .gitignore + .gitattributes, pushes setup
+
+# On machine B
+git clone git@github.com:you/your-engram-data.git ~/.engram/data
+engram sync       # pulls A's state; subsequent syncs are pull + push
+```
+
+The first sync auto-commits a managed `.gitignore` and `.gitattributes`.
+After that, regular usage is just `engram sync` whenever you want to push or
+pull. Set `ENGRAM_SYNC_ENABLED=true` to have the MCP server run sync
+automatically on `ENGRAM_SYNC_INTERVAL` (default 300s) and once on shutdown.
+
+**Conflict model**: appends from two machines auto-merge thanks to
+`merge=union`. Same-fact concurrent edits resolve by event timestamp on read,
+with both events kept in the log for audit. `engram doctor` surfaces sync
+state under the `counts.sync` group.
+
+**Rollback**: stop Engram, replace `facts.jsonl` with
+`facts.jsonl.pre-eventlog`, downgrade the package, restart.
 
 ## Config
 
@@ -74,6 +117,9 @@ All settings via `ENGRAM_*` env vars (pydantic-settings). Key knobs:
 | `ENGRAM_RETRIEVAL_TIMEOUT`   | `15.0`                | Search agent timeout (seconds)     |
 | `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11`            | Tier-2 requires at least this many positive-scoring prefilter matches. `0` disables the small-corpus cap. |
 | `ENGRAM_DATA_DIR`            | `~/.engram/data`      | Storage directory                  |
+| `ENGRAM_SYNC_ENABLED`        | `false`               | Run background auto-sync inside the MCP server lifespan. |
+| `ENGRAM_SYNC_INTERVAL`       | `300.0`               | Background auto-sync cadence (seconds). |
+| `ENGRAM_SYNC_TIMEOUT`        | `30.0`                | Timeout for each underlying `git` invocation. |
 
 The MCP `recall_stats` tool summarises LLM usage pulled from the recall log:
 total LLM calls, input tokens, cached (prefix-hit) input tokens, and the
@@ -91,3 +137,10 @@ Recall logs keep `selector_version="v2"` for continuity with existing
 - litellm for model-agnostic LLM calls
 - All MCP tools are async; storage I/O is synchronous behind an `AsyncFactStore` `asyncio.to_thread` facade
 - Facts have: category, content, confidence, timestamps, project scope, supersession chain, source metadata
+- Storage is an append-only event log. Mutations (`forget`, `edit_fact`,
+  `mark_stale`, etc.) append typed `FactEvent` records rather than rewriting
+  the file. The only paths that still call `_rewrite` are `purge`, `repair`,
+  and (future) compaction inside `synthesize`.
+- Sync requires `git` on PATH. The first run of `engram sync` writes managed
+  `.gitignore` and `.gitattributes` to the data dir; subsequent runs are
+  idempotent.

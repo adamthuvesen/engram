@@ -81,7 +81,13 @@ def test_correct_fact_returns_none_for_forgotten():
     assert store.correct_fact("forgottenfac", "y") is None
 
 
-def test_correct_fact_rewrite_failure_leaves_original_active(monkeypatch):
+def test_correct_fact_append_failure_leaves_original_active(monkeypatch):
+    """Failure inside ``append_events`` must leave the original fact active.
+
+    In the event-log model ``correct_fact`` commits its supersedes + created
+    events through ``append_events``; if that raises, no events land and the
+    original fact remains the sole active record.
+    """
     store = _make_store()
     store.append_facts(
         [
@@ -93,12 +99,12 @@ def test_correct_fact_rewrite_failure_leaves_original_active(monkeypatch):
         ]
     )
 
-    def fail_rewrite(records, path=None):
-        raise OSError("rewrite failed")
+    def fail_append(events):
+        raise OSError("append failed")
 
-    monkeypatch.setattr(store, "_rewrite", fail_rewrite)
+    monkeypatch.setattr(store, "append_events", fail_append)
 
-    with pytest.raises(OSError, match="rewrite failed"):
+    with pytest.raises(OSError, match="append failed"):
         store.correct_fact("oldaaaaaaaaa", "prefers neovim")
 
     active = store.load_active_facts()
@@ -108,6 +114,9 @@ def test_correct_fact_rewrite_failure_leaves_original_active(monkeypatch):
 
 
 def test_correct_fact_log_failure_keeps_single_active_replacement(monkeypatch):
+    """If ``log_ingestion`` fails after events are appended, the state still
+    reflects a single active replacement (new fact active, old superseded).
+    """
     store = _make_store()
     store.append_facts(
         [
@@ -132,7 +141,8 @@ def test_correct_fact_log_failure_keeps_single_active_replacement(monkeypatch):
     assert active[0].id != "oldaaaaaaaaa"
     assert active[0].content == "prefers neovim"
     old = next(f for f in store.load_facts() if f.id == "oldaaaaaaaaa")
-    assert old.confidence == 0.05
+    # Superseded facts surface as confidence==0 in the materialized view.
+    assert old.confidence == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +224,8 @@ def test_merge_rejects_mixed_projects():
     assert store.merge_facts(["aaaaaaaaaaaa", "bbbbbbbbbbbb"], "merged") is None
 
 
-def test_merge_facts_rewrite_failure_leaves_sources_active(monkeypatch):
+def test_merge_facts_append_failure_leaves_sources_active(monkeypatch):
+    """Failure inside ``append_events`` must leave both source facts active."""
     store = _make_store()
     store.append_facts(
         [
@@ -223,12 +234,12 @@ def test_merge_facts_rewrite_failure_leaves_sources_active(monkeypatch):
         ]
     )
 
-    def fail_rewrite(records, path=None):
-        raise OSError("rewrite failed")
+    def fail_append(events):
+        raise OSError("append failed")
 
-    monkeypatch.setattr(store, "_rewrite", fail_rewrite)
+    monkeypatch.setattr(store, "append_events", fail_append)
 
-    with pytest.raises(OSError, match="rewrite failed"):
+    with pytest.raises(OSError, match="append failed"):
         store.merge_facts(["srcaaaaaaaaa", "srcbbbbbbbbb"], "merged")
 
     active_ids = {fact.id for fact in store.load_active_facts()}
@@ -236,6 +247,8 @@ def test_merge_facts_rewrite_failure_leaves_sources_active(monkeypatch):
 
 
 def test_merge_facts_log_failure_keeps_single_active_replacement(monkeypatch):
+    """When ``log_ingestion`` fails after events are appended, the merged
+    state still resolves to exactly one active record."""
     store = _make_store()
     store.append_facts(
         [
@@ -255,11 +268,10 @@ def test_merge_facts_log_failure_keeps_single_active_replacement(monkeypatch):
     active = store.load_active_facts()
     assert len(active) == 1
     assert active[0].content == "merged"
-    inactive = {
-        fact.id: fact for fact in store.load_facts() if fact.id != active[0].id
-    }
-    assert inactive["srcaaaaaaaaa"].confidence == 0.05
-    assert inactive["srcbbbbbbbbb"].confidence == 0.05
+    inactive = {fact.id: fact for fact in store.load_facts() if fact.id != active[0].id}
+    # Superseded sources surface as confidence==0 in the materialized view.
+    assert inactive["srcaaaaaaaaa"].confidence == 0.0
+    assert inactive["srcbbbbbbbbb"].confidence == 0.0
 
 
 # ---------------------------------------------------------------------------

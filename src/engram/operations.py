@@ -33,6 +33,11 @@ from engram.retriever import (
     recall_with_provenance as _recall_with_provenance,
 )
 from engram.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.sync import (
+    DEFAULT_GIT_TIMEOUT_SECONDS,
+    SyncError,
+    sync as _sync,
+)
 from engram.synthesizer import format_synthesis_result, synthesize as _synthesize
 
 EXIT_OK = 0
@@ -508,7 +513,9 @@ async def recall_context(
     if not facts:
         text = "No relevant memories found for this query."
         return OperationResult(
-            envelope=Envelope.success(data={"facts": [], "mode": mode, "message": text}),
+            envelope=Envelope.success(
+                data={"facts": [], "mode": mode, "message": text}
+            ),
             text=text,
         )
 
@@ -882,7 +889,9 @@ async def rename_project(
     if count == 0:
         text = f"No facts or candidates found with project '{old_project}'."
     else:
-        text = f"Renamed {count} record(s) from project '{old_project}' → '{new_project}'."
+        text = (
+            f"Renamed {count} record(s) from project '{old_project}' → '{new_project}'."
+        )
     return OperationResult(
         envelope=Envelope.success(
             data={
@@ -901,7 +910,9 @@ async def synthesize(
     dry_run: bool = True,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    result = await _synthesize(project=project, dry_run=dry_run, store=async_store(store))
+    result = await _synthesize(
+        project=project, dry_run=dry_run, store=async_store(store)
+    )
     data = {
         "total_analyzed": result.total_analyzed,
         "kept": result.kept,
@@ -1088,9 +1099,7 @@ def _format_recall_summary(records: list[RecallRecord], heading: str) -> list[st
         else "- Cached input tokens: -"
     )
     if token_usage["cache_hit_ratio"] is not None:
-        lines.append(
-            f"- Cache hit ratio: {token_usage['cache_hit_ratio'] * 100:.1f}%"
-        )
+        lines.append(f"- Cache hit ratio: {token_usage['cache_hit_ratio'] * 100:.1f}%")
     else:
         lines.append("- Cache hit ratio: -")
     return lines
@@ -1196,6 +1205,40 @@ async def recall_stats(
     )
 
 
+async def sync(
+    *,
+    timeout: float = DEFAULT_GIT_TIMEOUT_SECONDS,
+    store: FactStore | AsyncFactStore | None = None,
+) -> OperationResult:
+    """Run git-backed sync against the configured remote.
+
+    Returns a structured ``OperationResult`` envelope. Sync failures surface as
+    non-zero exit codes with the underlying git stderr preserved verbatim.
+    """
+    import asyncio as _asyncio
+
+    data_dir = async_store(store).data_dir
+
+    try:
+        result = await _asyncio.to_thread(_sync, data_dir, timeout=timeout)
+    except SyncError as exc:
+        details: dict = {"sync_error_code": exc.code}
+        if exc.git_stderr:
+            details["git_stderr"] = exc.git_stderr
+        env = Envelope.failure(storage_error(exc.message, details=details))
+        return OperationResult(envelope=env, text=exc.message, exit_code=EXIT_RUNTIME)
+
+    if result.get("status") == "skipped":
+        text = f"Sync skipped: {result.get('reason', 'unknown')}."
+    else:
+        text = (
+            f"Sync OK — pulled {result['pulled_commits']} commit(s), "
+            f"pushed {result['pushed_commits']} commit(s) "
+            f"({result['remote']}/{result['branch']}) in {result['took_ms']} ms."
+        )
+    return OperationResult(envelope=Envelope.success(data=result), text=text)
+
+
 __all__ = [
     "EXIT_DOCTOR_ERROR",
     "EXIT_NOT_FOUND",
@@ -1224,6 +1267,7 @@ __all__ = [
     "remember",
     "rename_project",
     "suggest_memories",
+    "sync",
     "synthesize",
     "unmark_stale",
 ]

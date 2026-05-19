@@ -137,9 +137,7 @@ def test_cli_and_mcp_mark_stale_json_have_matching_payload(cli_env, capsys):
     cli_exit = cli.run(["mark-stale", "aaaaaaaaaaaa", "--reason", "old", "--json"])
     cli_payload = json.loads(capsys.readouterr().out)
     mcp_payload = _structured(
-        asyncio.run(
-            _mcp_call(app, "mark_stale", fact_id="aaaaaaaaaaaa", reason="old")
-        )
+        asyncio.run(_mcp_call(app, "mark_stale", fact_id="aaaaaaaaaaaa", reason="old"))
     )
 
     assert cli_exit == cli.EXIT_OK
@@ -168,15 +166,11 @@ def test_cli_and_mcp_memory_stats_json_have_matching_shape(cli_env, capsys):
 
     cli_stats_exit = cli.run(["memory-stats", "--json"])
     cli_stats = json.loads(capsys.readouterr().out)
-    mcp_stats = _structured(
-        asyncio.run(_mcp_call(app, "memory_stats", format="json"))
-    )
+    mcp_stats = _structured(asyncio.run(_mcp_call(app, "memory_stats", format="json")))
 
     cli_recall_exit = cli.run(["recall-stats", "--json"])
     cli_recall = json.loads(capsys.readouterr().out)
-    mcp_recall = _structured(
-        asyncio.run(_mcp_call(app, "recall_stats", format="json"))
-    )
+    mcp_recall = _structured(asyncio.run(_mcp_call(app, "recall_stats", format="json")))
 
     assert cli_stats_exit == cli_recall_exit == cli.EXIT_OK
     assert cli_stats["data"].keys() == mcp_stats["data"].keys()

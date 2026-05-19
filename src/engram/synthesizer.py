@@ -57,12 +57,14 @@ class SynthesisResult:
     merged_sources: int = 0
     errors: list[str] = field(default_factory=list)
     details: list[dict] = field(default_factory=list)
+    compaction: dict | None = None
 
 
 async def synthesize(
     project: str | None = None,
     dry_run: bool = True,
     store: FactStore | AsyncFactStore | None = None,
+    compact: bool = False,
 ) -> SynthesisResult:
     """Analyze and consolidate the fact store.
 
@@ -73,6 +75,10 @@ async def synthesize(
         project: Only process facts for this project. None = all projects.
         dry_run: If True, return proposed changes without applying them.
         store: FactStore instance (uses default if None).
+        compact: If True (and not a dry run), compact the event log after
+            synthesis completes. Compaction is the only mutation path that
+            rewrites ``facts.jsonl`` whole; opt-in to avoid surprising
+            concurrent sync activity.
 
     Returns:
         SynthesisResult with counts and details of all actions.
@@ -83,7 +89,10 @@ async def synthesize(
 
     facts = await _load_active_facts(store, project=project, include_global=False)
     if not facts:
-        return SynthesisResult()
+        result = SynthesisResult()
+        if compact and not dry_run:
+            result.compaction = await _maybe_compact(store)
+        return result
 
     # Group by (project, category) so related facts land in the same batch
     groups: dict[tuple[str | None, str], list[Fact]] = defaultdict(list)
@@ -120,7 +129,17 @@ async def synthesize(
             if not dry_run:
                 await _apply_actions(batch_actions, store)
 
+    if compact and not dry_run:
+        result.compaction = await _maybe_compact(store)
+
     return result
+
+
+async def _maybe_compact(store: FactStore | AsyncFactStore) -> dict | None:
+    """Run event-log compaction via the async facade if available."""
+    if isinstance(store, AsyncFactStore):
+        return await store.compact_event_log()
+    return store.compact_event_log()
 
 
 async def _synthesize_batch(batch: list[Fact], store: FactStore) -> list[dict]:

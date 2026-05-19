@@ -1,12 +1,15 @@
 """Engram MCP Server — structured, cross-project memory for coding agents."""
 
+import asyncio
+import logging
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 
 from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
 
-from engram.config import configure_logging
+from engram.config import configure_logging, get_settings
 from engram.operations import (
     OperationResult,
     async_store,
@@ -30,6 +33,7 @@ from engram.operations import (
     remember as op_remember,
     rename_project as op_rename_project,
     suggest_memories as op_suggest_memories,
+    sync as op_sync,
     synthesize as op_synthesize,
     unmark_stale as op_unmark_stale,
 )
@@ -74,9 +78,7 @@ def _tool_result(
     force_json_text: bool = False,
 ) -> ToolResult:
     text = (
-        result.envelope.to_json()
-        if force_json_text
-        else _render(result, format=format)
+        result.envelope.to_json() if force_json_text else _render(result, format=format)
     )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
@@ -84,14 +86,57 @@ def _tool_result(
     )
 
 
+logger = logging.getLogger(__name__)
+
+
 def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
     """Create an Engram MCP server with an isolated, injectable store.
 
     ``store=None`` is lazy: the default ``AsyncFactStore`` is created on first
     tool call so environment changes made before runtime still take effect.
+
+    When ``ENGRAM_SYNC_ENABLED`` is true, the server also runs a background
+    auto-sync task on a configurable interval and performs one final sync on
+    shutdown. The task lives in the MCP lifespan, so it starts when the
+    server starts and is cancelled on shutdown.
     """
 
-    app = FastMCP("engram", instructions=INSTRUCTIONS)
+    @asynccontextmanager
+    async def lifespan(_app: FastMCP):
+        settings = get_settings()
+        auto_sync_task: asyncio.Task | None = None
+        if settings.sync_enabled:
+            from engram.sync import auto_sync_loop
+
+            data_dir = get_store().data_dir
+            auto_sync_task = asyncio.create_task(
+                auto_sync_loop(
+                    data_dir,
+                    interval=settings.sync_interval,
+                    timeout=settings.sync_timeout,
+                )
+            )
+            logger.info(
+                "engram-sync auto-loop scheduled (interval=%.1fs)",
+                settings.sync_interval,
+            )
+        try:
+            yield
+        finally:
+            if auto_sync_task is not None:
+                auto_sync_task.cancel()
+                try:
+                    await auto_sync_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                # Final sync attempt on shutdown — best-effort.
+                from engram.sync import run_final_sync
+
+                await run_final_sync(
+                    get_store().data_dir, timeout=settings.sync_timeout
+                )
+
+    app = FastMCP("engram", instructions=INSTRUCTIONS, lifespan=lifespan)
     store_ref: FactStore | AsyncFactStore | None = store
 
     def get_store() -> AsyncFactStore:
@@ -197,7 +242,9 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
             max_prefilter_matches=max_prefilter_matches,
             store=get_store(),
         )
-        return _tool_result(result, format=format, force_json_text=bool(result.exit_code))
+        return _tool_result(
+            result, format=format, force_json_text=bool(result.exit_code)
+        )
 
     @app.tool()
     async def recall_trace(
@@ -423,6 +470,20 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
             include_records=include_records,
             store=get_store(),
         )
+        return _tool_result(result, format=format)
+
+    @app.tool()
+    async def sync(
+        format: str = "text",
+        timeout: float = 30.0,
+    ) -> ToolResult:
+        """Git-backed sync of the data directory against its configured remote.
+
+        Runs ``git fetch`` + ``git pull --rebase`` + ``git push`` against the
+        Engram data directory. Requires the data directory to be a git
+        repository with at least one remote — see CLAUDE.md for setup.
+        """
+        result = await op_sync(timeout=timeout, store=get_store())
         return _tool_result(result, format=format)
 
     return app

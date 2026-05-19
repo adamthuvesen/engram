@@ -1,12 +1,36 @@
 """Data models for Engram."""
 
+import threading
+import time
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MIN_ACTIVE_CONFIDENCE = 0.1
+
+
+_EVENT_ID_LOCK = threading.Lock()
+_LAST_EVENT_MS: int = 0
+
+
+def new_event_id() -> str:
+    """Generate a monotonically-orderable event id.
+
+    Format: ``{ms:016d}{rand:08x}`` — 16-digit ms timestamp (sortable to year ~2286)
+    plus 8 hex chars from uuid4 for cross-process tie-breaking. Within a single
+    process the ms portion is strictly monotonic (a slow clock or rapid calls
+    cannot produce duplicates: the helper bumps to ``last + 1`` if needed).
+    """
+    global _LAST_EVENT_MS
+    with _EVENT_ID_LOCK:
+        now_ms = int(time.time() * 1000)
+        if now_ms <= _LAST_EVENT_MS:
+            now_ms = _LAST_EVENT_MS + 1
+        _LAST_EVENT_MS = now_ms
+    return f"{now_ms:016d}{uuid4().hex[:8]}"
 
 
 class FactCategory(str, Enum):
@@ -157,3 +181,181 @@ class StoreTransaction(BaseModel):
     new_facts: list[Fact] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     committed_at: datetime | None = None
+
+
+# --- Event-log model ---------------------------------------------------------
+
+
+EVENT_LOG_META_VERSION = "event-log-v1"
+
+# Fields on Fact that are allowed in an ``edited`` event's payload. Restricting
+# this prevents callers from mutating immutable fields (id, created_at) via
+# edit events.
+EDITABLE_FACT_FIELDS = frozenset(
+    {
+        "category",
+        "content",
+        "source",
+        "confidence",
+        "observed_at",
+        "effective_at",
+        "expires_at",
+        "tags",
+        "project",
+        "supersedes",
+        "evidence_kind",
+        "source_ref",
+        "why_store",
+        "stale",
+        "stale_reason",
+    }
+)
+
+
+class EventType(str, Enum):
+    """Event types appended to ``facts.jsonl``."""
+
+    created = "created"
+    edited = "edited"
+    forgotten = "forgotten"
+    restored = "restored"
+    stale = "stale"
+    unstale = "unstale"
+    superseded = "superseded"
+
+
+class FactEvent(BaseModel):
+    """One typed mutation event for a fact in the append-only event log."""
+
+    event_id: str = Field(default_factory=new_event_id)
+    event_type: EventType
+    fact_id: str
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    actor: str = "engram"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class EventLogMeta(BaseModel):
+    """First-line sentinel marking a ``facts.jsonl`` as event-log format."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    meta: str = EVENT_LOG_META_VERSION
+    migrated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def _event_sort_key(event: FactEvent) -> tuple[datetime, str]:
+    """Order events deterministically: timestamp first, event_id breaks ties."""
+    return (event.timestamp, event.event_id)
+
+
+def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
+    """Replay events for a single ``fact_id`` to its current materialized state.
+
+    Returns ``(fact, is_active)``:
+      * ``fact`` is ``None`` if the event sequence does not begin with a
+        ``created`` event (corrupt / unknown fact_id).
+      * ``is_active`` reflects forgotten/restored lifecycle. Stale flag is
+        encoded directly on the returned ``Fact``.
+
+    Concurrent edits resolve by timestamp then ``event_id`` lexicographic tie-break.
+    """
+    if not events:
+        return None, False
+
+    ordered = sorted(events, key=_event_sort_key)
+    fact_id = ordered[0].fact_id
+    if any(e.fact_id != fact_id for e in ordered):
+        raise ValueError(
+            f"replay_fact received events for multiple fact_ids: {fact_id} + others"
+        )
+
+    fact: Fact | None = None
+    is_active = True
+    is_forgotten = False
+
+    for event in ordered:
+        if event.event_type is EventType.created:
+            # Allow re-creation only as a no-op idempotent restore (e.g. during
+            # migration replay); the first created wins.
+            if fact is None:
+                fact = Fact(**event.payload)
+            continue
+
+        if fact is None:
+            # Skip mutation events that arrive before created — defensive only.
+            continue
+
+        if event.event_type is EventType.edited:
+            updates = {
+                key: value
+                for key, value in event.payload.items()
+                if key in EDITABLE_FACT_FIELDS
+            }
+            if updates:
+                merged = {**fact.model_dump(), **updates, "updated_at": event.timestamp}
+                fact = Fact.model_validate(merged)
+        elif event.event_type is EventType.forgotten:
+            is_forgotten = True
+            is_active = False
+            fact = Fact.model_validate(
+                {**fact.model_dump(), "updated_at": event.timestamp}
+            )
+        elif event.event_type is EventType.restored:
+            is_forgotten = False
+            is_active = True
+            fact = Fact.model_validate(
+                {**fact.model_dump(), "updated_at": event.timestamp}
+            )
+        elif event.event_type is EventType.stale:
+            reason = event.payload.get("reason", "")
+            fact = Fact.model_validate(
+                {
+                    **fact.model_dump(),
+                    "stale": True,
+                    "stale_reason": reason,
+                    "updated_at": event.timestamp,
+                }
+            )
+        elif event.event_type is EventType.unstale:
+            fact = Fact.model_validate(
+                {
+                    **fact.model_dump(),
+                    "stale": False,
+                    "stale_reason": "",
+                    "updated_at": event.timestamp,
+                }
+            )
+        elif event.event_type is EventType.superseded:
+            # The current fact_id was superseded by another fact (recorded in
+            # payload['superseded_by']). Mark it as inactive in active recall;
+            # the supersedes link on the new fact captures the relationship.
+            is_active = False
+            fact = Fact.model_validate(
+                {**fact.model_dump(), "updated_at": event.timestamp}
+            )
+
+    if fact is None:
+        return None, False
+    if is_forgotten:
+        is_active = False
+
+    return fact, is_active
+
+
+def materialize_events(events: list[FactEvent]) -> dict[str, tuple[Fact, bool]]:
+    """Group events by fact_id and replay each group.
+
+    Returns a mapping of fact_id → (fact, is_active). Facts whose first event
+    is not a ``created`` event are skipped (defensive).
+    """
+    by_fact: dict[str, list[FactEvent]] = {}
+    for event in events:
+        by_fact.setdefault(event.fact_id, []).append(event)
+
+    out: dict[str, tuple[Fact, bool]] = {}
+    for fact_id, fact_events in by_fact.items():
+        fact, is_active = replay_fact(fact_events)
+        if fact is not None:
+            out[fact_id] = (fact, is_active)
+    return out
