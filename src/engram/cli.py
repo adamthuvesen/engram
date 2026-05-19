@@ -37,6 +37,7 @@ from engram.operations import (
     remember as op_remember,
     rename_project as op_rename_project,
     suggest_memories as op_suggest_memories,
+    sync as op_sync,
     synthesize as op_synthesize,
     unmark_stale as op_unmark_stale,
 )
@@ -69,6 +70,7 @@ CANONICAL_COMMANDS = frozenset(
         "doctor",
         "memory-stats",
         "recall-stats",
+        "sync",
     }
 )
 
@@ -275,6 +277,10 @@ async def cmd_recall_stats(args: argparse.Namespace) -> OperationResult:
     )
 
 
+async def cmd_sync(args: argparse.Namespace) -> OperationResult:
+    return await op_sync(timeout=args.timeout)
+
+
 HANDLERS: dict[str, CommandHandler] = {
     "remember": cmd_remember,
     "suggest-memories": cmd_suggest_memories,
@@ -298,6 +304,7 @@ HANDLERS: dict[str, CommandHandler] = {
     "doctor": cmd_doctor,
     "memory-stats": cmd_memory_stats,
     "recall-stats": cmd_recall_stats,
+    "sync": cmd_sync,
     "trace": cmd_recall_trace,
     "correct": cmd_correct_memory,
     "merge": cmd_merge_memories,
@@ -474,6 +481,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_recall_stats.add_argument("--since", default=None)
     p_recall_stats.add_argument("--include-records", action="store_true")
     _add_json_flag(p_recall_stats)
+
+    p_sync = sub.add_parser("sync", help="Git-backed sync of the data directory")
+    p_sync.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Timeout in seconds for each underlying git invocation.",
+    )
+    _add_json_flag(p_sync)
     return parser
 
 

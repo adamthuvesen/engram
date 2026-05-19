@@ -30,6 +30,7 @@ from engram.operations import (
     remember as op_remember,
     rename_project as op_rename_project,
     suggest_memories as op_suggest_memories,
+    sync as op_sync,
     synthesize as op_synthesize,
     unmark_stale as op_unmark_stale,
 )
@@ -423,6 +424,20 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
             include_records=include_records,
             store=get_store(),
         )
+        return _tool_result(result, format=format)
+
+    @app.tool()
+    async def sync(
+        format: str = "text",
+        timeout: float = 30.0,
+    ) -> ToolResult:
+        """Git-backed sync of the data directory against its configured remote.
+
+        Runs ``git fetch`` + ``git pull --rebase`` + ``git push`` against the
+        Engram data directory. Requires the data directory to be a git
+        repository with at least one remote — see CLAUDE.md for setup.
+        """
+        result = await op_sync(timeout=timeout, store=get_store())
         return _tool_result(result, format=format)
 
     return app
