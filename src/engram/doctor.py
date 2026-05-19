@@ -26,7 +26,10 @@ from pydantic import BaseModel, Field, ValidationError
 from engram.config import get_settings
 from engram.models import (
     CandidateStatus,
+    EVENT_LOG_META_VERSION,
+    EventLogMeta,
     Fact,
+    FactEvent,
     MIN_ACTIVE_CONFIDENCE,
     MemoryCandidate,
     RecallRecord,
@@ -98,18 +101,49 @@ def _check_jsonl_integrity(
     model_cls: type,
     issues: list[DoctorIssue],
 ) -> int:
-    """Return the count of valid records; emit issues for corrupt lines."""
+    """Return the count of valid records; emit issues for corrupt lines.
+
+    For ``facts.jsonl`` in event-log format, validates each non-empty line
+    against the ``FactEvent`` schema (with the first line allowed to be the
+    ``EventLogMeta`` sentinel).
+    """
     if not path.exists():
         return 0
+
+    is_event_log = False
+    if label == "facts":
+        with path.open() as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = EventLogMeta.model_validate_json(line)
+                    is_event_log = payload.meta == EVENT_LOG_META_VERSION
+                except (ValueError, ValidationError):
+                    is_event_log = False
+                break
+
     valid = 0
     corrupt: list[int] = []
+    first_data_line = True
     with path.open() as fh:
         for lineno, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
                 continue
+            if is_event_log and first_data_line:
+                first_data_line = False
+                try:
+                    EventLogMeta.model_validate_json(line)
+                    continue
+                except (ValueError, ValidationError):
+                    pass
             try:
-                model_cls.model_validate_json(line)
+                if is_event_log:
+                    FactEvent.model_validate_json(line)
+                else:
+                    model_cls.model_validate_json(line)
                 valid += 1
             except (ValueError, ValidationError):
                 corrupt.append(lineno)

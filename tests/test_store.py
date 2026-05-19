@@ -1,6 +1,7 @@
 """Tests for the JSONL fact store."""
 
 import asyncio
+import json
 import tempfile
 import threading
 import time
@@ -139,6 +140,7 @@ def test_stats():
 
 
 def test_update_fact_does_not_overwrite_concurrent_append():
+    """In the event-log model, concurrent update + append both land as events."""
     store = _make_store()
     original = Fact(
         id="aaaaaaaaaaaa",
@@ -152,17 +154,7 @@ def test_update_fact_does_not_overwrite_concurrent_append():
     )
     store.append_facts([original])
 
-    original_rewrite = store._rewrite
-    rewrite_started = threading.Event()
-    allow_rewrite = threading.Event()
     errors: list[BaseException] = []
-
-    def slow_rewrite(records, path=None):
-        rewrite_started.set()
-        assert allow_rewrite.wait(timeout=2)
-        return original_rewrite(records, path=path)
-
-    store._rewrite = slow_rewrite
 
     def update_fact():
         try:
@@ -170,15 +162,16 @@ def test_update_fact_does_not_overwrite_concurrent_append():
         except BaseException as exc:
             errors.append(exc)
 
+    def append_fact():
+        try:
+            store.append_facts([appended])
+        except BaseException as exc:
+            errors.append(exc)
+
     update_thread = threading.Thread(target=update_fact)
+    append_thread = threading.Thread(target=append_fact)
     update_thread.start()
-    assert rewrite_started.wait(timeout=2)
-
-    append_thread = threading.Thread(target=lambda: store.append_facts([appended]))
     append_thread.start()
-    time.sleep(0.05)
-    allow_rewrite.set()
-
     update_thread.join(timeout=2)
     append_thread.join(timeout=2)
 
@@ -510,15 +503,23 @@ async def test_async_concurrent_appends_keep_complete_parseable_lines():
         ]
     )
 
-    lines = store.facts_path.read_text().splitlines()
-    loaded = [Fact.model_validate_json(line) for line in lines]
+    # Event-log layout: meta sentinel + one ``created`` event per fact. All
+    # lines must remain individually parseable as JSON.
+    raw_lines = store.facts_path.read_text().splitlines()
+    assert len(raw_lines) == 31
+    for line in raw_lines:
+        json.loads(line)  # must not raise — no interleaving
 
-    assert len(lines) == 30
+    loaded = async_store.sync_store.load_facts()
     assert {fact.content for fact in loaded} == {f"Fact {i}" for i in range(30)}
 
 
 @pytest.mark.asyncio
 async def test_async_concurrent_rewrites_leave_parseable_file_and_no_tmp_files():
+    """In the event-log model, ``batch_update_facts`` appends events rather
+    than rewriting, so the relevant invariant is that no ``facts*.tmp`` file
+    is left behind and every on-disk line stays parseable.
+    """
     store = _make_store()
     async_store = AsyncFactStore(store)
     facts = [
@@ -536,6 +537,8 @@ async def test_async_concurrent_rewrites_leave_parseable_file_and_no_tmp_files()
         ),
     )
 
-    lines = store.facts_path.read_text().splitlines()
-    assert [Fact.model_validate_json(line) for line in lines]
+    for line in store.facts_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        json.loads(line)  # must not raise
     assert not list(store.data_dir.glob("facts*.tmp"))

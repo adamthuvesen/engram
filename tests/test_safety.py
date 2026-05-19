@@ -160,8 +160,11 @@ def test_append_facts_normal_file_no_extra_blank_line():
     fact2 = Fact(id="f2", category=FactCategory.preference, content="Fact 2")
     store.append_facts([fact2])
 
+    # Event-log layout: meta sentinel + one created event per fact.
     lines = [ln for ln in store.facts_path.read_text().splitlines() if ln.strip()]
-    assert len(lines) == 2
+    assert len(lines) == 3
+    assert "event-log-v1" in lines[0]
+    assert len(store.load_facts()) == 2
 
 
 def test_edit_fact_refuses_forgotten_fact():

@@ -362,7 +362,7 @@ class EngramDashboard(App):
 
     def action_restore_facts(self, fact_ids: list[str]) -> None:
         for fid in fact_ids:
-            self._store.update_fact(fid, confidence=1.0)
+            self._store.restore_fact(fid)
         self._force_refresh()
         count = len(fact_ids)
         self.notify(
