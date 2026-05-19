@@ -95,7 +95,9 @@ def test_suggest_memories_accepts_async_store(monkeypatch):
     )
 
 
-def test_extract_facts_marks_updates_and_softens_superseded_fact(monkeypatch):
+def test_extract_facts_marks_updates_and_removes_superseded_fact_from_active_recall(
+    monkeypatch,
+):
     store = _make_store()
     store.append_facts(
         [
@@ -144,8 +146,9 @@ def test_extract_facts_marks_updates_and_softens_superseded_fact(monkeypatch):
     all_facts = store.load_facts()
     original = next(f for f in all_facts if f.id == "oldfact")
     updated = next(f for f in all_facts if f.id != "oldfact")
-    assert original.confidence == 0.3
+    assert original.confidence == 0.0
     assert updated.supersedes == "oldfact"
+    assert [f.id for f in store.load_active_facts()] == [updated.id]
 
 
 def test_extract_facts_accepts_async_store_for_dedup_and_persist(monkeypatch):
@@ -196,7 +199,7 @@ def test_extract_facts_accepts_async_store_for_dedup_and_persist(monkeypatch):
     assert len(facts) == 1
     assert facts[0].supersedes == "oldfact"
     old = next(f for f in store.load_facts() if f.id == "oldfact")
-    assert old.confidence == 0.3
+    assert old.confidence == 0.0
 
 
 def test_dedup_ignores_malformed_update_entries(monkeypatch):

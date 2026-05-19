@@ -288,7 +288,7 @@ def test_candidate_rejection_is_idempotent_and_does_not_reject_approved():
     assert len(store.load_candidates(status=CandidateStatus.approved)) == 1
 
 
-def test_approving_superseding_candidate_softens_old_fact():
+def test_approving_superseding_candidate_removes_old_fact_from_active_recall():
     store = _make_store()
     old_fact = Fact(
         id="old123", category=FactCategory.preference, content="User prefers pandas"
@@ -309,8 +309,9 @@ def test_approving_superseding_candidate_softens_old_fact():
     all_facts = store.load_facts()
     original = next(f for f in all_facts if f.id == "old123")
     replacement = next(f for f in all_facts if f.id != "old123")
-    assert original.confidence == 0.3
+    assert original.confidence == 0.0
     assert replacement.supersedes == "old123"
+    assert [f.id for f in store.load_active_facts()] == [replacement.id]
 
 
 def test_format_facts_for_llm():

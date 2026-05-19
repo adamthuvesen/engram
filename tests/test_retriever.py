@@ -191,7 +191,7 @@ def test_recall_tier0_logs_to_store():
 def test_resolve_tier2_mode_valid():
     assert _resolve_tier2_mode("multilens") == "multilens"
     assert _resolve_tier2_mode("single") == "single"
-    assert _resolve_tier2_mode("nonsense") == "multilens"
+    assert _resolve_tier2_mode("nonsense") == "single"
 
 
 def test_select_tier_caps_small_corpus_to_tier_1():

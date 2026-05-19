@@ -269,7 +269,7 @@ Classify each new fact as genuinely new, a duplicate, or an update to an existin
             old_id = resolved_update_map[i]
             fact.supersedes = old_id
             if store is not None:
-                await _update_fact(store, old_id, confidence=0.3)
+                await _update_fact(store, old_id, confidence=0.0)
             kept.append(fact)
         elif i in duplicate_indices:
             continue

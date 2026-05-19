@@ -1197,7 +1197,7 @@ class FactStore:
             candidate_updates[candidate_id] = {"status": CandidateStatus.approved}
 
             if candidate.supersedes:
-                fact_updates[candidate.supersedes] = {"confidence": 0.3}
+                fact_updates[candidate.supersedes] = {"confidence": 0.0}
 
             data = candidate.model_dump(exclude={"status", "review_note"})
             data.update(id=uuid4().hex[:12], created_at=now, updated_at=now)

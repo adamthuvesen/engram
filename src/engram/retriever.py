@@ -232,8 +232,8 @@ def _resolve_tier2_mode(raw: str) -> str:
     """Map the tier-2 mode setting to a supported value."""
     if raw in ("multilens", "single"):
         return raw
-    logger.warning("Unknown ENGRAM_TIER2_MODE=%r; falling back to 'multilens'", raw)
-    return "multilens"
+    logger.warning("Unknown ENGRAM_TIER2_MODE=%r; falling back to 'single'", raw)
+    return "single"
 
 
 def _format_direct(scored_facts: list[tuple[int, Fact]], query: str) -> str:

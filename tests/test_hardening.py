@@ -221,8 +221,11 @@ def test_recover_prepared_approval_transaction_on_startup():
 
     facts = recovered.load_facts()
     assert len(facts) == 2
-    assert next(f for f in facts if f.id == "old1").confidence == 0.3
+    assert next(f for f in facts if f.id == "old1").confidence == 0.0
     assert next(f for f in facts if f.id != "old1").supersedes == "old1"
+    assert [fact.id for fact in recovered.load_active_facts()] == [
+        next(f for f in facts if f.id != "old1").id
+    ]
     assert recovered.load_candidates(status=CandidateStatus.pending) == []
     assert len(recovered.load_candidates(status=CandidateStatus.approved)) == 1
     assert recovered._pending_transactions() == []
