@@ -376,3 +376,74 @@ def test_event_log_meta_default_version():
     meta = EventLogMeta()
     assert meta.meta == EVENT_LOG_META_VERSION
     assert meta.meta == "event-log-v1"
+
+
+# --- compaction --------------------------------------------------------------
+
+
+def test_compaction_preserves_active_materialization(tmp_path):
+    """Compaction must not change what `load_facts()` sees for active facts."""
+    import tempfile
+    from pathlib import Path
+
+    from engram.store import FactStore
+
+    store = FactStore(data_dir=Path(tempfile.mkdtemp(dir=tmp_path)))
+    f1 = Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="v1")
+    f2 = Fact(id="bbbbbbbbbbbb", category=FactCategory.workflow, content="alpha")
+    store.append_facts([f1, f2])
+    store.update_fact("aaaaaaaaaaaa", content="v2")
+    store.mark_stale("bbbbbbbbbbbb", reason="outdated")
+
+    before = {f.id: (f.content, f.stale, f.confidence) for f in store.load_facts()}
+    result = store.compact_event_log()
+    after = {f.id: (f.content, f.stale, f.confidence) for f in store.load_facts()}
+
+    assert before == after
+    assert result["events_before"] >= result["events_after"]
+    assert result["active_facts"] == 2
+
+
+def test_compaction_drops_tombstones_when_disabled(tmp_path):
+    """``keep_tombstones=False`` removes events for forgotten facts."""
+    import tempfile
+    from pathlib import Path
+
+    from engram.store import FactStore
+
+    store = FactStore(data_dir=Path(tempfile.mkdtemp(dir=tmp_path)))
+    store.append_facts(
+        [
+            Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="keep"),
+            Fact(id="bbbbbbbbbbbb", category=FactCategory.preference, content="drop"),
+        ]
+    )
+    store.forget("bbbbbbbbbbbb")
+
+    store.compact_event_log(keep_tombstones=False)
+    materialized_ids = {f.id for f in store.load_facts()}
+    # The forgotten fact's events are gone entirely; only the active one remains.
+    assert materialized_ids == {"aaaaaaaaaaaa"}
+
+
+def test_compaction_failure_leaves_original_intact(tmp_path, monkeypatch):
+    """If the rewrite raises before atomic replace, the original file survives."""
+    import tempfile
+    from pathlib import Path
+
+    from engram.store import FactStore
+
+    store = FactStore(data_dir=Path(tempfile.mkdtemp(dir=tmp_path)))
+    store.append_facts(
+        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="hello")]
+    )
+    before_bytes = store.facts_path.read_bytes()
+
+    def boom(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("os.replace", boom)
+    with pytest.raises(OSError, match="replace failed"):
+        store.compact_event_log()
+
+    assert store.facts_path.read_bytes() == before_bytes

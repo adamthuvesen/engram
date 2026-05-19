@@ -46,6 +46,7 @@ uv run --extra dev pytest tests/ -v              # run tests
 | `mark_stale` / `unmark_stale` / `forget` | Toggle eligibility or soft-delete |
 | `inspect` / `memory_stats` / `recall_stats` | Browse and inspect |
 | `doctor` | Health check (read-only; opt-in `repair`) |
+| `sync` | Git-backed pull + push of the data directory |
 | `import_memories` | Bootstrap from `~/.claude/projects/*/memory/` |
 
 ### Agent-first output
@@ -76,6 +77,7 @@ engram correct-memory <fact_id> "new content" --reason "user updated"
 engram merge-memories <id1> <id2> --content "merged" --reason "dedupe"
 engram mark-stale <fact_id> --reason "outdated"
 engram inspect --include-stale --json --limit 50
+engram sync --json                                    # git-backed pull + push
 ```
 
 Canonical CLI names are hyphenated versions of the MCP tools: `suggest-memories`, `list-candidates`, `approve-candidates`, `reject-candidates`, `recall-context`, `edit-fact`, `import-memories`, `rename-project`, `memory-stats`, and `recall-stats`. Existing short commands remain as aliases: `trace`, `correct`, `merge`, `stale`, and `unstale`.
@@ -109,6 +111,45 @@ All settings via `ENGRAM_*` env vars. Key knobs:
 | `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11` | Min prefilter matches for tier-2 (`0` disables the small-corpus cap) |
 | `ENGRAM_TIER2_MODE` | `single` | Tier-2 strategy: `single` or `multilens` |
 | `ENGRAM_DATA_DIR` | `~/.engram/data` | Storage directory |
+| `ENGRAM_SYNC_ENABLED` | `false` | Run background auto-sync inside the MCP server lifespan |
+| `ENGRAM_SYNC_INTERVAL` | `300.0` | Background auto-sync cadence (seconds) |
+| `ENGRAM_SYNC_TIMEOUT` | `30.0` | Timeout for each underlying `git` invocation |
+
+## Sync across machines
+
+Engram syncs its data directory between machines via a private git repo. No
+hosted service required.
+
+```bash
+# One-time setup on machine A
+cd ~/.engram/data
+git init -b main
+git remote add origin git@github.com:you/your-engram-data.git  # PRIVATE repo
+engram sync           # auto-writes .gitignore + .gitattributes, pushes
+
+# On machine B
+git clone git@github.com:you/your-engram-data.git ~/.engram/data
+engram sync           # pulls machine A's state
+```
+
+After setup, run `engram sync` whenever you want to push or pull. The first
+sync auto-commits a managed `.gitignore` (so lock files and per-machine
+state don't get tracked) and `.gitattributes` (configures `merge=union` on
+the event-log files so parallel appends from two machines auto-merge).
+
+Set `ENGRAM_SYNC_ENABLED=true` to have the MCP server run sync
+automatically on `ENGRAM_SYNC_INTERVAL` (default 300s) and once on
+shutdown. `engram doctor` reports sync state (`remote_configured`,
+`last_sync_at`, `unpushed_commits`) under `counts.sync` — all local,
+no network calls.
+
+**Conflict model**: append-only events from two machines merge cleanly via
+`merge=union`. Same-fact concurrent edits resolve by event timestamp on
+read; both events stay in the log for audit.
+
+**Rollback**: stop Engram, replace `facts.jsonl` with the
+`facts.jsonl.pre-eventlog` backup written on the first event-log migration,
+downgrade the package, restart.
 
 ## Data
 

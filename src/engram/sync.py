@@ -12,11 +12,13 @@ calls happen inside :func:`sync` and return a structured result the caller
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -400,3 +402,63 @@ def sync(
         took_ms,
     )
     return result
+
+
+async def auto_sync_loop(
+    data_dir: Path,
+    *,
+    interval: float,
+    timeout: float,
+    on_result: Callable[[Any], None] | None = None,
+) -> None:
+    """Run ``sync`` every ``interval`` seconds until the task is cancelled.
+
+    Errors are caught and reported via ``on_result`` so a single failure
+    does not stop the loop. Cancellation is honored cooperatively.
+    """
+    logger.info(
+        "engram-sync auto-loop started (interval=%.1fs, timeout=%.1fs)",
+        interval,
+        timeout,
+    )
+    try:
+        while True:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            try:
+                result = await asyncio.to_thread(sync, data_dir, timeout=timeout)
+                if on_result is not None:
+                    on_result(result)
+            except SyncError as exc:
+                logger.warning(
+                    "engram-sync auto-loop: sync failed (%s): %s",
+                    exc.code,
+                    exc.message,
+                )
+                if on_result is not None:
+                    on_result(exc)
+            except Exception as exc:  # noqa: BLE001 — auto-loop must not die
+                logger.exception("engram-sync auto-loop unexpected error: %s", exc)
+    except asyncio.CancelledError:
+        logger.info("engram-sync auto-loop cancelled")
+        raise
+
+
+async def run_final_sync(
+    data_dir: Path,
+    *,
+    timeout: float,
+) -> dict[str, Any] | SyncError:
+    """Run one synchronous sync on shutdown. Never raises."""
+    try:
+        return await asyncio.to_thread(sync, data_dir, timeout=timeout)
+    except SyncError as exc:
+        logger.warning(
+            "engram-sync shutdown sync failed (%s): %s", exc.code, exc.message
+        )
+        return exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("engram-sync shutdown sync unexpected: %s", exc)
+        return SyncError(code="shutdown_unexpected", message=str(exc))

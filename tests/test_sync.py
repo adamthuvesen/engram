@@ -287,3 +287,85 @@ def test_sync_skips_when_compaction_sentinel_present(tmp_path: Path):
     result = sync(clone)
     assert result["status"] == "skipped"
     assert result["reason"] == "compaction_in_progress"
+
+
+# ---------------------------------------------------------------------------
+# Auto-sync background loop
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_sync_loop_runs_sync_on_interval(tmp_path: Path):
+    """The loop should call ``sync`` after each interval and surface results
+    via ``on_result``.
+    """
+    import asyncio
+
+    from engram.sync import SyncError, auto_sync_loop
+
+    bare = _make_bare_repo(tmp_path)
+    clone = _init_clone(tmp_path, "alice", bare)
+    # Burn the setup-commit push first so subsequent syncs are fast no-ops.
+    sync(clone)
+
+    calls: list[object] = []
+    task = asyncio.create_task(
+        auto_sync_loop(
+            clone, interval=0.05, timeout=5.0, on_result=calls.append
+        )
+    )
+
+    # Each tick performs real git ops; give the loop a generous window to
+    # accumulate at least two ticks.
+    await asyncio.sleep(1.0)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert len(calls) >= 2
+    for value in calls:
+        assert isinstance(value, (dict, SyncError))
+
+
+@pytest.mark.asyncio
+async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatch):
+    """A sync error mid-loop must not stop the loop."""
+    import asyncio
+
+    from engram import sync as sync_module
+    from engram.sync import SyncError, auto_sync_loop
+
+    bare = _make_bare_repo(tmp_path)
+    clone = _init_clone(tmp_path, "alice", bare)
+    sync(clone)  # burn setup-commit push
+
+    call_count = {"n": 0}
+    real_sync = sync_module.sync
+
+    def failing_sync(data_dir, *, timeout=30.0, skip_if_compacting=True):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise SyncError(code="injected", message="boom")
+        return real_sync(
+            data_dir, timeout=timeout, skip_if_compacting=skip_if_compacting
+        )
+
+    monkeypatch.setattr("engram.sync.sync", failing_sync)
+
+    results: list[object] = []
+    task = asyncio.create_task(
+        auto_sync_loop(
+            clone, interval=0.1, timeout=5.0, on_result=results.append
+        )
+    )
+    await asyncio.sleep(0.45)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert any(isinstance(r, SyncError) for r in results)
+    assert any(isinstance(r, dict) for r in results)

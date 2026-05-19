@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     # Claude Code integration
     claude_projects_dir: Path = Path.home() / ".claude" / "projects"
 
+    # Cross-machine sync (git-backed). Disabled by default; opt in via
+    # ENGRAM_SYNC_ENABLED=true. ``sync_interval`` controls the background
+    # auto-sync cadence (seconds) when enabled.
+    sync_enabled: bool = False
+    sync_interval: float = 300.0
+    sync_timeout: float = 30.0
+
     # Logging
     log_level: str = "INFO"
 

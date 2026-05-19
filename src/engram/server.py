@@ -1,12 +1,15 @@
 """Engram MCP Server — structured, cross-project memory for coding agents."""
 
+import asyncio
+import logging
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 
 from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
 
-from engram.config import configure_logging
+from engram.config import configure_logging, get_settings
 from engram.operations import (
     OperationResult,
     async_store,
@@ -85,14 +88,57 @@ def _tool_result(
     )
 
 
+logger = logging.getLogger(__name__)
+
+
 def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
     """Create an Engram MCP server with an isolated, injectable store.
 
     ``store=None`` is lazy: the default ``AsyncFactStore`` is created on first
     tool call so environment changes made before runtime still take effect.
+
+    When ``ENGRAM_SYNC_ENABLED`` is true, the server also runs a background
+    auto-sync task on a configurable interval and performs one final sync on
+    shutdown. The task lives in the MCP lifespan, so it starts when the
+    server starts and is cancelled on shutdown.
     """
 
-    app = FastMCP("engram", instructions=INSTRUCTIONS)
+    @asynccontextmanager
+    async def lifespan(_app: FastMCP):
+        settings = get_settings()
+        auto_sync_task: asyncio.Task | None = None
+        if settings.sync_enabled:
+            from engram.sync import auto_sync_loop
+
+            data_dir = get_store().data_dir
+            auto_sync_task = asyncio.create_task(
+                auto_sync_loop(
+                    data_dir,
+                    interval=settings.sync_interval,
+                    timeout=settings.sync_timeout,
+                )
+            )
+            logger.info(
+                "engram-sync auto-loop scheduled (interval=%.1fs)",
+                settings.sync_interval,
+            )
+        try:
+            yield
+        finally:
+            if auto_sync_task is not None:
+                auto_sync_task.cancel()
+                try:
+                    await auto_sync_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                # Final sync attempt on shutdown — best-effort.
+                from engram.sync import run_final_sync
+
+                await run_final_sync(
+                    get_store().data_dir, timeout=settings.sync_timeout
+                )
+
+    app = FastMCP("engram", instructions=INSTRUCTIONS, lifespan=lifespan)
     store_ref: FactStore | AsyncFactStore | None = store
 
     def get_store() -> AsyncFactStore:

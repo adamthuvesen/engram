@@ -1306,6 +1306,123 @@ class FactStore:
             with self.ingestion_log_path.open("a") as f:
                 f.write(record.model_dump_json() + "\n")
 
+    def compact_event_log(
+        self, *, keep_tombstones: bool = True
+    ) -> dict[str, int]:
+        """Collapse the event log to a minimal representation.
+
+        For every active ``fact_id``, emit exactly one ``created`` event that
+        reflects the current materialized state. For forgotten/superseded
+        facts: keep a ``created`` + ``forgotten`` (or ``superseded``) pair when
+        ``keep_tombstones`` is true (audit-preserving — default), or drop them
+        entirely when false.
+
+        Compaction is the only mutation path that still rewrites the file. It
+        holds the inter-process write lock for the full duration and writes
+        via the existing atomic-replace path. A
+        ``.engram-compaction-in-progress`` sentinel file is created for the
+        duration so ``engram sync`` skips itself rather than racing the
+        rewrite.
+
+        Returns a small summary: events before, events after, fact counts.
+        """
+        from engram.sync import COMPACTION_SENTINEL_FILENAME
+
+        sentinel = self.data_dir / COMPACTION_SENTINEL_FILENAME
+        with _locked_store(self.data_dir):
+            if not self._is_event_log_format():
+                return {
+                    "events_before": 0,
+                    "events_after": 0,
+                    "active_facts": 0,
+                    "tombstones": 0,
+                    "skipped": True,
+                }
+
+            events = self._load_all_events()
+            events_before = len(events)
+            materialized = materialize_events(events)
+
+            now = datetime.now(timezone.utc)
+            compacted: list[FactEvent] = []
+            tombstones = 0
+            for fact_id, (fact, is_active) in materialized.items():
+                if not is_active:
+                    if not keep_tombstones:
+                        continue
+                    compacted.append(
+                        FactEvent(
+                            event_type=EventType.created,
+                            fact_id=fact_id,
+                            timestamp=fact.created_at,
+                            actor="compaction",
+                            payload=fact.model_dump(),
+                        )
+                    )
+                    compacted.append(
+                        FactEvent(
+                            event_type=EventType.forgotten,
+                            fact_id=fact_id,
+                            timestamp=fact.updated_at,
+                            actor="compaction",
+                            payload={"reason": "compacted_tombstone"},
+                        )
+                    )
+                    tombstones += 1
+                else:
+                    compacted.append(
+                        FactEvent(
+                            event_type=EventType.created,
+                            fact_id=fact_id,
+                            timestamp=fact.created_at,
+                            actor="compaction",
+                            payload=fact.model_dump(),
+                        )
+                    )
+
+            sentinel.write_text(f"compaction started at {now.isoformat()}\n")
+            try:
+                meta = EventLogMeta(migrated_at=now)
+                tmp_path: Path | None = None
+                with _locked_write(self.facts_path):
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="w",
+                            dir=self.facts_path.parent,
+                            prefix=self.facts_path.stem,
+                            suffix=".tmp",
+                            delete=False,
+                        ) as fh:
+                            tmp_path = Path(fh.name)
+                            fh.write(meta.model_dump_json() + "\n")
+                            for event in compacted:
+                                fh.write(event.model_dump_json() + "\n")
+                            fh.flush()
+                            os.fsync(fh.fileno())
+                        os.replace(tmp_path, self.facts_path)
+                        tmp_path = None
+                    finally:
+                        if tmp_path and tmp_path.exists():
+                            tmp_path.unlink()
+            finally:
+                sentinel.unlink(missing_ok=True)
+
+            active_count = sum(1 for _, active in materialized.values() if active)
+            logger.info(
+                "Compacted event log: %d → %d events (%d active facts, %d tombstones)",
+                events_before,
+                len(compacted),
+                active_count,
+                tombstones,
+            )
+            return {
+                "events_before": events_before,
+                "events_after": len(compacted),
+                "active_facts": active_count,
+                "tombstones": tombstones,
+                "skipped": False,
+            }
+
     def purge(self) -> dict:
         """Remove forgotten and expired facts from the JSONL file.
 
@@ -1744,3 +1861,10 @@ class AsyncFactStore:
 
     async def repair(self) -> dict:
         return await self._run(self.sync_store.repair)
+
+    async def compact_event_log(
+        self, *, keep_tombstones: bool = True
+    ) -> dict[str, int]:
+        return await self._run(
+            self.sync_store.compact_event_log, keep_tombstones=keep_tombstones
+        )
