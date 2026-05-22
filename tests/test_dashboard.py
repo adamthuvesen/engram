@@ -260,6 +260,20 @@ def test_no_project_label():
     assert NO_PROJECT_LABEL == "(none)"
 
 
+def test_dashboard_refresh_screen_logs_failures(store, monkeypatch, caplog):
+    class BrokenScreen:
+        def refresh_data(self, data):
+            raise RuntimeError("refresh failed")
+
+    app = EngramDashboard()
+    monkeypatch.setattr(app, "query_one", lambda *args, **kwargs: BrokenScreen())
+
+    with caplog.at_level("ERROR", logger="engram.dashboard.app"):
+        app._refresh_screen("overview")
+
+    assert "Unable to refresh dashboard tab overview" in caplog.text
+
+
 # ── UI tests ──
 
 

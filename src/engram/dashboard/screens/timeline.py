@@ -1,10 +1,14 @@
 """Timeline screen — temporal charts of fact activity."""
 
+import logging
+
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Label, Sparkline, Static
 
 from engram.dashboard.data import DashboardData
+
+logger = logging.getLogger(__name__)
 
 HAS_PLOTEXT = True
 try:
@@ -62,6 +66,7 @@ class TimelineScreen(Container):
         try:
             return self.app.current_theme.dark
         except Exception:
+            logger.debug("Unable to read dashboard theme brightness", exc_info=True)
             return True
 
     def _draw_chart(self) -> None:
@@ -70,6 +75,7 @@ class TimelineScreen(Container):
         try:
             plot_widget = self.query_one(PlotextPlot)
         except Exception:
+            logger.debug("Unable to find timeline chart widget", exc_info=True)
             return
 
         plt = plot_widget.plt
@@ -118,6 +124,6 @@ class TimelineScreen(Container):
             self.query_one("#spark-7d", Sparkline).data = data.activity_7d or [0]
             self.query_one("#spark-30d", Sparkline).data = data.activity_30d or [0]
         except Exception:
-            pass
+            logger.exception("Unable to refresh timeline sparklines")
         if HAS_PLOTEXT:
             self._draw_chart()

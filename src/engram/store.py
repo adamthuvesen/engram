@@ -1498,14 +1498,16 @@ class FactStore:
             return []
         records = []
         with self.recall_log_path.open() as fh:
-            for line in fh:
+            for lineno, line in enumerate(fh, 1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     records.append(RecallRecord.model_validate_json(line))
-                except Exception:
-                    continue
+                except (ValueError, ValidationError) as exc:
+                    logger.warning(
+                        "Skipping corrupt recall log at line %d: %s", lineno, exc
+                    )
         records.sort(key=lambda r: r.timestamp, reverse=True)
         return records[:limit] if limit is not None else records
 

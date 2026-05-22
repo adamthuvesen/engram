@@ -88,6 +88,29 @@ def test_recall_log_roundtrip():
     assert loaded[0].quality == "medium"
 
 
+def test_load_recall_log_logs_corrupt_lines(caplog):
+    from engram.models import RecallRecord
+
+    store = _make_store()
+    store.log_recall(
+        RecallRecord(
+            query="test query",
+            tier=1,
+            prefilter_count=10,
+            latency_ms=150.5,
+        )
+    )
+    with store.recall_log_path.open("a") as f:
+        f.write("not json\n")
+
+    with caplog.at_level("WARNING", logger="engram.store"):
+        loaded = store.load_recall_log()
+
+    assert len(loaded) == 1
+    assert loaded[0].query == "test query"
+    assert "Skipping corrupt recall log at line 2" in caplog.text
+
+
 def test_load_facts_skips_corrupt_line():
     """A single corrupt line does not prevent other facts from loading."""
     store = _make_store()

@@ -1,5 +1,6 @@
 """Engram terminal dashboard — main app."""
 
+import logging
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -22,6 +23,8 @@ from engram.dashboard.screens.timeline import TimelineScreen
 from engram.store import FactStore
 
 CSS_PATH = Path(__file__).parent / "styles" / "dashboard.tcss"
+
+logger = logging.getLogger(__name__)
 
 
 ANTHROPIC_DARK = Theme(
@@ -145,7 +148,7 @@ class EngramDashboard(App):
 
             self.query_one(Tabs).focus()
         except Exception:
-            pass
+            logger.debug("Unable to focus dashboard tabs", exc_info=True)
 
     def on_tabbed_content_tab_activated(
         self, event: TabbedContent.TabActivated
@@ -178,7 +181,7 @@ class EngramDashboard(App):
             else:
                 footer.update(FOOTER_HINTS["default"])
         except Exception:
-            pass
+            logger.debug("Unable to update dashboard footer hint", exc_info=True)
 
     def on_key(self, event) -> None:
         from textual.widgets import Tabs
@@ -194,7 +197,9 @@ class EngramDashboard(App):
             try:
                 self.query_one(selector).focus()
             except Exception:
-                pass
+                logger.debug(
+                    "Unable to focus widget for dashboard tab %s", tab_id, exc_info=True
+                )
 
     def _refresh_data(self) -> None:
         current_hash = content_hash_for(self._store)
@@ -219,7 +224,7 @@ class EngramDashboard(App):
             try:
                 self.query_one(cls).refresh_data(self._data)
             except Exception:
-                pass
+                logger.exception("Unable to refresh dashboard tab %s", tab_id)
 
     def _update_tab_labels(self) -> None:
         d = self._data
@@ -237,7 +242,7 @@ class EngramDashboard(App):
                 if tab:
                     tab.label = label
         except Exception:
-            pass
+            logger.exception("Unable to update dashboard tab labels")
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one("#tabs", TabbedContent).active = tab_id
@@ -259,7 +264,7 @@ class EngramDashboard(App):
         try:
             self.query_one(ProjectsScreen)._show_detail(project)
         except Exception:
-            pass
+            logger.exception("Unable to show project detail for %s", project)
 
     def action_forget_fact(self, fact_id: str) -> None:
         self._forget_facts([fact_id])

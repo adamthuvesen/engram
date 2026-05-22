@@ -1,5 +1,7 @@
 """Overview screen — stats, category/project bars, activity sparkline."""
 
+import logging
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -8,6 +10,8 @@ from textual.widgets.option_list import Option
 
 from engram.dashboard.data import DashboardData, format_bytes
 from engram.dashboard.widgets.stat_card import StatCard
+
+logger = logging.getLogger(__name__)
 
 
 class OverviewScreen(VerticalScroll):
@@ -63,6 +67,9 @@ class OverviewScreen(VerticalScroll):
             variables = self.app.get_css_variables()
             return variables.get(var_name, "#d97757")
         except Exception:
+            logger.debug(
+                "Unable to read dashboard theme color %s", var_name, exc_info=True
+            )
             return "#d97757"
 
     def _bar_options(
@@ -94,7 +101,7 @@ class OverviewScreen(VerticalScroll):
 
                 self.app.query_one(Tabs).focus()
             except Exception:
-                pass
+                logger.debug("Unable to move focus from overview list", exc_info=True)
             return
 
         if event.key in ("left", "right"):
@@ -105,7 +112,7 @@ class OverviewScreen(VerticalScroll):
                 else:
                     self.query_one("#cat-list", OptionList).focus()
             except Exception:
-                pass
+                logger.debug("Unable to switch overview list focus", exc_info=True)
 
     @on(OptionList.OptionSelected, "#cat-list")
     def on_category_selected(self, event: OptionList.OptionSelected) -> None:
@@ -130,7 +137,9 @@ class OverviewScreen(VerticalScroll):
                 self._bar_options(self._data.by_project, "proj", "bar-project")
             )
         except Exception:
-            pass
+            logger.exception(
+                "Unable to redraw overview distributions after theme change"
+            )
 
     def refresh_data(self, data: DashboardData) -> None:
         self._data = data
@@ -142,4 +151,4 @@ class OverviewScreen(VerticalScroll):
             self.query_one("#stat-candidates", StatCard).set_value(data.pending_count)
             self.query_one("#stat-total", StatCard).update_spark(data.activity_30d)
         except Exception:
-            pass
+            logger.exception("Unable to refresh overview stat cards")
