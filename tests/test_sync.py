@@ -146,6 +146,50 @@ def test_sync_no_op_when_already_up_to_date(tmp_path: Path):
     assert (clone / SYNC_STATE_FILENAME).exists()
 
 
+def test_sync_untracks_managed_ignore_patterns(tmp_path: Path):
+    from engram.sync import COMPACTION_SENTINEL_FILENAME
+
+    bare = _make_bare_repo(tmp_path)
+    clone = _init_clone(tmp_path, "alice", bare)
+    ignored_paths = [
+        "store.lock",
+        SYNC_STATE_FILENAME,
+        "facts.jsonl.pre-eventlog",
+        COMPACTION_SENTINEL_FILENAME,
+    ]
+    for relative_path in ignored_paths:
+        (clone / relative_path).write_text("local-only\n")
+    _git("add", *ignored_paths, cwd=clone)
+    _git("commit", "-m", "track local state files", cwd=clone)
+    (clone / COMPACTION_SENTINEL_FILENAME).unlink()
+
+    result = sync(clone)
+
+    assert result["status"] == "ok"
+    assert _git("ls-files", *ignored_paths, cwd=clone) == ""
+    assert (clone / "store.lock").read_text() == "local-only\n"
+    assert (clone / "facts.jsonl.pre-eventlog").read_text() == "local-only\n"
+
+
+def test_managed_setup_commits_only_managed_files(tmp_path: Path):
+    from engram.sync import _ensure_managed_repo_setup
+
+    bare = _make_bare_repo(tmp_path)
+    clone = _init_clone(tmp_path, "alice", bare)
+    (clone / "pending.jsonl").write_text("important user change\n")
+    _git("add", "pending.jsonl", cwd=clone)
+
+    changed = _ensure_managed_repo_setup(clone, timeout=5.0)
+
+    assert changed is True
+    assert "pending.jsonl" not in _git(
+        "ls-tree", "-r", "--name-only", "HEAD", cwd=clone
+    )
+    assert _git("status", "--short", "--", "pending.jsonl", cwd=clone) == (
+        "A  pending.jsonl"
+    )
+
+
 def test_sync_pushes_local_commits(tmp_path: Path):
     bare = _make_bare_repo(tmp_path)
     clone = _init_clone(tmp_path, "alice", bare)
@@ -309,18 +353,25 @@ async def test_auto_sync_loop_runs_sync_on_interval(tmp_path: Path):
     sync(clone)
 
     calls: list[object] = []
+    got_two_results = asyncio.Event()
+
+    def collect(result: object) -> None:
+        calls.append(result)
+        if len(calls) >= 2:
+            got_two_results.set()
+
     task = asyncio.create_task(
-        auto_sync_loop(clone, interval=0.05, timeout=5.0, on_result=calls.append)
+        auto_sync_loop(clone, interval=0.05, timeout=5.0, on_result=collect)
     )
 
-    # Each tick performs real git ops; give the loop a generous window to
-    # accumulate at least two ticks.
-    await asyncio.sleep(1.0)
-    task.cancel()
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
+        await asyncio.wait_for(got_two_results.wait(), timeout=2.0)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     assert len(calls) >= 2
     for value in calls:
@@ -353,15 +404,65 @@ async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatc
     monkeypatch.setattr("engram.sync.sync", failing_sync)
 
     results: list[object] = []
+    seen_failure_and_success = asyncio.Event()
+
+    def collect(result: object) -> None:
+        results.append(result)
+        if any(isinstance(r, SyncError) for r in results) and any(
+            isinstance(r, dict) for r in results
+        ):
+            seen_failure_and_success.set()
+
     task = asyncio.create_task(
-        auto_sync_loop(clone, interval=0.1, timeout=5.0, on_result=results.append)
+        auto_sync_loop(clone, interval=0.1, timeout=5.0, on_result=collect)
     )
-    await asyncio.sleep(0.45)
-    task.cancel()
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
+        await asyncio.wait_for(seen_failure_and_success.wait(), timeout=2.0)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     assert any(isinstance(r, SyncError) for r in results)
     assert any(isinstance(r, dict) for r in results)
+
+
+@pytest.mark.asyncio
+async def test_auto_sync_loop_reports_unexpected_errors(tmp_path: Path, monkeypatch):
+    """Unexpected errors should be visible to callers without killing the loop."""
+    import asyncio
+
+    from engram.sync import SyncError, auto_sync_loop
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    def broken_sync(data_dir, *, timeout=30.0, skip_if_compacting=True):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("engram.sync.sync", broken_sync)
+
+    results: list[object] = []
+    got_error = asyncio.Event()
+
+    def collect(result: object) -> None:
+        results.append(result)
+        if isinstance(result, SyncError):
+            got_error.set()
+
+    task = asyncio.create_task(
+        auto_sync_loop(data_dir, interval=0.01, timeout=5.0, on_result=collect)
+    )
+    try:
+        await asyncio.wait_for(got_error.wait(), timeout=1.0)
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert isinstance(results[0], SyncError)
+    assert results[0].code == "unexpected"

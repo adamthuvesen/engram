@@ -15,8 +15,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -49,13 +51,13 @@ GITATTRIBUTES_LINES = [
 # git: inter-process lock sidecars, per-machine sync state, and the
 # migration backup file.
 GITIGNORE_MARKER = "# engram-sync: managed ignores"
-GITIGNORE_LINES = [
-    GITIGNORE_MARKER,
+GITIGNORE_PATTERNS = [
     "*.lock",
     ".engram-sync-state",
     ".engram-compaction-in-progress",
     "facts.jsonl.pre-eventlog",
 ]
+GITIGNORE_LINES = [GITIGNORE_MARKER, *GITIGNORE_PATTERNS]
 
 
 class SyncError(Exception):
@@ -73,11 +75,13 @@ def _run_git(
     *,
     cwd: Path,
     timeout: float,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a git subcommand with a timeout, capturing stdout/stderr as text."""
     return subprocess.run(
         ["git", *args],
         cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -222,7 +226,9 @@ def _ensure_managed_file(
         )
 
     commit_proc = _run_git(
-        ["commit", "-m", commit_message], cwd=data_dir, timeout=timeout
+        ["commit", "-m", commit_message, "--", relative_path],
+        cwd=data_dir,
+        timeout=timeout,
     )
     if commit_proc.returncode != 0:
         raise SyncError(
@@ -234,19 +240,81 @@ def _ensure_managed_file(
     return True
 
 
-def _untrack_lock_files(data_dir: Path, timeout: float) -> bool:
-    """Remove any lock / state files that were previously tracked.
+def _commit_untrack(data_dir: Path, paths: list[str], timeout: float) -> bool:
+    """Commit removal of tracked local-only files without other staged changes."""
+    head_proc = _run_git(["rev-parse", "HEAD"], cwd=data_dir, timeout=timeout)
+    if head_proc.returncode != 0:
+        raise SyncError(
+            code="untrack_locks_commit_failed",
+            message="Failed to resolve HEAD before untracking engram state files.",
+            git_stderr=head_proc.stderr,
+        )
+    head_before = head_proc.stdout.strip()
 
-    Returns True if a new "remove tracked junk" commit was created.
-    """
-    tracked = _run_git(
-        ["ls-files", "*.lock", ".engram-sync-state", "facts.jsonl.pre-eventlog"],
+    head_paths_proc = _run_git(
+        ["ls-tree", "-r", "--name-only", "HEAD", "--", *paths],
         cwd=data_dir,
         timeout=timeout,
     )
-    if tracked.returncode != 0 or not tracked.stdout.strip():
-        return False
-    paths = [p for p in tracked.stdout.splitlines() if p.strip()]
+    if head_paths_proc.returncode != 0:
+        raise SyncError(
+            code="untrack_locks_commit_failed",
+            message="Failed to inspect tracked engram state files.",
+            git_stderr=head_paths_proc.stderr,
+        )
+    head_paths = [p for p in head_paths_proc.stdout.splitlines() if p.strip()]
+    new_commit = ""
+    if head_paths:
+        with tempfile.TemporaryDirectory(prefix="engram-sync-index-") as tmp:
+            env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+            read_proc = _run_git(
+                ["read-tree", "HEAD"], cwd=data_dir, timeout=timeout, env=env
+            )
+            if read_proc.returncode != 0:
+                raise SyncError(
+                    code="untrack_locks_commit_failed",
+                    message="Failed to prepare temporary git index.",
+                    git_stderr=read_proc.stderr,
+                )
+            remove_proc = _run_git(
+                ["update-index", "--force-remove", "--", *head_paths],
+                cwd=data_dir,
+                timeout=timeout,
+                env=env,
+            )
+            if remove_proc.returncode != 0:
+                raise SyncError(
+                    code="untrack_locks_commit_failed",
+                    message="Failed to stage engram state file removals.",
+                    git_stderr=remove_proc.stderr,
+                )
+            tree_proc = _run_git(["write-tree"], cwd=data_dir, timeout=timeout, env=env)
+            if tree_proc.returncode != 0:
+                raise SyncError(
+                    code="untrack_locks_commit_failed",
+                    message="Failed to write temporary git tree.",
+                    git_stderr=tree_proc.stderr,
+                )
+            commit_proc = _run_git(
+                [
+                    "commit-tree",
+                    tree_proc.stdout.strip(),
+                    "-p",
+                    head_before,
+                    "-m",
+                    "engram-sync: untrack lock and state files",
+                ],
+                cwd=data_dir,
+                timeout=timeout,
+            )
+            if commit_proc.returncode != 0:
+                raise SyncError(
+                    code="untrack_locks_commit_failed",
+                    message="Failed to commit untrack of engram lock/state files.",
+                    git_stderr=commit_proc.stderr,
+                )
+            new_commit = commit_proc.stdout.strip()
+
     rm_proc = _run_git(
         ["rm", "--cached", "--ignore-unmatch", *paths],
         cwd=data_dir,
@@ -258,19 +326,39 @@ def _untrack_lock_files(data_dir: Path, timeout: float) -> bool:
             message="Failed to untrack engram lock/state files.",
             git_stderr=rm_proc.stderr,
         )
-    commit_proc = _run_git(
-        ["commit", "-m", "engram-sync: untrack lock and state files"],
+
+    if new_commit:
+        update_ref_proc = _run_git(
+            ["update-ref", "HEAD", new_commit, head_before],
+            cwd=data_dir,
+            timeout=timeout,
+        )
+        if update_ref_proc.returncode != 0:
+            raise SyncError(
+                code="untrack_locks_commit_failed",
+                message="Failed to update HEAD after untracking engram state files.",
+                git_stderr=update_ref_proc.stderr,
+            )
+        return True
+    return False
+
+
+def _untrack_lock_files(data_dir: Path, timeout: float) -> bool:
+    """Remove any lock / state files that were previously tracked.
+
+    Returns True if a new "remove tracked junk" commit was created.
+    """
+    tracked = _run_git(
+        ["ls-files", *GITIGNORE_PATTERNS],
         cwd=data_dir,
         timeout=timeout,
     )
-    if commit_proc.returncode != 0:
-        raise SyncError(
-            code="untrack_locks_commit_failed",
-            message="Failed to commit untrack of engram lock/state files.",
-            git_stderr=commit_proc.stderr,
-        )
+    if tracked.returncode != 0 or not tracked.stdout.strip():
+        return False
+    paths = [p for p in tracked.stdout.splitlines() if p.strip()]
+    committed = _commit_untrack(data_dir, paths, timeout)
     logger.info("engram-sync: untracked %d lock/state file(s)", len(paths))
-    return True
+    return committed
 
 
 def _ensure_managed_repo_setup(data_dir: Path, timeout: float) -> bool:
@@ -435,6 +523,8 @@ async def auto_sync_loop(
                     on_result(exc)
             except Exception as exc:  # noqa: BLE001 — auto-loop must not die
                 logger.exception("engram-sync auto-loop unexpected error: %s", exc)
+                if on_result is not None:
+                    on_result(SyncError(code="unexpected", message=str(exc)))
     except asyncio.CancelledError:
         logger.info("engram-sync auto-loop cancelled")
         raise
