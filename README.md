@@ -17,6 +17,9 @@ uv sync --extra dev                              # install deps
 uv run engram                                    # start MCP server
 uv run fastmcp dev src/engram/server.py          # dev mode (inspector)
 uv run --extra dev pytest tests/ -v              # run tests
+uv run --extra dev ruff check .                  # lint
+uv run --extra dev ruff format --check .         # formatting check
+uv build                                         # build sdist + wheel
 ```
 
 ### MCP Client Config
@@ -65,7 +68,7 @@ Stable codes (`stale_fact`, `superseded_fact`, `forgotten_fact`, `conflicting_fa
 
 ### CLI
 
-The same surfaces are exposed as `engram` subcommands; bare `engram` starts the MCP server, while `engram --help` and `engram help` show CLI help. Every subcommand accepts `--json` and exits non-zero on errors (1 validation, 2 not-found, 3 runtime, 4 doctor).
+The same surfaces are exposed as `engram` subcommands; bare `engram` starts the MCP server, while `engram --help` and `engram help` show CLI help. Every subcommand accepts `--json`. Operation failures use stable exit codes: 1 validation, 2 not-found, 3 runtime, 4 doctor. Argparse usage errors, such as unknown commands or missing required arguments, also exit 2 and print usage to stderr.
 
 ```bash
 engram recall "what does alex prefer for editors?" --json --with-provenance
@@ -155,10 +158,16 @@ downgrade the package, restart.
 
 All data under `~/.engram/data/`:
 
-- `facts.jsonl` — active + forgotten facts
+- `facts.jsonl` — append-only fact event log; current state is materialized by replaying events
 - `candidates.jsonl` — suggested memories pending review
 - `ingestion_log.jsonl` — audit trail
+- `recall_log.jsonl` — recall quality, latency, and LLM usage history
 - `transactions.jsonl` — prepared/committed journal for recoverable writes
+- `.engram-sync-state` — last successful sync metadata
+
+`engram sync` also manages `.gitignore` and `.gitattributes` in the data
+directory so lock/state files stay local and JSONL event logs use git's union
+merge driver.
 
 ## Tech
 

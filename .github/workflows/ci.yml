@@ -33,5 +33,11 @@ jobs:
       - name: Lint
         run: uv run --extra dev ruff check .
 
+      - name: Format
+        run: uv run --extra dev ruff format --check .
+
       - name: Test
         run: uv run --extra dev pytest tests/ -q
+
+      - name: Build package
+        run: uv build
