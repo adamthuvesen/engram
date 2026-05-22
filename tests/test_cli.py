@@ -11,7 +11,9 @@ import pytest
 
 from engram import cli
 from engram.config import get_settings
+from engram.interfaces import Envelope
 from engram.models import Fact, FactCategory, RecallRecord
+from engram.operations import OperationResult
 from engram.store import FactStore
 
 
@@ -50,6 +52,45 @@ def test_is_cli_invocation_true_for_unknown_argv():
     assert cli.is_cli_invocation(["mysterious"]) is True
 
 
+def test_cli_normalizes_only_top_level_help():
+    assert cli._normalize_argv(["help"]) == ["--help"]
+    assert cli._normalize_argv(["--json", "help"]) == ["--help"]
+    assert cli._normalize_argv(["remember", "help"]) == ["remember", "help"]
+    assert cli._normalize_argv(["recall", "--help"]) == ["recall", "--help"]
+
+
+def test_cli_content_can_be_literal_help(monkeypatch, capsys):
+    captured: dict[str, str] = {}
+
+    async def fake_remember(args):
+        captured["content"] = args.content
+        return OperationResult(envelope=Envelope.success(), text="stored")
+
+    monkeypatch.setitem(cli.HANDLERS, "remember", fake_remember)
+
+    exit_code = cli.run(["remember", "help"])
+
+    assert exit_code == cli.EXIT_OK
+    assert captured["content"] == "help"
+    assert capsys.readouterr().out == "stored\n"
+
+
+def test_cli_run_returns_code_for_subcommand_help(capsys):
+    exit_code = cli.run(["recall", "--help"])
+
+    assert exit_code == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert "usage: engram recall" in out
+    assert "--with-provenance" in out
+
+
+def test_cli_run_returns_code_for_parse_errors(capsys):
+    exit_code = cli.run(["definitely-not-a-command"])
+
+    assert exit_code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # trace
 # ---------------------------------------------------------------------------
@@ -64,6 +105,14 @@ def test_cli_trace_json_no_match(cli_env, capsys):
         parsed["data"]["trace"] is not None
     )  # tier-0 still emits a (possibly empty) trace
     assert parsed["data"]["quality"] in ("none", "low")
+
+
+def test_cli_recall_invalid_max_sources(cli_env, capsys):
+    exit_code = cli.run(["recall", "anything", "--max-sources", "0", "--json"])
+    parsed = json.loads(capsys.readouterr().out)
+    assert exit_code == cli.EXIT_VALIDATION
+    assert parsed["errors"][0]["code"] == "validation_error"
+    assert parsed["errors"][0]["details"] == {"parameter": "max_sources"}
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +329,23 @@ def test_cli_inspect_json_bounded(cli_env, capsys):
     assert len(parsed["data"]) == 3
     assert parsed["meta"]["truncated"] is True
     assert parsed["meta"]["truncation_reason"] == "default_limit"
+    assert parsed["meta"]["total"] == 5
+
+
+def test_cli_inspect_exact_limit_not_truncated(cli_env, capsys):
+    _seed(
+        cli_env,
+        [
+            Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a"),
+            Fact(id="bbbbbbbbbbbb", category=FactCategory.preference, content="b"),
+        ],
+    )
+    exit_code = cli.run(["inspect", "--limit", "2", "--json"])
+    parsed = json.loads(capsys.readouterr().out)
+    assert exit_code == cli.EXIT_OK
+    assert len(parsed["data"]) == 2
+    assert parsed["meta"]["total"] == 2
+    assert parsed["meta"]["truncated"] is False
 
 
 def test_cli_inspect_invalid_category(cli_env, capsys):
@@ -287,6 +353,14 @@ def test_cli_inspect_invalid_category(cli_env, capsys):
     parsed = json.loads(capsys.readouterr().out)
     assert exit_code == cli.EXIT_VALIDATION
     assert parsed["errors"][0]["code"] == "validation_error"
+
+
+def test_cli_inspect_invalid_limit(cli_env, capsys):
+    exit_code = cli.run(["inspect", "--limit", "0", "--json"])
+    parsed = json.loads(capsys.readouterr().out)
+    assert exit_code == cli.EXIT_VALIDATION
+    assert parsed["errors"][0]["code"] == "validation_error"
+    assert parsed["errors"][0]["message"] == "limit must be greater than zero"
 
 
 # ---------------------------------------------------------------------------

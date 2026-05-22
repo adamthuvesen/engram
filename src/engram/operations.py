@@ -105,6 +105,17 @@ def invalid_format_result(value: str) -> OperationResult:
     )
 
 
+def invalid_positive_int_result(parameter: str) -> OperationResult:
+    message = f"{parameter} must be greater than zero"
+    return OperationResult(
+        envelope=Envelope.failure(
+            validation_error(message, details={"parameter": parameter})
+        ),
+        text=message,
+        exit_code=EXIT_VALIDATION,
+    )
+
+
 def fact_payload(fact: Fact) -> dict:
     return {
         "id": fact.id,
@@ -229,6 +240,9 @@ async def list_candidates(
     limit: int = 50,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
+    if limit < 1:
+        return invalid_positive_int_result("limit")
+
     try:
         candidate_status = CandidateStatus(status)
     except ValueError:
@@ -246,24 +260,27 @@ async def list_candidates(
         )
 
     store_obj = async_store(store)
-    candidates = await store_obj.load_candidates(
+    all_candidates = await store_obj.load_candidates(
         status=candidate_status,
         project=project,
-        limit=None if search else limit,
+        limit=None,
     )
 
-    total_before_search = len(candidates)
     if search:
         search_lower = search.lower()
-        candidates = [c for c in candidates if search_lower in c.content.lower()]
-        candidates = candidates[:limit]
+        all_candidates = [
+            c for c in all_candidates if search_lower in c.content.lower()
+        ]
+    candidates = all_candidates[:limit]
+    total = len(all_candidates)
+    truncated = total > limit
 
     meta = EnvelopeMeta(
         limit=limit,
         returned=len(candidates),
-        total=total_before_search,
-        truncated=len(candidates) >= limit,
-        truncation_reason="default_limit" if len(candidates) >= limit else None,
+        total=total,
+        truncated=truncated,
+        truncation_reason="default_limit" if truncated else None,
     )
     if not candidates:
         text = "No memory candidates found matching the criteria."
@@ -373,6 +390,10 @@ async def recall(
         return invalid_format_result(format)
     if format == "":
         format = "text"
+    if max_sources < 1:
+        return invalid_positive_int_result("max_sources")
+    if max_prefilter_matches < 1:
+        return invalid_positive_int_result("max_prefilter_matches")
 
     store_obj = async_store(store)
     answer, quality, provenance, _ = await _recall_with_provenance(
@@ -426,6 +447,11 @@ async def recall_trace(
     max_prefilter_matches: int = DEFAULT_MAX_PREFILTER_MATCHES,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
+    if max_sources < 1:
+        return invalid_positive_int_result("max_sources")
+    if max_prefilter_matches < 1:
+        return invalid_positive_int_result("max_prefilter_matches")
+
     try:
         answer, quality, provenance, trace = await _recall_with_provenance(
             query,
@@ -634,6 +660,9 @@ async def inspect(
     include_stale: bool = False,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
+    if limit < 1:
+        return invalid_positive_int_result("limit")
+
     cat = category_from_value(category)
     if category and cat is None:
         return invalid_category_result(category)
@@ -641,21 +670,24 @@ async def inspect(
     facts = await async_store(store).load_active_facts(
         category=cat,
         project=project,
-        limit=limit,
+        limit=None,
         include_stale=include_stale,
     )
-    data = [fact_payload(f) for f in facts]
+    visible_facts = facts[:limit]
+    data = [fact_payload(f) for f in visible_facts]
+    truncated = len(facts) > limit
     meta = EnvelopeMeta(
         limit=limit,
         returned=len(data),
-        truncated=len(data) >= limit,
-        truncation_reason="default_limit" if len(data) >= limit else None,
+        total=len(facts),
+        truncated=truncated,
+        truncation_reason="default_limit" if truncated else None,
     )
-    if not facts:
+    if not visible_facts:
         text = "No facts found matching the criteria."
     else:
-        lines = [f"Found {len(facts)} fact(s):"]
-        for fact in facts:
+        lines = [f"Found {len(visible_facts)} fact(s):"]
+        for fact in visible_facts:
             meta_str = f"[{fact.category.value}]"
             if fact.project:
                 meta_str += f" [{fact.project}]"
@@ -1126,13 +1158,7 @@ async def recall_stats(
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
     if limit < 1:
-        return OperationResult(
-            envelope=Envelope.failure(
-                validation_error("limit must be greater than zero")
-            ),
-            text="limit must be greater than zero",
-            exit_code=EXIT_VALIDATION,
-        )
+        return invalid_positive_int_result("limit")
 
     try:
         since_dt = _parse_since(since)

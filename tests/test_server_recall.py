@@ -142,6 +142,15 @@ def test_recall_invalid_format_returns_validation_error(monkeypatch):
     assert parsed["errors"][0]["code"] == "validation_error"
 
 
+def test_recall_invalid_limit_returns_validation_error(monkeypatch):
+    _setup_store(monkeypatch)
+    result = asyncio.run(_call("recall", query="x", max_sources=0, format="json"))
+    parsed = _structured(result)
+    assert parsed["status"] == "error"
+    assert parsed["errors"][0]["code"] == "validation_error"
+    assert parsed["errors"][0]["details"] == {"parameter": "max_sources"}
+
+
 def test_recall_warns_on_superseded(monkeypatch):
     store = _setup_store(monkeypatch)
     store.append_facts(

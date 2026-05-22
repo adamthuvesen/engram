@@ -44,6 +44,42 @@ def test_list_candidates_operation_validates_status():
     assert "Unsupported status" in result.text
 
 
+def test_list_candidates_operation_validates_limit():
+    result = asyncio.run(operations.list_candidates(limit=0, store=_store()))
+
+    assert result.exit_code == operations.EXIT_VALIDATION
+    assert result.envelope.errors[0].code == "validation_error"
+    assert "limit must be greater than zero" in result.text
+
+
+def test_list_candidates_metadata_is_exact_at_limit():
+    store = _store()
+    store.append_candidates(
+        [
+            MemoryCandidate(
+                id="candidateaaa",
+                category=FactCategory.workflow,
+                content="first",
+                status=CandidateStatus.pending,
+            ),
+            MemoryCandidate(
+                id="candidatebbb",
+                category=FactCategory.workflow,
+                content="second",
+                status=CandidateStatus.pending,
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        operations.list_candidates(limit=2, store=AsyncFactStore(store))
+    )
+
+    assert result.envelope.meta.returned == 2
+    assert result.envelope.meta.total == 2
+    assert result.envelope.meta.truncated is False
+
+
 def test_candidate_review_operations_use_shared_payloads():
     store = _store()
     store.append_candidates(
@@ -179,3 +215,65 @@ def test_recall_stats_can_include_records_and_filter_window():
     assert result.envelope.data["records"][0]["query"] == "new"
     assert result.envelope.meta.returned == 1
     assert result.envelope.meta.total == 1
+
+
+def test_inspect_operation_validates_limit():
+    result = asyncio.run(operations.inspect(limit=0, store=_store()))
+
+    assert result.exit_code == operations.EXIT_VALIDATION
+    assert result.envelope.errors[0].code == "validation_error"
+    assert "limit must be greater than zero" in result.text
+
+
+def test_inspect_metadata_is_exact_at_limit():
+    store = _store()
+    store.append_facts(
+        [
+            Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a"),
+            Fact(id="bbbbbbbbbbbb", category=FactCategory.preference, content="b"),
+        ]
+    )
+
+    result = asyncio.run(operations.inspect(limit=2, store=AsyncFactStore(store)))
+
+    assert result.envelope.meta.returned == 2
+    assert result.envelope.meta.total == 2
+    assert result.envelope.meta.truncated is False
+
+
+def test_inspect_metadata_truncates_when_more_than_limit():
+    store = _store()
+    store.append_facts(
+        [
+            Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a"),
+            Fact(id="bbbbbbbbbbbb", category=FactCategory.preference, content="b"),
+            Fact(id="cccccccccccc", category=FactCategory.preference, content="c"),
+        ]
+    )
+
+    result = asyncio.run(operations.inspect(limit=2, store=AsyncFactStore(store)))
+
+    assert result.envelope.meta.returned == 2
+    assert result.envelope.meta.total == 3
+    assert result.envelope.meta.truncated is True
+    assert result.envelope.meta.truncation_reason == "default_limit"
+
+
+def test_recall_operation_validates_provenance_limits():
+    result = asyncio.run(operations.recall("anything", max_sources=0, store=_store()))
+
+    assert result.exit_code == operations.EXIT_VALIDATION
+    assert result.envelope.errors[0].code == "validation_error"
+    assert result.envelope.errors[0].details == {"parameter": "max_sources"}
+    assert "max_sources must be greater than zero" in result.text
+
+
+def test_recall_trace_operation_validates_prefilter_limit():
+    result = asyncio.run(
+        operations.recall_trace("anything", max_prefilter_matches=0, store=_store())
+    )
+
+    assert result.exit_code == operations.EXIT_VALIDATION
+    assert result.envelope.errors[0].code == "validation_error"
+    assert result.envelope.errors[0].details == {"parameter": "max_prefilter_matches"}
+    assert "max_prefilter_matches must be greater than zero" in result.text

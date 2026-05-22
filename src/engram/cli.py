@@ -497,9 +497,11 @@ def _normalize_argv(argv: Sequence[str] | None) -> list[str] | None:
     if argv is None:
         return None
     argv = list(argv)
-    if any(token in ("help", "--help", "-h") for token in argv):
+    if argv in (["help"], ["--help"], ["-h"]):
         return ["--help"]
     if len(argv) >= 2 and argv[0] == "--json":
+        if argv[1:] in (["help"], ["--help"], ["-h"]):
+            return ["--help"]
         return [argv[1], *argv[2:], "--json"]
     return argv
 
@@ -511,7 +513,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     if normalized in (["--help"], ["-h"]):
         parser.print_help()
         return EXIT_OK
-    args = parser.parse_args(normalized)
+    try:
+        args = parser.parse_args(normalized)
+    except SystemExit as exc:
+        return exc.code if isinstance(exc.code, int) else EXIT_VALIDATION
     if args.cmd is None:
         parser.print_help()
         return EXIT_OK
