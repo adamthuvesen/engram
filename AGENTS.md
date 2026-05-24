@@ -6,6 +6,7 @@ Structured, cross-project memory for coding agents via MCP. No embeddings, no ve
 
 ```bash
 uv sync --extra dev                              # install deps
+uv run pre-commit install                        # git hooks: ruff check + format
 uv run engram                                    # start MCP server
 uv run fastmcp dev src/engram/server.py          # dev mode (inspector)
 uv run --extra dev pytest tests/ -v              # run tests

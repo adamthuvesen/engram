@@ -1,0 +1,9 @@
+# Install: uv sync --extra dev && uv run pre-commit install
+# Run all hooks: uv run pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
