@@ -10,7 +10,9 @@ from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
 
 from engram.config import configure_logging, get_settings
+from engram.interfaces import Envelope, validation_error
 from engram.operations import (
+    EXIT_VALIDATION,
     OperationResult,
     async_store,
     approve_candidates as op_approve_candidates,
@@ -69,6 +71,32 @@ Tools:
 
 def _render(result: OperationResult, *, format: str = "text") -> str:
     return result.render(as_json=format == "json")
+
+
+def _resolve_recall_max_sources(
+    max_sources: int,
+    limit: int | None,
+) -> int:
+    """Map optional ``limit`` alias to ``max_sources`` for recall tools."""
+    if limit is None:
+        return max_sources
+    if max_sources != DEFAULT_MAX_SOURCES and max_sources != limit:
+        raise ValueError("limit and max_sources conflict")
+    return limit
+
+
+def _recall_limit_conflict_result() -> OperationResult:
+    message = (
+        "Cannot pass limit and max_sources with different values; "
+        "use one or set them equal."
+    )
+    return OperationResult(
+        envelope=Envelope.failure(
+            validation_error(message, details={"parameter": "limit"})
+        ),
+        text=message,
+        exit_code=EXIT_VALIDATION,
+    )
 
 
 def _tool_result(
@@ -231,14 +259,26 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         with_provenance: bool = False,
         max_sources: int = DEFAULT_MAX_SOURCES,
         max_prefilter_matches: int = DEFAULT_MAX_PREFILTER_MATCHES,
+        limit: int | None = None,
     ) -> ToolResult:
-        """Search memory using tiered agentic retrieval."""
+        """Search memory using tiered agentic retrieval.
+
+        ``limit`` is an alias for ``max_sources`` (for consistency with inspect
+        and list tools). Do not pass both with different values.
+        """
+        try:
+            resolved_max_sources = _resolve_recall_max_sources(max_sources, limit)
+        except ValueError:
+            result = _recall_limit_conflict_result()
+            return _tool_result(
+                result, format=format, force_json_text=bool(result.exit_code)
+            )
         result = await op_recall(
             query,
             project=project,
             format=format,
             with_provenance=with_provenance,
-            max_sources=max_sources,
+            max_sources=resolved_max_sources,
             max_prefilter_matches=max_prefilter_matches,
             store=get_store(),
         )
@@ -253,13 +293,22 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         verbose: bool = False,
         max_sources: int = DEFAULT_MAX_SOURCES,
         max_prefilter_matches: int = DEFAULT_MAX_PREFILTER_MATCHES,
+        limit: int | None = None,
     ) -> ToolResult:
-        """Run recall and return a structured trace for debugging."""
+        """Run recall and return a structured trace for debugging.
+
+        ``limit`` is an alias for ``max_sources``. Do not pass both with
+        different values.
+        """
+        try:
+            resolved_max_sources = _resolve_recall_max_sources(max_sources, limit)
+        except ValueError:
+            return _tool_result(_recall_limit_conflict_result(), format="json")
         result = await op_recall_trace(
             query,
             project=project,
             verbose=verbose,
-            max_sources=max_sources,
+            max_sources=resolved_max_sources,
             max_prefilter_matches=max_prefilter_matches,
             store=get_store(),
         )

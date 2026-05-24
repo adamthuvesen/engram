@@ -39,9 +39,9 @@ models.py      Fact, FactEvent, MemoryCandidate, IngestionRecord, RecallRecord,
 | `suggest_memories`                         | Propose candidates for human review                   |
 | `list_candidates`                          | Browse pending/reviewed suggestions                   |
 | `approve_candidates` / `reject_candidates` | Promote or dismiss candidates                         |
-| `recall`                                   | Tiered multi-lens search                              |
+| `recall`                                   | Tiered multi-lens search (`max_sources`; MCP `limit` alias) |
 | `recall_context`                           | Recall as answer or compact prompt block              |
-| `recall_trace`                             | Recall + bounded prompt/output excerpts for debugging |
+| `recall_trace`                             | Recall + bounded prompt/output excerpts for debugging (`limit` alias) |
 | `recall_stats`                             | Per-recall LLM usage and cache-hit summary            |
 | `forget` / `edit_fact`                     | Soft-delete or edit a fact in place                   |
 | `correct_memory` / `merge_memories`        | Agent-first correction and merge primitives           |

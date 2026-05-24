@@ -60,6 +60,7 @@ Opt into JSON envelopes in CLI or text content when needed:
 
 - `recall(query, format="json", with_provenance=True)` →
   `{status, data: {answer, tier, source_fact_ids, cited_fact_ids, provenance, usage}, warnings, errors, meta}`
+- `recall` / `recall_trace` cap synthesis with `max_sources` (default 25); `limit` is an alias for `max_sources` on MCP only (CLI: `--max-sources`).
 - Maintenance tools (`correct_memory`, `merge_memories`, `mark_stale`, `doctor`) always return JSON with stable `status` and error codes (`validation_error`, `not_found`, `provider_error`, `storage_error`, `conflict`).
 - `recall-stats --json` returns aggregate statistics by default; pass `--include-records` for raw recall log records.
 - Lists carry default safety caps; truncation is reported in `meta.truncated`.
