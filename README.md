@@ -14,6 +14,7 @@ The LLM is the search engine — no embeddings, no vector database.
 
 ```bash
 uv sync --extra dev                              # install deps
+uv run pre-commit install                        # git hooks: ruff check + format
 uv run engram                                    # start MCP server
 uv run fastmcp dev src/engram/server.py          # dev mode (inspector)
 uv run --extra dev pytest tests/ -v              # run tests
