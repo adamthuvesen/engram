@@ -163,9 +163,7 @@ def test_recall_limit_alias(monkeypatch):
             )
         ]
     )
-    result = asyncio.run(
-        _call("recall", query="abc xyz", format="json", limit=5)
-    )
+    result = asyncio.run(_call("recall", query="abc xyz", format="json", limit=5))
     parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert parsed["meta"]["limit"] == 5
