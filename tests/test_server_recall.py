@@ -142,13 +142,44 @@ def test_recall_invalid_format_returns_validation_error(monkeypatch):
     assert parsed["errors"][0]["code"] == "validation_error"
 
 
-def test_recall_invalid_limit_returns_validation_error(monkeypatch):
+def test_recall_invalid_max_sources_returns_validation_error(monkeypatch):
     _setup_store(monkeypatch)
     result = asyncio.run(_call("recall", query="x", max_sources=0, format="json"))
     parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "validation_error"
     assert parsed["errors"][0]["details"] == {"parameter": "max_sources"}
+
+
+def test_recall_limit_alias(monkeypatch):
+    store = _setup_store(monkeypatch)
+    store.append_facts(
+        [
+            Fact(
+                id="aaaaaaaaaaaa",
+                category=FactCategory.preference,
+                content="abc xyz",
+                tags=["abc"],
+            )
+        ]
+    )
+    result = asyncio.run(
+        _call("recall", query="abc xyz", format="json", limit=5)
+    )
+    parsed = _structured(result)
+    assert parsed["status"] == "ok"
+    assert parsed["meta"]["limit"] == 5
+
+
+def test_recall_limit_and_max_sources_conflict(monkeypatch):
+    _setup_store(monkeypatch)
+    result = asyncio.run(
+        _call("recall", query="x", format="json", limit=5, max_sources=10)
+    )
+    parsed = _structured(result)
+    assert parsed["status"] == "error"
+    assert parsed["errors"][0]["code"] == "validation_error"
+    assert parsed["errors"][0]["details"] == {"parameter": "limit"}
 
 
 def test_recall_warns_on_superseded(monkeypatch):
