@@ -21,7 +21,7 @@ The whole bet is that you can skip embeddings: a deterministic keyword prefilter
 handles the easy queries for free, and the LLM tier only runs when a query
 actually needs it. Here's that bet measured on a **representative set of 56
 labeled queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)),
-spanning terse literal lookups through pure-synonym questions:
+spanning terse literal lookups through harder paraphrased questions:
 
 **35% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
 prefilter still ranks the right memory at #1 four times out of five:
@@ -33,25 +33,16 @@ prefilter still ranks the right memory at #1 four times out of five:
 | candidate recall (answer kept in the pool)      | 91%   |
 | MRR                                             | 0.85  |
 
-The honest part is *where* it wins. Broken down by query phrasing:
+This is the deterministic prefilter *floor*, **not** end-to-end retrieval
+accuracy. The aggregate already includes the harder queries the keyword pass
+can't resolve on its own; those escalate to the LLM tier — the actual retrieval
+engine — which this number deliberately does not measure.
 
-| query kind            | prefilter recall@1 | who handles it |
-| --------------------- | ------------------ | -------------- |
-| literal / exact-term  | 24/24 (100%)       | keyword prefilter, at zero cost |
-| paraphrased           | 17/21 (81%)        | mostly the prefilter |
-| synonym / semantic    | 3/10 (30%)         | the LLM tier earns its keep |
-
-The keyword pass nails queries that name the thing (`"polars or pandas?"`,
-`"pytest asyncio_mode?"`) and resolves them with no model call. It falls down
-exactly where you'd expect — matching `"credentials"` to a fact about `"secrets"`,
-or `"database"` to one about a `"warehouse"` — and that's the work the LLM tier
-exists to do. This table is the deterministic floor under that engine, **not**
-end-to-end retrieval accuracy.
-
-The queries are kept honest on purpose: literal ones use the term a user would
-actually type (not a verbatim copy of the fact), synonym ones deliberately avoid
-it, and each is labeled to the fact that answers it — so the scorer is never
-graded on its own keywords. The `kind` field makes the mix auditable.
+The queries are kept honest on purpose: the literal ones use the term a user
+would actually type (not a verbatim copy of the fact), the harder ones reword
+around it, and each is labeled to the fact that answers it — so the scorer is
+never graded on its own keywords. The `kind` field in the dataset makes the mix
+auditable.
 
 Reproduce — deterministic, no API key:
 
