@@ -6,11 +6,16 @@ Run it directly:
 
     uv run python tests/run_evals.py
 
-It measures ONE thing: how well the deterministic keyword prefilter — the free,
-zero-LLM first pass of engram's tiered recall — surfaces the labeled fact for a
-fresh, paraphrased query. It does NOT measure the LLM search/synthesis tiers;
-those are non-deterministic and cost spend. Queries the prefilter misses at
-tier-0 escalate to the LLM in production, which this script does not exercise.
+It measures the deterministic keyword prefilter — the free, zero-LLM first pass
+of engram's tiered recall. The prefilter's job is *candidate recall*: keep the
+right memory in the pool that the LLM tiers then rank and synthesize. So the
+headline metric is hit-rate (is the labeled fact in the zero-LLM candidate
+set?), with recall@5/recall@1/MRR showing how well-ordered that pool already is.
+
+It does NOT measure the LLM search/synthesis tiers — those are the actual
+ranking/answering engine, are non-deterministic, and cost spend. recall@1 is the
+prefilter's weakest metric on purpose: resolving synonym gaps (e.g. "database"
+for a fact about a "warehouse") is the LLM's job, not the keyword pass's.
 
 Determinism: every query runs through ``recall_with_provenance`` against a temp
 store, but ``complete_with_usage`` is replaced with a no-op stub, so there are
@@ -23,9 +28,10 @@ deterministic prefilter artifacts:
 
 Metrics, computed over the answerable queries (those with a non-empty label):
 
-- hit-rate : a labeled fact appears anywhere in ``seen`` (any rank)
-- recall@1 : a labeled fact is the top-ranked above-floor match
+- hit-rate : candidate recall — a labeled fact is in ``seen`` at any rank (this
+             is the prefilter's real job: keep the answer in the LLM's pool)
 - recall@5 : a labeled fact is within the top 5 ranked above-floor matches
+- recall@1 : a labeled fact is the top-ranked above-floor match
 - MRR      : mean reciprocal rank of the first labeled fact
 
 The single no-match query (empty label) is checked separately: its above-floor
@@ -48,11 +54,12 @@ from pydantic import BaseModel, Field
 
 DATASET_PATH = Path(__file__).parent / "recall_eval_dataset.json"
 
-# Regression floors. Set conservatively below the measured numbers (recall@1
-# ≈0.51, recall@5 ≈0.72) so an honest scorer tweak won't flap, but a real
-# prefilter regression trips the gate. The metric is fully deterministic.
+# Regression floors. Set conservatively below the measured numbers (hit-rate
+# ≈0.92, recall@5 ≈0.75, recall@1 ≈0.51) so an honest scorer tweak won't flap,
+# but a real prefilter regression trips the gate. The metric is deterministic.
+MIN_HIT_RATE = 0.88
+MIN_RECALL_AT_5 = 0.68
 MIN_RECALL_AT_1 = 0.45
-MIN_RECALL_AT_5 = 0.65
 
 
 class LabeledQuery(BaseModel):
@@ -212,20 +219,24 @@ def main() -> int:
 
     misses = [r for r in summary.results if r.expected and not r.recall_at_5]
     print(
-        f"Deterministic prefilter recall  ·  {summary.n_answerable} labeled queries "
-        f"over a {summary.n_corpus}-fact corpus  ·  no LLM, no embeddings\n"
+        f"Deterministic prefilter — candidate recall into the zero-LLM pool\n"
+        f"{summary.n_answerable} labeled queries over a {summary.n_corpus}-fact "
+        f"corpus  ·  no LLM, no embeddings\n"
     )
-    print(f"{'metric':<14}{'value':>8}")
-    print("-" * 22)
-    print(f"{'hit-rate':<14}{_pct(summary.hit_rate):>8}")
-    print(f"{'recall@1':<14}{_pct(summary.recall_at_1):>8}")
-    print(f"{'recall@5':<14}{_pct(summary.recall_at_5):>8}")
-    print(f"{'MRR':<14}{summary.mrr:>8.2f}")
+    print(f"{'metric':<26}{'value':>8}")
+    print("-" * 34)
+    print(f"{'candidate recall (hit-rate)':<26}{_pct(summary.hit_rate):>8}")
+    print(f"{'recall@5':<26}{_pct(summary.recall_at_5):>8}")
+    print(f"{'recall@1':<26}{_pct(summary.recall_at_1):>8}")
+    print(f"{'MRR':<26}{summary.mrr:>8.2f}")
     print()
     print(
-        f"tier-0 (zero LLM): {_pct(summary.tier0_fraction)} of all queries  "
-        f"·  llm-free: {_pct(summary.llm_free_fraction)}  "
-        f"·  tiers {dict(sorted(summary.tier_counts.items()))}"
+        "The prefilter selects candidates; the LLM tier does the final ranking and\n"
+        "synthesis. recall@1 is low because closing synonym gaps is the LLM's job."
+    )
+    print(
+        f"\ntier-0 (fully answered, zero LLM): {_pct(summary.tier0_fraction)} of all "
+        f"queries  ·  tiers {dict(sorted(summary.tier_counts.items()))}"
     )
     print(
         f"no-match returns nothing above floor: {'ok' if summary.nomatch_ok else 'FAIL'}"
@@ -243,14 +254,16 @@ def main() -> int:
 
     ok = (
         summary.nomatch_ok
-        and summary.recall_at_1 >= MIN_RECALL_AT_1
+        and summary.hit_rate >= MIN_HIT_RATE
         and summary.recall_at_5 >= MIN_RECALL_AT_5
+        and summary.recall_at_1 >= MIN_RECALL_AT_1
     )
     if not ok:
         print(
-            f"\nGATE FAILED: recall@1={_pct(summary.recall_at_1)} "
-            f"(floor {_pct(MIN_RECALL_AT_1)}), recall@5={_pct(summary.recall_at_5)} "
-            f"(floor {_pct(MIN_RECALL_AT_5)}), nomatch_ok={summary.nomatch_ok}"
+            f"\nGATE FAILED: hit-rate={_pct(summary.hit_rate)} "
+            f"(floor {_pct(MIN_HIT_RATE)}), recall@5={_pct(summary.recall_at_5)} "
+            f"(floor {_pct(MIN_RECALL_AT_5)}), recall@1={_pct(summary.recall_at_1)} "
+            f"(floor {_pct(MIN_RECALL_AT_1)}), nomatch_ok={summary.nomatch_ok}"
         )
         return 1
     return 0

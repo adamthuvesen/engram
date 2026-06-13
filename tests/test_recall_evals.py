@@ -14,6 +14,7 @@ import pytest
 
 from tests.run_evals import (
     DATASET_PATH,
+    MIN_HIT_RATE,
     MIN_RECALL_AT_1,
     MIN_RECALL_AT_5,
     evaluate,
@@ -33,6 +34,13 @@ def dataset():
 def test_no_match_returns_nothing(summary):
     # The off-domain query must surface nothing above the relevance floor.
     assert summary.nomatch_ok
+
+
+def test_candidate_recall_meets_floor(summary):
+    # Hit-rate is the prefilter's real job: keep the answer in the zero-LLM pool.
+    assert summary.hit_rate >= MIN_HIT_RATE, (
+        f"candidate recall {summary.hit_rate:.2f} below floor {MIN_HIT_RATE}"
+    )
 
 
 def test_recall_at_1_meets_floor(summary):
