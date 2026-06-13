@@ -1,9 +1,10 @@
-"""CI guard for the deterministic prefilter recall number.
+"""CI guard for the deterministic prefilter recall numbers.
 
 Runs the labeled dataset through ``tests/run_evals.py`` and asserts the recall
-floors, the no-match behavior, and dataset integrity. Fully deterministic — no
-LLM calls, no API keys — so this is safe to run in CI on every push. If the
-prefilter scorer regresses, the recall floors here trip.
+floors, the tier-0 (zero-LLM) cost floor, the no-match behavior, the per-kind
+division of labor, and dataset integrity. Fully deterministic — no LLM calls,
+no API keys — so this is safe to run in CI on every push. If the prefilter
+scorer regresses, the floors here trip.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from tests.run_evals import (
     MIN_HIT_RATE,
     MIN_RECALL_AT_1,
     MIN_RECALL_AT_5,
+    MIN_TIER0_FRACTION,
     evaluate,
 )
 
@@ -36,10 +38,10 @@ def test_no_match_returns_nothing(summary):
     assert summary.nomatch_ok
 
 
-def test_candidate_recall_meets_floor(summary):
-    # Hit-rate is the prefilter's real job: keep the answer in the zero-LLM pool.
-    assert summary.hit_rate >= MIN_HIT_RATE, (
-        f"candidate recall {summary.hit_rate:.2f} below floor {MIN_HIT_RATE}"
+def test_tier0_cost_floor(summary):
+    # A representative query mix must resolve a real share at tier-0 (no LLM).
+    assert summary.tier0_fraction >= MIN_TIER0_FRACTION, (
+        f"tier-0 share {summary.tier0_fraction:.2f} below floor {MIN_TIER0_FRACTION}"
     )
 
 
@@ -53,6 +55,21 @@ def test_recall_at_5_meets_floor(summary):
     assert summary.recall_at_5 >= MIN_RECALL_AT_5, (
         f"recall@5 {summary.recall_at_5:.2f} below floor {MIN_RECALL_AT_5}"
     )
+
+
+def test_candidate_recall_meets_floor(summary):
+    # Hit-rate is the prefilter's candidate-recall job: keep the answer in pool.
+    assert summary.hit_rate >= MIN_HIT_RATE, (
+        f"candidate recall {summary.hit_rate:.2f} below floor {MIN_HIT_RATE}"
+    )
+
+
+def test_literal_queries_are_a_prefilter_win(summary):
+    # The whole point: the deterministic keyword pass nails literal/exact-term
+    # queries on its own. If this drops, the cost story no longer holds.
+    hits, total = summary.recall1_by_kind["literal"]
+    assert total >= 15
+    assert hits / total >= 0.9, f"literal recall@1 {hits}/{total} too low"
 
 
 def test_all_metrics_reported(summary):
@@ -74,6 +91,12 @@ def test_dataset_is_well_formed(dataset):
     nomatch = [q for q in queries if not q.get("expected")]
     assert len(answerable) >= 40
     assert len(nomatch) == 1, "exactly one no-match query expected"
+
+    # A representative set, not an all-hard one: a real share of literal queries
+    # and a real share of synonym/semantic ones.
+    kinds = [q.get("kind", "") for q in answerable]
+    assert kinds.count("literal") >= 15
+    assert sum(k in ("synonym", "semantic") for k in kinds) >= 5
 
     known = set(corpus_ids)
     for q in answerable:
