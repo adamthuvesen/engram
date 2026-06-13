@@ -1,10 +1,15 @@
-"""Benchmark: tier selection across realistic queries.
+"""Benchmark: tier-routing distribution across realistic queries.
 
-Seeds a store with ~150 facts across multiple projects/categories,
-then runs queries of varying complexity and reports:
+Seeds a store with cross-project facts, then runs queries of varying complexity
+and reports how the deterministic tier selector routes them:
 - Which tier each query lands in
 - Prefilter score distributions
-- Whether the tier feels right for accuracy
+- Whether each query lands in a hand-labeled *acceptable* tier bucket
+
+This is a routing-distribution sanity check, NOT a retrieval-accuracy metric:
+the IDEAL_TIER buckets below are wide (several accept every tier), so the
+"match" count says nothing about whether the right facts were recalled. For a
+real, deterministic recall number see ``tests/run_evals.py``.
 
 Run: uv run python tests/bench_tiers.py
 """
@@ -649,7 +654,11 @@ def main():
         tier_counts[r["tier"]] += 1
 
     print("-" * 145)
-    print(f"\nAccuracy: {correct}/{total} ({correct / total * 100:.0f}%)")
+    print(
+        f"\nTier-routing match (landed in an acceptable bucket): {correct}/{total} "
+        f"({correct / total * 100:.0f}%)  —  routing distribution, NOT recall accuracy."
+    )
+    print("See tests/run_evals.py for the deterministic recall@k number.")
     print("\nTier distribution:")
     for t in (0, 1, 2):
         pct = tier_counts[t] / total * 100
@@ -658,7 +667,7 @@ def main():
     # Flag problems
     bad = [r for r in results if not r["ok"]]
     if bad:
-        print(f"\n⚠ {len(bad)} misclassified queries:")
+        print(f"\n⚠ {len(bad)} queries routed outside their acceptable tier bucket:")
         for r in bad:
             gap_str = (
                 f"{r['gap_ratio']:.1f}" if r["gap_ratio"] != float("inf") else "inf"

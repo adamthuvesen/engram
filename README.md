@@ -15,6 +15,41 @@ is a plain append-only JSONL event log you can read with `cat`.
 2. **Review** (optional) — queue suggestions as candidates for human approval before they become recallable.
 3. **Recall** — deterministic prefilter → tiered retrieval → synthesis, escalating only as far as the query needs.
 
+## Recall, measured
+
+The whole bet is that you can skip embeddings: a deterministic keyword prefilter
+handles the easy queries for free, and the LLM tier only runs when a query
+actually needs it. Here's that bet measured on a **representative set of 56
+labeled queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)),
+spanning terse literal lookups through harder paraphrased questions:
+
+**35% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
+prefilter still ranks the right memory at #1 four times out of five:
+
+| Deterministic prefilter (no LLM, no embeddings) | value |
+| ----------------------------------------------- | ----- |
+| recall@1 (answer ranked #1)                     | 80%   |
+| recall@5 (answer in the top 5)                  | 91%   |
+| candidate recall (answer kept in the pool)      | 91%   |
+| MRR                                             | 0.85  |
+
+This is the deterministic prefilter *floor*, **not** end-to-end retrieval
+accuracy. The aggregate already includes the harder queries the keyword pass
+can't resolve on its own; those escalate to the LLM tier — the actual retrieval
+engine — which this number deliberately does not measure.
+
+The queries are kept honest on purpose: the literal ones use the term a user
+would actually type (not a verbatim copy of the fact), the harder ones reword
+around it, and each is labeled to the fact that answers it — so the scorer is
+never graded on its own keywords. The `kind` field in the dataset makes the mix
+auditable.
+
+Reproduce — deterministic, no API key:
+
+```bash
+uv run python tests/run_evals.py
+```
+
 ## Run it
 
 ```bash
