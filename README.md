@@ -17,28 +17,31 @@ is a plain append-only JSONL event log you can read with `cat`.
 
 ## Recall, measured
 
-The deterministic prefilter is the free first pass — pure keyword scoring, no
-model, no embeddings, no network. Before any LLM is involved, how often does it
-already surface the right memory? On a labeled set of **53 paraphrased queries
+The deterministic prefilter is engram's zero-LLM first pass: pure keyword
+scoring — no model, no embeddings, no network — that selects the candidate facts
+the LLM tiers then rank and synthesize. A prefilter is judged by **candidate
+recall**: does it keep the right memory in the pool? That's the number that
+matters, and it costs nothing. On a labeled set of **53 fresh paraphrased queries
 over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
 
-| Deterministic prefilter recall (no LLM, no embeddings) | value |
-| ------------------------------------------------------ | ----- |
-| recall@1                                               | 51%   |
-| recall@5                                               | 72%   |
-| hit-rate (labeled fact found at any rank)              | 91%   |
-| MRR                                                    | 0.60  |
+| Deterministic prefilter (no LLM, no embeddings) | value |
+| ----------------------------------------------- | ----- |
+| candidate recall (answer kept in the pool)      | 92%   |
+| recall@5 (answer already in the top 5)          | 75%   |
+| recall@1 (answer already ranked #1)             | 51%   |
+| MRR                                             | 0.62  |
 
-**6% of queries resolve at tier-0 with zero LLM calls**; the rest escalate to the
-LLM tiers, which this number does not measure.
+So **92% of the time the right memory is already in the zero-cost candidate
+pool**, and three-quarters of the time it's in the top 5 — before any model runs.
+The LLM tier is the actual retrieval engine: it does the final ranking and
+synthesis the keyword pass can't, like matching `"credentials"` to a fact about
+`"secrets"` or `"database"` to one about a `"warehouse"`. recall@1 sits at 51%
+precisely because closing those synonym gaps is the LLM's job, not the prefilter's
+— this table is the cheap floor beneath that engine, **not** end-to-end accuracy.
 
-This is the cheap floor under recall, **not** end-to-end accuracy — it scores only
-the keyword prefilter, not the LLM search/synthesis path. The queries are kept
-honest on purpose: paraphrased and synonym-heavy, each labeled to the fact that
-answers it rather than reverse-engineered from that fact's tokens, so the scorer
-isn't being graded on its own keywords. The cases it misses (`"database"` for a
-fact that says `"warehouse"`, `"credentials"` for one that says `"secrets"`) are
-exactly the semantic gaps the LLM tiers exist to close.
+The queries are kept honest on purpose: paraphrased and synonym-heavy, each
+labeled to the fact that answers it rather than reverse-engineered from that
+fact's tokens, so the scorer isn't graded on its own keywords.
 
 Reproduce — deterministic, no API key:
 
