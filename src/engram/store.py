@@ -68,9 +68,21 @@ _STEM_SUFFIXES = (
 
 
 def _stem(word: str) -> str:
-    """Cheap suffix strip — good enough for prefilter scoring."""
+    """Cheap suffix strip — good enough for prefilter scoring.
+
+    Regular plurals are normalized first so a singular and its plural converge
+    to the same stem. The suffix loop alone stripped ``-es`` as a unit, which
+    left ``"dataframe"`` and ``"dataframes"`` (and ``image``/``images``) with
+    different stems, so a query word never matched its plural in the corpus.
+    """
     if len(word) <= 4:
         return word
+    if word.endswith("ies") and len(word) > 4:
+        word = word[:-3] + "y"
+    elif word.endswith(("ches", "shes", "sses", "xes", "zes")):
+        word = word[:-2]
+    elif word.endswith("s") and not word.endswith("ss"):
+        word = word[:-1]
     for suffix in _STEM_SUFFIXES:
         if word.endswith(suffix) and len(word) - len(suffix) >= 3:
             return word[: -len(suffix)]
