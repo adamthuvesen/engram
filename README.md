@@ -17,31 +17,41 @@ is a plain append-only JSONL event log you can read with `cat`.
 
 ## Recall, measured
 
-The deterministic prefilter is engram's zero-LLM first pass: pure keyword
-scoring — no model, no embeddings, no network — that selects the candidate facts
-the LLM tiers then rank and synthesize. A prefilter is judged by **candidate
-recall**: does it keep the right memory in the pool? That's the number that
-matters, and it costs nothing. On a labeled set of **53 fresh paraphrased queries
-over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
+The whole bet is that you can skip embeddings: a deterministic keyword prefilter
+handles the easy queries for free, and the LLM tier only runs when a query
+actually needs it. Here's that bet measured on a **representative set of 56
+labeled queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)),
+spanning terse literal lookups through pure-synonym questions:
+
+**35% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
+prefilter still ranks the right memory at #1 four times out of five:
 
 | Deterministic prefilter (no LLM, no embeddings) | value |
 | ----------------------------------------------- | ----- |
-| candidate recall (answer kept in the pool)      | 92%   |
-| recall@5 (answer already in the top 5)          | 75%   |
-| recall@1 (answer already ranked #1)             | 51%   |
-| MRR                                             | 0.62  |
+| recall@1 (answer ranked #1)                     | 80%   |
+| recall@5 (answer in the top 5)                  | 91%   |
+| candidate recall (answer kept in the pool)      | 91%   |
+| MRR                                             | 0.85  |
 
-So **92% of the time the right memory is already in the zero-cost candidate
-pool**, and three-quarters of the time it's in the top 5 — before any model runs.
-The LLM tier is the actual retrieval engine: it does the final ranking and
-synthesis the keyword pass can't, like matching `"credentials"` to a fact about
-`"secrets"` or `"database"` to one about a `"warehouse"`. recall@1 sits at 51%
-precisely because closing those synonym gaps is the LLM's job, not the prefilter's
-— this table is the cheap floor beneath that engine, **not** end-to-end accuracy.
+The honest part is *where* it wins. Broken down by query phrasing:
 
-The queries are kept honest on purpose: paraphrased and synonym-heavy, each
-labeled to the fact that answers it rather than reverse-engineered from that
-fact's tokens, so the scorer isn't graded on its own keywords.
+| query kind            | prefilter recall@1 | who handles it |
+| --------------------- | ------------------ | -------------- |
+| literal / exact-term  | 24/24 (100%)       | keyword prefilter, at zero cost |
+| paraphrased           | 17/21 (81%)        | mostly the prefilter |
+| synonym / semantic    | 3/10 (30%)         | the LLM tier earns its keep |
+
+The keyword pass nails queries that name the thing (`"polars or pandas?"`,
+`"pytest asyncio_mode?"`) and resolves them with no model call. It falls down
+exactly where you'd expect — matching `"credentials"` to a fact about `"secrets"`,
+or `"database"` to one about a `"warehouse"` — and that's the work the LLM tier
+exists to do. This table is the deterministic floor under that engine, **not**
+end-to-end retrieval accuracy.
+
+The queries are kept honest on purpose: literal ones use the term a user would
+actually type (not a verbatim copy of the fact), synonym ones deliberately avoid
+it, and each is labeled to the fact that answers it — so the scorer is never
+graded on its own keywords. The `kind` field makes the mix auditable.
 
 Reproduce — deterministic, no API key:
 
