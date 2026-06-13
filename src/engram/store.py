@@ -66,6 +66,88 @@ _STEM_SUFFIXES = (
     "s",
 )
 
+# English function words dropped from prefilter unigrams. Without this, a query
+# like "what is the warehouse?" scores a full unigram hit on every fact
+# containing "the"/"is", burying the real match and inflating the relevant-match
+# count so focused queries never reach the zero-LLM tier-0 fast path. Only
+# unambiguous function words are listed — domain-meaningful verbs ("run", "use",
+# "set") are deliberately kept.
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "do",
+        "does",
+        "did",
+        "done",
+        "has",
+        "have",
+        "had",
+        "will",
+        "would",
+        "should",
+        "shall",
+        "can",
+        "could",
+        "may",
+        "might",
+        "must",
+        "of",
+        "for",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "with",
+        "from",
+        "into",
+        "as",
+        "than",
+        "and",
+        "or",
+        "but",
+        "if",
+        "not",
+        "no",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "where",
+        "when",
+        "why",
+        "how",
+        "i",
+        "you",
+        "they",
+        "them",
+        "their",
+        "there",
+        "we",
+        "us",
+        "our",
+        "my",
+        "me",
+        "your",
+        "its",
+        "about",
+    }
+)
+
 
 def _stem(word: str) -> str:
     """Cheap suffix strip — good enough for prefilter scoring.
@@ -1695,7 +1777,7 @@ class FactStore:
         """
         normalized = text.lower().replace("_", " ").replace("-", " ")
         raw = _TOKEN_RE.findall(normalized)
-        unigrams = {_stem(t) for t in raw}
+        unigrams = {_stem(t) for t in raw if t not in _STOPWORDS}
         bigrams = {f"{raw[i]}_{raw[i + 1]}" for i in range(len(raw) - 1)}
         return unigrams, bigrams
 
