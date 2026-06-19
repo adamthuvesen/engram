@@ -80,6 +80,31 @@ Reproduce — deterministic, no API key:
 uv run python tests/run_evals.py
 ```
 
+## Cross-project recall quality
+
+The cross-project benchmark adds the failure modes that are expensive in real
+agent memory: wrong-project evidence, stale facts, superseded contradictory
+preferences, global facts, and no-match queries. It is fictional no-secret data
+and uses deterministic provenance only, so it needs no API key:
+
+```bash
+uv run python tests/run_cross_project_recall_evals.py
+```
+
+The headline metric is mean evidence quality. Answerable queries get credit for
+expected evidence being retrieved and ranked well, then lose credit if excluded
+stale, superseded, contradictory, or wrong-project evidence appears above the
+relevance floor. No-match queries only pass when no evidence is surfaced.
+
+Measured on the committed fixture:
+
+| Cross-project quality | score |
+| --- | ---: |
+| baseline before project/supersession filtering | 0.417 |
+| current | 1.000 |
+| absolute gain | +0.583 |
+| relative gain | +140% |
+
 ## Run it
 
 ```bash
@@ -96,6 +121,7 @@ starting a long-running server.
 No-key paths:
 
 - `uv run python tests/run_evals.py`
+- `uv run python tests/run_cross_project_recall_evals.py`
 - `uv run python tests/run_memory_audit_evals.py`
 - `uv run engram-dash`
 - `uv run engram doctor --json`

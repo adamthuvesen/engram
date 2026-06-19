@@ -89,6 +89,66 @@ def test_filter_by_project():
     assert exact[0].project == "acme-dw"
 
 
+def test_prefilter_infers_project_named_in_query():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="atlasdb",
+                category=FactCategory.project,
+                content="Atlas stores billing data in Postgres",
+                project="atlas",
+                tags=["billing", "database"],
+            ),
+            Fact(
+                id="oriondb",
+                category=FactCategory.project,
+                content="Orion stores billing data in BigQuery",
+                project="orion",
+                tags=["billing", "database"],
+            ),
+            Fact(
+                id="globalpref",
+                category=FactCategory.preference,
+                content="The user prefers pytest for Python testing",
+            ),
+        ]
+    )
+
+    scored = store.prefilter_facts("In Atlas, what database backs billing?")
+    ids = [fact.id for score, fact in scored if score > 0]
+
+    assert "atlasdb" in ids
+    assert "oriondb" not in ids
+
+
+def test_prefilter_excludes_superseded_fact():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="oldeditor",
+                category=FactCategory.preference,
+                content="Mira prefers VS Code over Neovim for Python editing",
+                tags=["python", "editor"],
+            ),
+            Fact(
+                id="neweditor",
+                category=FactCategory.preference,
+                content="Mira prefers Neovim over VS Code for Python editing",
+                tags=["python", "editor"],
+                supersedes="oldeditor",
+            ),
+        ]
+    )
+
+    scored = store.prefilter_facts("Mira Python editor preference")
+    ids = [fact.id for score, fact in scored if score > 0]
+
+    assert "neweditor" in ids
+    assert "oldeditor" not in ids
+
+
 def test_forget():
     store = _make_store()
     fact = Fact(category=FactCategory.preference, content="Old preference")
