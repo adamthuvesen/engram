@@ -18,6 +18,7 @@ from engram.operations import (
     EXIT_VALIDATION,
     OperationResult,
     approve_candidates as op_approve_candidates,
+    audit_memories as op_audit_memories,
     correct_memory as op_correct_memory,
     doctor as op_doctor,
     edit_fact as op_edit_fact,
@@ -67,6 +68,7 @@ CANONICAL_COMMANDS = frozenset(
         "purge",
         "rename-project",
         "synthesize",
+        "audit-memories",
         "doctor",
         "memory-stats",
         "recall-stats",
@@ -250,6 +252,10 @@ async def cmd_synthesize(args: argparse.Namespace) -> OperationResult:
     return await op_synthesize(project=args.project, dry_run=not args.apply)
 
 
+async def cmd_audit_memories(args: argparse.Namespace) -> OperationResult:
+    return await op_audit_memories(project=args.project)
+
+
 async def cmd_doctor(args: argparse.Namespace) -> OperationResult:
     return await op_doctor(
         check_provider_flag=args.check_provider,
@@ -301,6 +307,7 @@ HANDLERS: dict[str, CommandHandler] = {
     "purge": cmd_purge,
     "rename-project": cmd_rename_project,
     "synthesize": cmd_synthesize,
+    "audit-memories": cmd_audit_memories,
     "doctor": cmd_doctor,
     "memory-stats": cmd_memory_stats,
     "recall-stats": cmd_recall_stats,
@@ -466,6 +473,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_synthesize.add_argument("--project", default=None)
     p_synthesize.add_argument("--apply", action="store_true")
     _add_json_flag(p_synthesize)
+
+    p_audit = sub.add_parser(
+        "audit-memories",
+        help="Suggest duplicate, stale, and contradictory memory cleanup",
+    )
+    p_audit.add_argument("--project", default=None)
+    _add_json_flag(p_audit)
 
     p_doctor = sub.add_parser("doctor", help="Health check the memory store")
     p_doctor.add_argument("--check-provider", action="store_true")

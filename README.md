@@ -96,9 +96,11 @@ starting a long-running server.
 No-key paths:
 
 - `uv run python tests/run_evals.py`
+- `uv run python tests/run_memory_audit_evals.py`
 - `uv run engram-dash`
 - `uv run engram doctor --json`
 - `uv run engram inspect --json --limit 50`
+- `uv run engram audit-memories --json`
 
 Runtime paths that can call the LLM:
 
@@ -140,6 +142,7 @@ engram doctor --check-provider --json
 engram inspect --include-stale --json --limit 50
 engram correct-memory <fact_id> "new content" --reason "user updated"
 engram merge-memories <id1> <id2> --content "merged" --reason "dedupe"
+engram audit-memories --json                                      # read-only suggestions
 engram sync --json                                                 # git-backed pull + push
 ```
 
@@ -163,6 +166,7 @@ also exit 2.
 | `mark_stale` / `unmark_stale` / `forget` | Toggle recall eligibility or soft-delete |
 | `inspect` / `memory_stats` / `recall_stats` | Browse and inspect |
 | `synthesize` | Batch dedupe / merge / rewrite / prune |
+| `audit_memories` | Read-only duplicate / stale / contradiction suggestions |
 | `doctor` | Health check (read-only; opt-in `repair`) |
 | `sync` | Git-backed pull + push of the data directory |
 | `import_memories` | Bootstrap from `~/.claude/projects/*/memory/` |
@@ -181,6 +185,26 @@ MCP-only alias). Maintenance tools always return JSON with a stable `status` and
 error codes (`validation_error`, `not_found`, `provider_error`, `storage_error`,
 `conflict`). Lists carry default safety caps; truncation is reported in
 `meta.truncated`. Stable warning codes live in `engram.interfaces`.
+
+## Memory audit suggestions
+
+`audit-memories` is the no-key, read-only compaction review loop. It scans active
+facts for near-duplicate groups, stale time-bound memories, and contradictory
+preference/update claims, then emits suggested review actions such as
+`merge-memories`, `mark-stale`, or manual contradiction review. It never applies
+those actions itself.
+
+Reproduce the measured fixture:
+
+```bash
+uv run python tests/run_memory_audit_evals.py
+```
+
+The committed fixture is fictional Acme/Alex-style memory data with labels for
+duplicate, stale, and contradiction issue groups. The gate compares against the
+current no-key audit floor (exact duplicate checks) and requires at least a 50
+percentage point recall gain, at least 80% precision, and reviewer burden no
+higher than 1.5x the expected issue count.
 
 ## Configuration
 

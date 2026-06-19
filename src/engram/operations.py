@@ -17,6 +17,10 @@ from engram.interfaces import (
     storage_error,
     validation_error,
 )
+from engram.memory_audit import (
+    audit_memory_store as _audit_memory_store,
+    format_audit_result,
+)
 from engram.models import (
     CandidateStatus,
     Fact,
@@ -962,6 +966,26 @@ async def synthesize(
     )
 
 
+async def audit_memories(
+    *,
+    project: str | None = None,
+    store: FactStore | AsyncFactStore | None = None,
+) -> OperationResult:
+    result = await _audit_memory_store(project=project, store=async_store(store))
+    data = result.model_dump(mode="json")
+    data.update(
+        {
+            "duplicate_groups": result.duplicate_groups,
+            "stale_facts": result.stale_facts,
+            "contradiction_groups": result.contradiction_groups,
+        }
+    )
+    return OperationResult(
+        envelope=Envelope.success(data=data),
+        text=format_audit_result(result),
+    )
+
+
 async def doctor(
     *,
     check_provider_flag: bool = False,
@@ -1273,6 +1297,7 @@ __all__ = [
     "EXIT_VALIDATION",
     "OperationResult",
     "approve_candidates",
+    "audit_memories",
     "async_store",
     "correct_memory",
     "doctor",
