@@ -194,6 +194,30 @@ def _is_active_fact(
     )
 
 
+def _normalized_project_text(value: str) -> str:
+    return " ".join(
+        _TOKEN_RE.findall(value.lower().replace("_", " ").replace("-", " "))
+    )
+
+
+def _infer_project_from_query(facts: list[Fact], query: str) -> str | None:
+    """Infer an explicit project scope when the query names exactly one project."""
+    query_norm = f" {_normalized_project_text(query)} "
+    matches = []
+    for project in sorted({fact.project for fact in facts if fact.project}):
+        project_norm = _normalized_project_text(project)
+        if project_norm and f" {project_norm} " in query_norm:
+            matches.append(project)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _exclude_superseded_facts(facts: list[Fact]) -> list[Fact]:
+    superseded_ids = {fact.supersedes for fact in facts if fact.supersedes}
+    if not superseded_ids:
+        return facts
+    return [fact for fact in facts if fact.id not in superseded_ids]
+
+
 def _thread_lock_for(path: Path) -> threading.RLock:
     """Return a process-local lock for the given filesystem lock path."""
     with _THREAD_LOCKS_GUARD:
@@ -477,6 +501,15 @@ class FactStore:
         Score is included so the retriever can use it for tier selection.
         """
         facts = self.load_active_facts(project=project)
+        if project is None:
+            inferred_project = _infer_project_from_query(facts, query)
+            if inferred_project:
+                facts = [
+                    fact
+                    for fact in facts
+                    if fact.project == inferred_project or fact.project is None
+                ]
+        facts = _exclude_superseded_facts(facts)
         if not facts:
             return []
 

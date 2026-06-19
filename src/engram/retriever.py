@@ -394,6 +394,8 @@ def _build_warnings(
             stale_ids.append(fact.id)
         if fact.id in superseded_by:
             superseded_ids.append(fact.id)
+        if fact.supersedes:
+            superseded_ids.append(fact.supersedes)
         if fact.confidence == 0.0:
             forgotten_ids.append(fact.id)
 

@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "description": "No-secret cross-project recall quality fixture. It stresses project-specific retrieval, stale facts, superseded contradictory preferences, and wrong-project evidence using fictional projects and people.",
+  "metric": "Mean deterministic evidence quality. Answerable queries score expected evidence recall and rank, then subtract penalties when excluded stale, superseded, contradictory, or wrong-project evidence appears above the relevance floor. No-match queries score 1 only when no evidence is surfaced.",
+  "corpus": [
+    {
+      "id": "global-pytest",
+      "category": "preference",
+      "content": "The user prefers pytest for Python testing",
+      "tags": ["python", "testing"]
+    },
+    {
+      "id": "global-ruff",
+      "category": "preference",
+      "content": "The user prefers ruff for Python linting",
+      "tags": ["python", "linting"]
+    },
+    {
+      "id": "atlas-billing-db",
+      "category": "project",
+      "project": "atlas",
+      "content": "Atlas stores billing data in Postgres",
+      "tags": ["billing", "database", "postgres"]
+    },
+    {
+      "id": "orion-billing-db",
+      "category": "project",
+      "project": "orion",
+      "content": "Orion stores billing data in BigQuery",
+      "tags": ["billing", "database", "bigquery"]
+    },
+    {
+      "id": "atlas-jobs",
+      "category": "workflow",
+      "project": "atlas",
+      "content": "Atlas background jobs run through Celery workers",
+      "tags": ["jobs", "workers", "celery"]
+    },
+    {
+      "id": "orion-jobs",
+      "category": "workflow",
+      "project": "orion",
+      "content": "Orion background jobs run through Cloud Tasks",
+      "tags": ["jobs", "workers", "cloud-tasks"]
+    },
+    {
+      "id": "atlas-deploy-old",
+      "category": "workflow",
+      "project": "atlas",
+      "content": "Atlas deploys to Fly.io during the temporary migration",
+      "tags": ["deploy", "hosting", "fly"],
+      "stale": true
+    },
+    {
+      "id": "atlas-deploy-new",
+      "category": "workflow",
+      "project": "atlas",
+      "content": "Atlas deploys to Render after the hosting migration",
+      "tags": ["deploy", "hosting", "render"]
+    },
+    {
+      "id": "pref-editor-old",
+      "category": "preference",
+      "content": "Mira prefers VS Code over Neovim for Python editing",
+      "tags": ["python", "editor", "vscode"]
+    },
+    {
+      "id": "pref-editor-new",
+      "category": "preference",
+      "content": "Mira prefers Neovim over VS Code for Python editing",
+      "tags": ["python", "editor", "neovim"],
+      "supersedes": "pref-editor-old"
+    },
+    {
+      "id": "zen-frontend-react",
+      "category": "project",
+      "project": "zenith",
+      "content": "Zenith uses React for its frontend application",
+      "tags": ["frontend", "react"]
+    },
+    {
+      "id": "atlas-frontend-vue",
+      "category": "project",
+      "project": "atlas",
+      "content": "Atlas uses Vue for its frontend application",
+      "tags": ["frontend", "vue"]
+    },
+    {
+      "id": "orion-alerts-old",
+      "category": "workflow",
+      "project": "orion",
+      "content": "Orion sends alerts to PagerDuty until 2026-05-01",
+      "tags": ["alerts", "pagerduty"],
+      "stale": true
+    },
+    {
+      "id": "orion-alerts-new",
+      "category": "workflow",
+      "project": "orion",
+      "content": "Orion sends alerts to Slack after the incident-routing migration",
+      "tags": ["alerts", "slack"]
+    }
+  ],
+  "queries": [
+    {
+      "query": "In Atlas, what database backs billing?",
+      "expected": ["atlas-billing-db"],
+      "excluded": ["orion-billing-db"],
+      "kind": "project-specific",
+      "note": "The query names Atlas but does not pass a project parameter; Orion is wrong-project evidence."
+    },
+    {
+      "query": "In Orion, what database backs billing?",
+      "expected": ["orion-billing-db"],
+      "excluded": ["atlas-billing-db"],
+      "kind": "project-specific"
+    },
+    {
+      "query": "Atlas background worker system?",
+      "expected": ["atlas-jobs"],
+      "excluded": ["orion-jobs"],
+      "kind": "project-specific"
+    },
+    {
+      "query": "Orion background worker system?",
+      "expected": ["orion-jobs"],
+      "excluded": ["atlas-jobs"],
+      "kind": "project-specific"
+    },
+    {
+      "query": "where does Atlas deploy?",
+      "expected": ["atlas-deploy-new"],
+      "excluded": ["atlas-deploy-old"],
+      "kind": "stale"
+    },
+    {
+      "query": "where do Orion alerts go?",
+      "expected": ["orion-alerts-new"],
+      "excluded": ["orion-alerts-old"],
+      "kind": "stale"
+    },
+    {
+      "query": "Mira Python editor preference?",
+      "expected": ["pref-editor-new"],
+      "excluded": ["pref-editor-old"],
+      "kind": "contradiction",
+      "note": "The newer preference supersedes the reversed older preference."
+    },
+    {
+      "query": "For Atlas, which frontend framework?",
+      "expected": ["atlas-frontend-vue"],
+      "excluded": ["zen-frontend-react"],
+      "kind": "project-specific"
+    },
+    {
+      "query": "For Zenith, which frontend framework?",
+      "expected": ["zen-frontend-react"],
+      "excluded": ["atlas-frontend-vue"],
+      "kind": "project-specific"
+    },
+    {
+      "query": "Python linting preference?",
+      "expected": ["global-ruff"],
+      "excluded": [],
+      "kind": "global"
+    },
+    {
+      "query": "Python testing preference?",
+      "expected": ["global-pytest"],
+      "excluded": [],
+      "kind": "global"
+    },
+    {
+      "query": "What is the cafeteria lunch menu?",
+      "expected": [],
+      "excluded": [
+        "atlas-billing-db",
+        "orion-billing-db",
+        "atlas-jobs",
+        "orion-jobs",
+        "atlas-deploy-new",
+        "pref-editor-new"
+      ],
+      "kind": "no-match"
+    }
+  ]
+}
