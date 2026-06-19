@@ -16,6 +16,7 @@ from engram.operations import (
     OperationResult,
     async_store,
     approve_candidates as op_approve_candidates,
+    audit_memories as op_audit_memories,
     correct_memory as op_correct_memory,
     doctor as op_doctor,
     edit_fact as op_edit_fact,
@@ -66,6 +67,7 @@ Tools:
 - purge: Permanently remove forgotten and expired facts
 - rename_project: Bulk-rename facts and candidates
 - synthesize: Consolidate and clean up memory
+- audit_memories: Suggest duplicate, stale, and contradictory memory cleanup
 """
 
 
@@ -473,6 +475,19 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
             dry_run=dry_run,
             store=get_store(),
         )
+        return _tool_result(result, format=format)
+
+    @app.tool()
+    async def audit_memories(
+        project: str | None = None,
+        format: str = "text",
+    ) -> ToolResult:
+        """Suggest duplicate, stale, and contradictory memory cleanup.
+
+        This is read-only: it emits reviewable suggestions and example commands
+        but does not mutate the memory store.
+        """
+        result = await op_audit_memories(project=project, store=get_store())
         return _tool_result(result, format=format)
 
     @app.tool()

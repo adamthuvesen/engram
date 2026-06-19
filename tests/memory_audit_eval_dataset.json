@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "description": "Realistic no-secret memory dump for auditing memory compaction suggestions. The corpus uses fictional Acme/Alex examples and Engram project facts patterned after the public test corpus: no private memory contents, credentials, personal contact details, or company-confidential data.",
+  "now": "2026-06-19T00:00:00+00:00",
+  "corpus": [
+    {
+      "id": "dup-tests-a",
+      "category": "workflow",
+      "project": "engram",
+      "content": "Run engram tests with 'uv run pytest tests/ -v'",
+      "tags": ["testing"],
+      "observed_at": "2026-06-18T09:00:00+00:00"
+    },
+    {
+      "id": "dup-tests-b",
+      "category": "workflow",
+      "project": "engram",
+      "content": "Run engram tests with 'uv run pytest tests/ -v'",
+      "tags": ["testing"],
+      "observed_at": "2026-06-18T09:05:00+00:00"
+    },
+    {
+      "id": "dup-jsonl-a",
+      "category": "project",
+      "project": "engram",
+      "content": "Engram persists memories as an append-only JSONL event log on disk",
+      "tags": ["storage", "jsonl"],
+      "observed_at": "2026-06-12T12:00:00+00:00"
+    },
+    {
+      "id": "dup-jsonl-b",
+      "category": "project",
+      "project": "engram",
+      "content": "Engram stores memories in an append-only JSONL event log on disk",
+      "tags": ["storage", "jsonl"],
+      "observed_at": "2026-06-13T12:00:00+00:00"
+    },
+    {
+      "id": "dup-ci-a",
+      "category": "project",
+      "project": "acme-dw",
+      "content": "acme-dw CI runs on GitHub Actions with dbt Cloud",
+      "tags": ["ci", "dbt"],
+      "observed_at": "2026-05-28T10:00:00+00:00"
+    },
+    {
+      "id": "dup-ci-b",
+      "category": "project",
+      "project": "acme-dw",
+      "content": "acme-dw CI uses GitHub Actions with dbt Cloud",
+      "tags": ["ci", "dbt"],
+      "observed_at": "2026-05-29T10:00:00+00:00"
+    },
+    {
+      "id": "stale-auth",
+      "category": "workflow",
+      "project": "web-app",
+      "content": "Currently use the temporary auth migration branch for OAuth redirect testing",
+      "tags": ["auth", "temporary"],
+      "observed_at": "2026-04-20T09:00:00+00:00"
+    },
+    {
+      "id": "stale-freeze",
+      "category": "event",
+      "project": null,
+      "content": "Mobile release freeze runs until 2026-05-01",
+      "tags": ["release"],
+      "observed_at": "2026-04-25T09:00:00+00:00",
+      "expires_at": "2026-05-01T23:59:59+00:00"
+    },
+    {
+      "id": "con-polars-a",
+      "category": "preference",
+      "project": null,
+      "content": "The user prefers polars over pandas for dataframes",
+      "tags": ["python", "data"],
+      "observed_at": "2026-06-01T09:00:00+00:00"
+    },
+    {
+      "id": "con-polars-b",
+      "category": "preference",
+      "project": null,
+      "content": "The user prefers pandas over polars for dataframes",
+      "tags": ["python", "data"],
+      "observed_at": "2026-06-10T09:00:00+00:00"
+    },
+    {
+      "id": "con-tests-a",
+      "category": "preference",
+      "project": null,
+      "content": "The user prefers vitest over jest for TypeScript testing",
+      "tags": ["testing", "typescript"],
+      "observed_at": "2026-05-20T09:00:00+00:00"
+    },
+    {
+      "id": "con-tests-b",
+      "category": "preference",
+      "project": null,
+      "content": "The user prefers jest over vitest for TypeScript testing",
+      "tags": ["testing", "typescript"],
+      "observed_at": "2026-06-11T09:00:00+00:00"
+    },
+    {
+      "id": "clean-history",
+      "category": "event",
+      "project": "acme-dw",
+      "content": "The Snowflake warehouse migration completed on 2026-01-15",
+      "tags": ["snowflake"],
+      "observed_at": "2026-01-16T09:00:00+00:00"
+    },
+    {
+      "id": "clean-pref",
+      "category": "preference",
+      "project": null,
+      "content": "The user prefers explicit error handling over silent failures",
+      "tags": ["code-style"],
+      "observed_at": "2026-06-07T09:00:00+00:00"
+    },
+    {
+      "id": "clean-project",
+      "category": "project",
+      "project": "engram",
+      "content": "Engram exposes memory tools through a FastMCP server",
+      "tags": ["mcp"],
+      "observed_at": "2026-06-09T09:00:00+00:00"
+    }
+  ],
+  "expected": [
+    {"kind": "duplicate", "fact_ids": ["dup-tests-a", "dup-tests-b"]},
+    {"kind": "duplicate", "fact_ids": ["dup-jsonl-a", "dup-jsonl-b"]},
+    {"kind": "duplicate", "fact_ids": ["dup-ci-a", "dup-ci-b"]},
+    {"kind": "stale", "fact_ids": ["stale-auth"]},
+    {"kind": "stale", "fact_ids": ["stale-freeze"]},
+    {"kind": "contradiction", "fact_ids": ["con-polars-a", "con-polars-b"]},
+    {"kind": "contradiction", "fact_ids": ["con-tests-a", "con-tests-b"]}
+  ]
+}
