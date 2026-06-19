@@ -15,13 +15,46 @@ is a plain append-only JSONL event log you can read with `cat`.
 2. **Review** (optional) — queue suggestions as candidates for human approval before they become recallable.
 3. **Recall** — deterministic prefilter → tiered retrieval → synthesis, escalating only as far as the query needs.
 
+## No-key demo
+
+This demo uses the committed eval dataset. It does not read `~/.engram/data`, call
+an LLM provider, or need an API key.
+
+```bash
+uv sync --extra dev
+uv run python tests/run_evals.py
+```
+
+Expected shape:
+
+```text
+Deterministic prefilter recall — representative query mix
+56 labeled queries over a 57-fact corpus  ·  no LLM, no embeddings
+
+35% of queries resolved at tier-0 with zero LLM calls  ·  tiers {0: 20, 1: 30, 2: 7}
+
+metric                       value
+----------------------------------
+recall@1                       80%
+recall@5                       91%
+candidate recall (hit-rate)     91%
+MRR                           0.85
+
+no-match returns nothing above floor: ok
+```
+
+What this covers:
+
+- Recall behavior: runs the committed facts through `recall_with_provenance`.
+- Eval behavior: exits non-zero if recall floors or the no-match case regress.
+- Dashboard behavior: `uv run engram-dash` opens a terminal UI over local JSONL
+  data. It does not call an LLM.
+
 ## Recall, measured
 
-The whole bet is that you can skip embeddings: a deterministic keyword prefilter
-handles the easy queries for free, and the LLM tier only runs when a query
-actually needs it. Here's that bet measured on a **representative set of 56
-labeled queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)),
-spanning terse literal lookups through harder paraphrased questions:
+A deterministic keyword prefilter handles easy queries for free. The LLM tier
+runs only when a query needs it. The no-key eval measures that prefilter on **56
+labeled queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
 
 **35% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
 prefilter still ranks the right memory at #1 four times out of five:
@@ -38,11 +71,8 @@ accuracy. The aggregate already includes the harder queries the keyword pass
 can't resolve on its own; those escalate to the LLM tier — the actual retrieval
 engine — which this number deliberately does not measure.
 
-The queries are kept honest on purpose: the literal ones use the term a user
-would actually type (not a verbatim copy of the fact), the harder ones reword
-around it, and each is labeled to the fact that answers it — so the scorer is
-never graded on its own keywords. The `kind` field in the dataset makes the mix
-auditable.
+The queries are labeled to source facts. The `kind` field shows the mix of
+literal, paraphrased, synonym, semantic, and cross-project queries.
 
 Reproduce — deterministic, no API key:
 
@@ -63,9 +93,24 @@ Bare `engram` (no arguments) launches the MCP stdio server. Anything else is tre
 as a CLI invocation, so a typo surfaces as an argparse error instead of silently
 starting a long-running server.
 
-Engram talks to an LLM via [litellm](https://github.com/BerriAI/litellm), so it needs
-whatever credentials your configured model expects (e.g. `OPENAI_API_KEY`). The model
-is set with `ENGRAM_LLM_MODEL` (see [Configuration](#configuration)).
+No-key paths:
+
+- `uv run python tests/run_evals.py`
+- `uv run engram-dash`
+- `uv run engram doctor --json`
+- `uv run engram inspect --json --limit 50`
+
+Runtime paths that can call the LLM:
+
+- `remember`, `suggest-memories`, and `synthesize`
+- `recall`, `recall-context`, and `recall-trace` when a query escalates past
+  tier-0
+- `doctor --check-provider`
+
+Engram talks to an LLM via [litellm](https://github.com/BerriAI/litellm). These
+paths need whatever credentials your configured model expects, such as
+`OPENAI_API_KEY`. The model is set with `ENGRAM_LLM_MODEL` (see
+[Configuration](#configuration)).
 
 ### As an MCP server
 
