@@ -57,7 +57,7 @@ from pydantic import BaseModel, Field
 DATASET_PATH = Path(__file__).parent / "recall_eval_dataset.json"
 
 # Regression floors. Set conservatively below the measured numbers (recall@1
-# ≈0.80, recall@5 ≈0.91, hit-rate ≈0.91, tier-0 ≈0.35) so an honest scorer tweak
+# ≈0.90, recall@5 ≈0.93, hit-rate ≈0.93, tier-0 ≈0.36) so an honest scorer tweak
 # won't flap, but a real prefilter regression trips the gate. Deterministic.
 MIN_RECALL_AT_1 = 0.70
 MIN_RECALL_AT_5 = 0.84

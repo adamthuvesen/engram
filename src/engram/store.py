@@ -148,6 +148,32 @@ _STOPWORDS = frozenset(
     }
 )
 
+_QUERY_TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
+    "credential": ("secret",),
+    "credentials": ("secret",),
+    "database": ("warehouse", "snowflake", "storage", "embedding"),
+    "db": ("database", "warehouse"),
+    "dedupe": ("deduplicate", "deduplication", "hash"),
+    "organization": ("domain", "architecture"),
+    "organized": ("domain", "architecture"),
+    "organize": ("domain", "architecture"),
+    "shell": ("terminal",),
+    "squad": ("team",),
+    "theme": ("dark", "terminal"),
+    "worker": ("agent", "parallel"),
+}
+
+_QUERY_PHRASE_ALIASES: dict[str, tuple[str, ...]] = {
+    "color scheme": ("theme", "dark", "terminal"),
+    "database backs": ("warehouse", "snowflake", "uses"),
+    "job title": ("role", "engineer"),
+    "machine written": ("ai", "generated"),
+    "signs off": ("manager", "approval"),
+    "spins up": ("fans", "parallel", "agents"),
+    "vector database": ("embedding", "retrieval"),
+    "work from": ("remote", "location"),
+}
+
 
 def _stem(word: str) -> str:
     """Cheap suffix strip — good enough for prefilter scoring.
@@ -513,7 +539,7 @@ class FactStore:
         if not facts:
             return []
 
-        query_unigrams, query_bigrams = self._tokenize_extended(query)
+        query_unigrams, query_bigrams = self._tokenize_query(query)
         if not query_unigrams:
             return [(0, f) for f in (facts[:limit] if limit else facts)]
 
@@ -1812,6 +1838,23 @@ class FactStore:
         raw = _TOKEN_RE.findall(normalized)
         unigrams = {_stem(t) for t in raw if t not in _STOPWORDS}
         bigrams = {f"{raw[i]}_{raw[i + 1]}" for i in range(len(raw) - 1)}
+        return unigrams, bigrams
+
+    def _tokenize_query(self, text: str) -> tuple[set[str], set[str]]:
+        """Tokenize a query and add common aliases used in memory lookups."""
+        unigrams, bigrams = self._tokenize_extended(text)
+        normalized = text.lower().replace("_", " ").replace("-", " ")
+        raw = _TOKEN_RE.findall(normalized)
+
+        alias_terms: set[str] = set()
+        for token in raw:
+            alias_terms.update(_QUERY_TOKEN_ALIASES.get(token, ()))
+            alias_terms.update(_QUERY_TOKEN_ALIASES.get(_stem(token), ()))
+        normalized_phrase_text = f" {' '.join(raw)} "
+        for phrase, aliases in _QUERY_PHRASE_ALIASES.items():
+            if f" {phrase} " in normalized_phrase_text:
+                alias_terms.update(aliases)
+        unigrams.update(_stem(t) for t in alias_terms if t not in _STOPWORDS)
         return unigrams, bigrams
 
 

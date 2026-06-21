@@ -122,6 +122,76 @@ def test_prefilter_infers_project_named_in_query():
     assert "oriondb" not in ids
 
 
+def test_prefilter_expands_common_query_aliases():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="secrets",
+                category=FactCategory.workflow,
+                content="Secrets are loaded through the 1Password CLI",
+                tags=["secrets"],
+            ),
+            Fact(
+                id="terminal",
+                category=FactCategory.preference,
+                content="The user prefers dark mode terminals",
+                tags=["terminal"],
+            ),
+            Fact(
+                id="warehouse",
+                category=FactCategory.project,
+                content="Acme uses Snowflake as its data warehouse",
+                tags=["snowflake"],
+            ),
+        ]
+    )
+
+    credential_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts("where do credentials come from?")
+        if score >= 5
+    ]
+    shell_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts("what color scheme for the shell?")
+        if score >= 5
+    ]
+    database_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts("what database backs analytics?")
+        if score >= 5
+    ]
+
+    assert credential_ids[0] == "secrets"
+    assert shell_ids[0] == "terminal"
+    assert database_ids[0] == "warehouse"
+
+
+def test_prefilter_query_aliases_do_not_make_off_domain_queries_match():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="secrets",
+                category=FactCategory.workflow,
+                content="Secrets are loaded through the 1Password CLI",
+                tags=["secrets"],
+            ),
+            Fact(
+                id="warehouse",
+                category=FactCategory.project,
+                content="Acme uses Snowflake as its data warehouse",
+                tags=["snowflake"],
+            ),
+        ]
+    )
+
+    scored = store.prefilter_facts("Suggest vegetarian lasagna recipes please")
+
+    assert all(score < 5 for score, _ in scored)
+
+
 def test_prefilter_excludes_superseded_fact():
     store = _make_store()
     store.append_facts(

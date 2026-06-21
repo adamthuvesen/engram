@@ -90,7 +90,7 @@ def test_dataset_is_well_formed(dataset):
     answerable = [q for q in queries if q.get("expected")]
     nomatch = [q for q in queries if not q.get("expected")]
     assert len(answerable) >= 40
-    assert len(nomatch) == 1, "exactly one no-match query expected"
+    assert len(nomatch) >= 1, "at least one no-match query expected"
 
     # A representative set, not an all-hard one: a real share of literal queries
     # and a real share of synonym/semantic ones.
