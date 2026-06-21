@@ -168,6 +168,24 @@ def test_prefilter_expands_common_query_aliases():
                 content="Engram deduplicates facts with a content hash plus an LLM check",
                 tags=["dedup"],
             ),
+            Fact(
+                id="api",
+                category=FactCategory.preference,
+                content="The user prefers FastAPI over Flask for Python APIs",
+                tags=["python", "api"],
+            ),
+            Fact(
+                id="extract",
+                category=FactCategory.project,
+                content="Engram extracts facts using structured LLM output",
+                tags=["extraction"],
+            ),
+            Fact(
+                id="manager",
+                category=FactCategory.personal_info,
+                content="Alex Chen's manager is Jordan Kim",
+                tags=["team"],
+            ),
         ]
     )
 
@@ -206,6 +224,23 @@ def test_prefilter_expands_common_query_aliases():
         for score, fact in store.prefilter_facts("what avoids duplicate memories?")
         if score >= 5
     ]
+    api_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts(
+            "which server framework for Python services?"
+        )
+        if score >= 5
+    ]
+    extract_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts("how are facts pulled out of chats?")
+        if score >= 5
+    ]
+    manager_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts("who approves Alex's work?")
+        if score >= 5
+    ]
 
     assert credential_ids[0] == "secrets"
     assert shell_ids[0] == "terminal"
@@ -214,6 +249,9 @@ def test_prefilter_expands_common_query_aliases():
     assert package_ids[0] == "packages"
     assert validation_ids[0] == "validation"
     assert dedup_ids[0] == "dedup"
+    assert api_ids[0] == "api"
+    assert extract_ids[0] == "extract"
+    assert manager_ids[0] == "manager"
 
 
 def test_prefilter_query_aliases_do_not_make_off_domain_queries_match():

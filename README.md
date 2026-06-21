@@ -29,16 +29,16 @@ Expected shape:
 
 ```text
 Deterministic prefilter recall — representative query mix
-68 labeled queries over a 57-fact corpus  ·  no LLM, no embeddings
+83 labeled queries over a 57-fact corpus  ·  no LLM, no embeddings
 
-43% of queries resolved at tier-0 with zero LLM calls  ·  tiers {0: 30, 1: 34, 2: 6}
+44% of queries resolved at tier-0 with zero LLM calls  ·  tiers {0: 40, 1: 44, 2: 7}
 
 metric                       value
 ----------------------------------
-recall@1                       97%
-recall@5                      100%
-candidate recall (hit-rate)    100%
-MRR                           0.98
+recall@1                       95%
+recall@5                       99%
+candidate recall (hit-rate)     99%
+MRR                           0.97
 
 no-match returns nothing above floor: ok
 ```
@@ -53,18 +53,18 @@ What this covers:
 ## Recall, measured
 
 A deterministic keyword prefilter handles easy queries for free. The LLM tier
-runs only when a query needs it. The no-key eval measures that prefilter on **68
+runs only when a query needs it. The no-key eval measures that prefilter on **83
 labeled queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
 
-**43% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
+**44% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
 prefilter still keeps the right memory in the deterministic candidate pool:
 
 | Deterministic prefilter (no LLM, no embeddings) | value |
 | ----------------------------------------------- | ----- |
-| recall@1 (answer ranked #1)                     | 97%   |
-| recall@5 (answer in the top 5)                  | 100%  |
-| candidate recall (answer kept in the pool)      | 100%  |
-| MRR                                             | 0.98  |
+| recall@1 (answer ranked #1)                     | 95%   |
+| recall@5 (answer in the top 5)                  | 99%   |
+| candidate recall (answer kept in the pool)      | 99%   |
+| MRR                                             | 0.97  |
 
 This is the deterministic prefilter *floor*, **not** end-to-end retrieval
 accuracy. The aggregate already includes the harder queries the keyword pass

@@ -139,10 +139,31 @@
     {"query": "what avoids duplicate memories?", "expected": ["eng-dedup"], "kind": "semantic"},
     {"query": "when does recall start spending money?", "expected": ["eng-tiers"], "kind": "semantic"},
     {"query": "which table is canonical for subscription revenue?", "expected": ["dw-revenue"], "kind": "semantic"},
+    {"query": "what runtime powers model calls?", "expected": ["eng-llm"], "kind": "semantic"},
+    {"query": "where does Engram keep long term notes?", "expected": ["eng-storage"], "kind": "semantic"},
+    {"query": "what UI shows memories in the terminal?", "expected": ["eng-dash"], "kind": "semantic"},
+    {"query": "which config prefix should env vars use?", "expected": ["eng-config"], "kind": "semantic"},
+    {"query": "how are facts pulled out of chats?", "expected": ["eng-extract"], "kind": "semantic"},
+    {"query": "what service hosts dbt CI?", "expected": ["dw-ci"], "kind": "semantic"},
+    {"query": "what table combines usage and billing?", "expected": ["dw-usermetrics"], "kind": "semantic"},
+    {"query": "who approves Alex's work?", "expected": ["pi-manager"], "kind": "semantic"},
+    {"query": "what team handles model infrastructure?", "expected": ["pi-team"], "kind": "semantic"},
+    {"query": "what format should commit titles follow?", "expected": ["pref-commit"], "kind": "semantic"},
+    {"query": "what should API responses look like?", "expected": ["conv-json-api"], "kind": "semantic"},
+    {"query": "what tool manages Python environments?", "expected": ["pref-pkg"], "kind": "semantic"},
+    {"query": "what validates incoming data objects?", "expected": ["pref-validation"], "kind": "semantic"},
+    {"query": "what runs the local memory server?", "expected": ["eng-mcp"], "kind": "semantic"},
+    {"query": "which analytics platform stores events?", "expected": ["dw-warehouse"], "kind": "semantic"},
 
     {"query": "dataframe library for the ETL pipeline?", "expected": ["dec-polars-etl"], "kind": "cross-project", "note": "Competes with pref-dataframe; the ETL-specific polars decision is the right answer."},
 
     {"query": "Suggest vegetarian lasagna recipes please", "expected": [], "kind": "no-match", "note": "Deliberately off-domain (cooking) and worded to avoid incidental collisions with common corpus words. A genuinely unknown query must surface nothing above the relevance floor."},
-    {"query": "plan a watercolor painting lesson", "expected": [], "kind": "no-match", "note": "Second off-domain creative query, included so no-match behavior is not a single-example special case."}
+    {"query": "plan a watercolor painting lesson", "expected": [], "kind": "no-match", "note": "Second off-domain creative query, included so no-match behavior is not a single-example special case."},
+    {"query": "recommend jazz albums for a dinner party", "expected": [], "kind": "no-match", "note": "Off-domain music recommendation; should not retrieve engineering memories."},
+    {"query": "how to prune tomato plants", "expected": [], "kind": "no-match", "note": "Off-domain gardening query with no relevant memory."},
+    {"query": "compare mountain bike tire sizes", "expected": [], "kind": "no-match", "note": "Off-domain sports equipment query with no relevant memory."},
+    {"query": "plan a weekend camping menu", "expected": [], "kind": "no-match", "note": "Off-domain outdoor meal planning query with no relevant memory."},
+    {"query": "choose a beginner piano song", "expected": [], "kind": "no-match", "note": "Off-domain music learning query with no relevant memory."},
+    {"query": "repair a dripping kitchen faucet", "expected": [], "kind": "no-match", "note": "Off-domain home repair query with no relevant memory."}
   ]
 }
