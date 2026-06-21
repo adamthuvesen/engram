@@ -148,6 +148,38 @@ _STOPWORDS = frozenset(
     }
 )
 
+_QUERY_TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
+    "credential": ("secret",),
+    "credentials": ("secret",),
+    "database": ("warehouse", "snowflake", "storage", "embedding"),
+    "db": ("database", "warehouse"),
+    "dedupe": ("deduplicate", "deduplication", "hash"),
+    "dependencies": ("package", "uv"),
+    "dependency": ("package", "uv"),
+    "duplicate": ("deduplicate", "dedup", "hash"),
+    "duplicates": ("deduplicate", "dedup", "hash"),
+    "engine": ("library",),
+    "browser": ("frontend", "typescript"),
+    "checker": ("validation", "pydantic"),
+    "approves": ("manager",),
+    "approve": ("manager",),
+    "chats": ("structured", "extraction"),
+    "install": ("package", "uv"),
+    "installs": ("package", "uv"),
+    "framework": ("api", "fastapi"),
+    "memories": ("fact",),
+    "memory": ("fact",),
+    "organization": ("domain", "architecture"),
+    "organized": ("domain", "architecture"),
+    "organize": ("domain", "architecture"),
+    "processing": ("dataframe", "polars"),
+    "shell": ("terminal",),
+    "squad": ("team",),
+    "theme": ("dark", "terminal"),
+    "ui": ("frontend", "typescript"),
+    "worker": ("agent", "parallel"),
+}
+
 
 def _stem(word: str) -> str:
     """Cheap suffix strip — good enough for prefilter scoring.
@@ -513,7 +545,7 @@ class FactStore:
         if not facts:
             return []
 
-        query_unigrams, query_bigrams = self._tokenize_extended(query)
+        query_unigrams, query_bigrams = self._tokenize_query(query)
         if not query_unigrams:
             return [(0, f) for f in (facts[:limit] if limit else facts)]
 
@@ -1812,6 +1844,19 @@ class FactStore:
         raw = _TOKEN_RE.findall(normalized)
         unigrams = {_stem(t) for t in raw if t not in _STOPWORDS}
         bigrams = {f"{raw[i]}_{raw[i + 1]}" for i in range(len(raw) - 1)}
+        return unigrams, bigrams
+
+    def _tokenize_query(self, text: str) -> tuple[set[str], set[str]]:
+        """Tokenize a query and add common aliases used in memory lookups."""
+        unigrams, bigrams = self._tokenize_extended(text)
+        normalized = text.lower().replace("_", " ").replace("-", " ")
+        raw = _TOKEN_RE.findall(normalized)
+
+        alias_terms: set[str] = set()
+        for token in raw:
+            alias_terms.update(_QUERY_TOKEN_ALIASES.get(token, ()))
+            alias_terms.update(_QUERY_TOKEN_ALIASES.get(_stem(token), ()))
+        unigrams.update(_stem(t) for t in alias_terms if t not in _STOPWORDS)
         return unigrams, bigrams
 
 

@@ -29,16 +29,16 @@ Expected shape:
 
 ```text
 Deterministic prefilter recall — representative query mix
-56 labeled queries over a 57-fact corpus  ·  no LLM, no embeddings
+83 answerable labeled queries + 8 no-match queries over a 57-fact corpus  ·  no LLM, no embeddings
 
-35% of queries resolved at tier-0 with zero LLM calls  ·  tiers {0: 20, 1: 30, 2: 7}
+43% of queries resolved at tier-0 with zero LLM calls  ·  tiers {0: 39, 1: 42, 2: 10}
 
 metric                       value
 ----------------------------------
-recall@1                       80%
-recall@5                       91%
-candidate recall (hit-rate)     91%
-MRR                           0.85
+recall@1                       89%
+recall@5                       96%
+candidate recall (hit-rate)     98%
+MRR                           0.92
 
 no-match returns nothing above floor: ok
 ```
@@ -53,18 +53,18 @@ What this covers:
 ## Recall, measured
 
 A deterministic keyword prefilter handles easy queries for free. The LLM tier
-runs only when a query needs it. The no-key eval measures that prefilter on **56
-labeled queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
+runs only when a query needs it. The no-key eval measures that prefilter on **83
+answerable labeled queries plus 8 no-match queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
 
-**35% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
-prefilter still ranks the right memory at #1 four times out of five:
+**43% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
+prefilter still keeps the right memory in the deterministic candidate pool:
 
 | Deterministic prefilter (no LLM, no embeddings) | value |
 | ----------------------------------------------- | ----- |
-| recall@1 (answer ranked #1)                     | 80%   |
-| recall@5 (answer in the top 5)                  | 91%   |
-| candidate recall (answer kept in the pool)      | 91%   |
-| MRR                                             | 0.85  |
+| recall@1 (answer ranked #1)                     | 89%   |
+| recall@5 (answer in the top 5)                  | 96%   |
+| candidate recall (answer kept in the pool)      | 98%   |
+| MRR                                             | 0.92  |
 
 This is the deterministic prefilter *floor*, **not** end-to-end retrieval
 accuracy. The aggregate already includes the harder queries the keyword pass

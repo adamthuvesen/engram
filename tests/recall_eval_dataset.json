@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Labeled recall dataset for the deterministic keyword prefilter. The corpus is realistic cross-project memory (style mirrors tests/bench_tiers.py); the queries span the way memory is really queried — from terse literal/exact-term lookups (where the keyword prefilter legitimately wins and resolves at tier-0 with zero LLM calls) to paraphrased and pure-synonym questions (where the keyword layer falls short and the LLM tier earns its keep).",
-  "labeling_protocol": "Two failure modes to avoid, and this set threads between them. (1) Circular: do NOT build a query by lifting a fact's distinctive token string to maximize the scorer's keyword overlap — that grades the scorer on its own keywords and inflates the number. (2) Adversarial-only: do NOT make every query a synonym puzzle the keyword layer is designed to lose — that measures engram in a regime it never runs in and hides its tier-0 fast path. Instead the queries mirror the true operating distribution: 'literal' queries use the term a user would actually type (often naming the concept or both options in an 'X or Y' choice — legitimate, not a verbatim copy of the fact); 'paraphrase' reword naturally; 'synonym'/'semantic' deliberately avoid the key term to exercise the LLM tier. Each query is labeled to the fact(s) that answer it. The 'kind' field records where on that spectrum each query sits so per-kind recall is auditable. Hard negatives (cross-project competition) and one off-domain no-match query (empty 'expected', must surface nothing above the relevance floor) are included on purpose.",
+  "labeling_protocol": "Two failure modes to avoid, and this set threads between them. (1) Circular: do NOT build a query by lifting a fact's distinctive token string to maximize the scorer's keyword overlap — that grades the scorer on its own keywords and inflates the number. (2) Adversarial-only: do NOT make every query a synonym puzzle the keyword layer is designed to lose — that measures engram in a regime it never runs in and hides its tier-0 fast path. Instead the queries mirror the true operating distribution: 'literal' queries use the term a user would actually type (often naming the concept or both options in an 'X or Y' choice — legitimate, not a verbatim copy of the fact); 'paraphrase' reword naturally; 'synonym'/'semantic' deliberately avoid the key term to exercise the LLM tier. Each query is labeled to the fact(s) that answer it. The 'kind' field records where on that spectrum each query sits so per-kind recall is auditable. Hard negatives (cross-project competition) and off-domain no-match queries (empty 'expected', must surface nothing above the relevance floor) are included on purpose.",
   "corpus": [
     {"id": "pi-team", "category": "personal_info", "content": "Alex Chen works on the ML platform team at Acme Analytics", "tags": ["team", "role"]},
     {"id": "pi-role", "category": "personal_info", "content": "Alex Chen is a senior machine learning engineer", "tags": ["role"]},
@@ -127,9 +127,43 @@
     {"query": "how detailed should PR write-ups be?", "expected": ["pref-pr"], "kind": "synonym"},
     {"query": "which squad owns the ML platform?", "expected": ["pi-team"], "kind": "synonym"},
     {"query": "why no vector database?", "expected": ["dec-noembed", "eng-tiers"], "kind": "semantic"},
+    {"query": "preferred table processing engine?", "expected": ["pref-dataframe"], "kind": "semantic"},
+    {"query": "what should clean up Python style?", "expected": ["pref-format"], "kind": "semantic"},
+    {"query": "what installs project dependencies?", "expected": ["pref-pkg"], "kind": "semantic"},
+    {"query": "which server framework for Python services?", "expected": ["pref-api"], "kind": "semantic"},
+    {"query": "what language for browser UI code?", "expected": ["pref-frontend-lang"], "kind": "semantic"},
+    {"query": "preferred schema checker?", "expected": ["pref-validation"], "kind": "semantic"},
+    {"query": "what base image keeps containers small?", "expected": ["pref-docker"], "kind": "semantic"},
+    {"query": "where are memories persisted?", "expected": ["eng-storage"], "kind": "semantic"},
+    {"query": "which server exposes the memory tools?", "expected": ["eng-mcp"], "kind": "semantic"},
+    {"query": "what avoids duplicate memories?", "expected": ["eng-dedup"], "kind": "semantic"},
+    {"query": "when does recall start spending money?", "expected": ["eng-tiers"], "kind": "semantic"},
+    {"query": "which table is canonical for subscription revenue?", "expected": ["dw-revenue"], "kind": "semantic"},
+    {"query": "what runtime powers model calls?", "expected": ["eng-llm"], "kind": "semantic"},
+    {"query": "where does Engram keep long term notes?", "expected": ["eng-storage"], "kind": "semantic"},
+    {"query": "what UI shows memories in the terminal?", "expected": ["eng-dash"], "kind": "semantic"},
+    {"query": "which config prefix should env vars use?", "expected": ["eng-config"], "kind": "semantic"},
+    {"query": "how are facts pulled out of chats?", "expected": ["eng-extract"], "kind": "semantic"},
+    {"query": "what service hosts dbt CI?", "expected": ["dw-ci"], "kind": "semantic"},
+    {"query": "what table combines usage and billing?", "expected": ["dw-usermetrics"], "kind": "semantic"},
+    {"query": "who approves Alex's work?", "expected": ["pi-manager"], "kind": "semantic"},
+    {"query": "what team handles model infrastructure?", "expected": ["pi-team"], "kind": "semantic"},
+    {"query": "what format should commit titles follow?", "expected": ["pref-commit"], "kind": "semantic"},
+    {"query": "what should API responses look like?", "expected": ["conv-json-api"], "kind": "semantic"},
+    {"query": "what tool manages Python environments?", "expected": ["pref-pkg"], "kind": "semantic"},
+    {"query": "what validates incoming data objects?", "expected": ["pref-validation"], "kind": "semantic"},
+    {"query": "what runs the local memory server?", "expected": ["eng-mcp"], "kind": "semantic"},
+    {"query": "which analytics platform stores events?", "expected": ["dw-warehouse"], "kind": "semantic"},
 
     {"query": "dataframe library for the ETL pipeline?", "expected": ["dec-polars-etl"], "kind": "cross-project", "note": "Competes with pref-dataframe; the ETL-specific polars decision is the right answer."},
 
-    {"query": "Suggest vegetarian lasagna recipes please", "expected": [], "kind": "no-match", "note": "Deliberately off-domain (cooking) and worded to avoid incidental collisions with common corpus words. A genuinely unknown query must surface nothing above the relevance floor."}
+    {"query": "Suggest vegetarian lasagna recipes please", "expected": [], "kind": "no-match", "note": "Deliberately off-domain (cooking) and worded to avoid incidental collisions with common corpus words. A genuinely unknown query must surface nothing above the relevance floor."},
+    {"query": "plan a watercolor painting lesson", "expected": [], "kind": "no-match", "note": "Second off-domain creative query, included so no-match behavior is not a single-example special case."},
+    {"query": "recommend jazz albums for a dinner party", "expected": [], "kind": "no-match", "note": "Off-domain music recommendation; should not retrieve engineering memories."},
+    {"query": "how to prune tomato plants", "expected": [], "kind": "no-match", "note": "Off-domain gardening query with no relevant memory."},
+    {"query": "compare mountain bike tire sizes", "expected": [], "kind": "no-match", "note": "Off-domain sports equipment query with no relevant memory."},
+    {"query": "plan a weekend camping menu", "expected": [], "kind": "no-match", "note": "Off-domain outdoor meal planning query with no relevant memory."},
+    {"query": "choose a beginner piano song", "expected": [], "kind": "no-match", "note": "Off-domain music learning query with no relevant memory."},
+    {"query": "repair a dripping kitchen faucet", "expected": [], "kind": "no-match", "note": "Off-domain home repair query with no relevant memory."}
   ]
 }

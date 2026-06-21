@@ -56,13 +56,12 @@ from pydantic import BaseModel, Field
 
 DATASET_PATH = Path(__file__).parent / "recall_eval_dataset.json"
 
-# Regression floors. Set conservatively below the measured numbers (recall@1
-# ≈0.80, recall@5 ≈0.91, hit-rate ≈0.91, tier-0 ≈0.35) so an honest scorer tweak
-# won't flap, but a real prefilter regression trips the gate. Deterministic.
-MIN_RECALL_AT_1 = 0.70
-MIN_RECALL_AT_5 = 0.84
-MIN_HIT_RATE = 0.85
-MIN_TIER0_FRACTION = 0.25
+# Regression floors match the recall-performance mission gate. Deterministic.
+MIN_RECALL_AT_1 = 0.88
+MIN_RECALL_AT_5 = 0.91
+MIN_HIT_RATE = 0.91
+MIN_MRR = 0.90
+MIN_TIER0_FRACTION = 0.35
 
 
 class LabeledQuery(BaseModel):
@@ -89,7 +88,9 @@ class QueryResult(BaseModel):
 
 class Summary(BaseModel):
     n_corpus: int
+    n_queries: int
     n_answerable: int
+    n_nomatch: int
     hit_rate: float
     recall_at_1: float
     recall_at_5: float
@@ -200,7 +201,9 @@ async def _evaluate_async(dataset: dict[str, Any]) -> Summary:
 
     return Summary(
         n_corpus=len(corpus),
+        n_queries=len(results),
         n_answerable=n,
+        n_nomatch=len(nomatch),
         hit_rate=sum(r.hit for r in answerable) / n,
         recall_at_1=sum(r.recall_at_1 for r in answerable) / n,
         recall_at_5=sum(r.recall_at_5 for r in answerable) / n,
@@ -232,7 +235,8 @@ def main() -> int:
     misses = [r for r in summary.results if r.expected and not r.recall_at_5]
     print(
         f"Deterministic prefilter recall — representative query mix\n"
-        f"{summary.n_answerable} labeled queries over a {summary.n_corpus}-fact "
+        f"{summary.n_answerable} answerable labeled queries + "
+        f"{summary.n_nomatch} no-match queries over a {summary.n_corpus}-fact "
         f"corpus  ·  no LLM, no embeddings\n"
     )
     print(
@@ -271,6 +275,7 @@ def main() -> int:
         and summary.recall_at_1 >= MIN_RECALL_AT_1
         and summary.recall_at_5 >= MIN_RECALL_AT_5
         and summary.hit_rate >= MIN_HIT_RATE
+        and summary.mrr >= MIN_MRR
         and summary.tier0_fraction >= MIN_TIER0_FRACTION
     )
     if not ok:
@@ -278,7 +283,8 @@ def main() -> int:
             f"\nGATE FAILED: recall@1={_pct(summary.recall_at_1)} "
             f"(floor {_pct(MIN_RECALL_AT_1)}), recall@5={_pct(summary.recall_at_5)} "
             f"(floor {_pct(MIN_RECALL_AT_5)}), hit-rate={_pct(summary.hit_rate)} "
-            f"(floor {_pct(MIN_HIT_RATE)}), tier-0={_pct(summary.tier0_fraction)} "
+            f"(floor {_pct(MIN_HIT_RATE)}), MRR={summary.mrr:.2f} "
+            f"(floor {MIN_MRR:.2f}), tier-0={_pct(summary.tier0_fraction)} "
             f"(floor {_pct(MIN_TIER0_FRACTION)}), nomatch_ok={summary.nomatch_ok}"
         )
         return 1

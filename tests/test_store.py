@@ -122,6 +122,115 @@ def test_prefilter_infers_project_named_in_query():
     assert "oriondb" not in ids
 
 
+def test_prefilter_expands_common_query_aliases():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="secrets",
+                category=FactCategory.workflow,
+                content="Secrets are loaded through the 1Password CLI",
+                tags=["secrets"],
+            ),
+            Fact(
+                id="terminal",
+                category=FactCategory.preference,
+                content="The user prefers dark mode terminals",
+                tags=["terminal"],
+            ),
+            Fact(
+                id="warehouse",
+                category=FactCategory.project,
+                content="Acme uses Snowflake as its data warehouse",
+                tags=["snowflake"],
+            ),
+            Fact(
+                id="frontend",
+                category=FactCategory.preference,
+                content="The user prefers TypeScript for frontend work",
+                tags=["typescript", "frontend"],
+            ),
+            Fact(
+                id="packages",
+                category=FactCategory.preference,
+                content="The user prefers uv for Python package management",
+                tags=["python", "uv"],
+            ),
+            Fact(
+                id="validation",
+                category=FactCategory.preference,
+                content="The user prefers Pydantic v2 over v1 for data validation",
+                tags=["python", "pydantic"],
+            ),
+            Fact(
+                id="dedup",
+                category=FactCategory.project,
+                content="Engram deduplicates facts with a content hash plus an LLM check",
+                tags=["dedup"],
+            ),
+            Fact(
+                id="api",
+                category=FactCategory.preference,
+                content="The user prefers FastAPI over Flask for Python APIs",
+                tags=["python", "api"],
+            ),
+            Fact(
+                id="extract",
+                category=FactCategory.project,
+                content="Engram extracts facts using structured LLM output",
+                tags=["extraction"],
+            ),
+            Fact(
+                id="manager",
+                category=FactCategory.personal_info,
+                content="Alex Chen's manager is Jordan Kim",
+                tags=["team"],
+            ),
+        ]
+    )
+
+    cases = {
+        "credential rotation source": "secrets",
+        "shell appearance preference": "terminal",
+        "database storage choice": "warehouse",
+        "browser client code preference": "frontend",
+        "dependency tooling choice": "packages",
+        "checker for typed objects": "validation",
+        "duplicate fact detection": "dedup",
+        "service framework preference": "api",
+        "chats become structured records": "extract",
+        "who approves Alex deliverables?": "manager",
+    }
+
+    for query, expected_id in cases.items():
+        ids = [fact.id for score, fact in store.prefilter_facts(query) if score >= 5]
+        assert ids[0] == expected_id
+
+
+def test_prefilter_query_aliases_do_not_make_off_domain_queries_match():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="secrets",
+                category=FactCategory.workflow,
+                content="Secrets are loaded through the 1Password CLI",
+                tags=["secrets"],
+            ),
+            Fact(
+                id="warehouse",
+                category=FactCategory.project,
+                content="Acme uses Snowflake as its data warehouse",
+                tags=["snowflake"],
+            ),
+        ]
+    )
+
+    scored = store.prefilter_facts("Suggest vegetarian lasagna recipes please")
+
+    assert all(score < 5 for score, _ in scored)
+
+
 def test_prefilter_excludes_superseded_fact():
     store = _make_store()
     store.append_facts(

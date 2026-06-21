@@ -16,6 +16,7 @@ import pytest
 from tests.run_evals import (
     DATASET_PATH,
     MIN_HIT_RATE,
+    MIN_MRR,
     MIN_RECALL_AT_1,
     MIN_RECALL_AT_5,
     MIN_TIER0_FRACTION,
@@ -64,6 +65,10 @@ def test_candidate_recall_meets_floor(summary):
     )
 
 
+def test_mrr_meets_floor(summary):
+    assert summary.mrr >= MIN_MRR, f"MRR {summary.mrr:.2f} below floor {MIN_MRR}"
+
+
 def test_literal_queries_are_a_prefilter_win(summary):
     # The whole point: the deterministic keyword pass nails literal/exact-term
     # queries on its own. If this drops, the cost story no longer holds.
@@ -90,7 +95,7 @@ def test_dataset_is_well_formed(dataset):
     answerable = [q for q in queries if q.get("expected")]
     nomatch = [q for q in queries if not q.get("expected")]
     assert len(answerable) >= 40
-    assert len(nomatch) == 1, "exactly one no-match query expected"
+    assert len(nomatch) >= 1, "at least one no-match query expected"
 
     # A representative set, not an all-hard one: a real share of literal queries
     # and a real share of synonym/semantic ones.
