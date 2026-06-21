@@ -31,14 +31,14 @@ Expected shape:
 Deterministic prefilter recall — representative query mix
 68 labeled queries over a 57-fact corpus  ·  no LLM, no embeddings
 
-36% of queries resolved at tier-0 with zero LLM calls  ·  tiers {0: 25, 1: 38, 2: 7}
+43% of queries resolved at tier-0 with zero LLM calls  ·  tiers {0: 30, 1: 34, 2: 6}
 
 metric                       value
 ----------------------------------
-recall@1                       90%
-recall@5                       93%
-candidate recall (hit-rate)     93%
-MRR                           0.91
+recall@1                       97%
+recall@5                      100%
+candidate recall (hit-rate)    100%
+MRR                           0.98
 
 no-match returns nothing above floor: ok
 ```
@@ -56,15 +56,15 @@ A deterministic keyword prefilter handles easy queries for free. The LLM tier
 runs only when a query needs it. The no-key eval measures that prefilter on **68
 labeled queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
 
-**36% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
+**43% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
 prefilter still keeps the right memory in the deterministic candidate pool:
 
 | Deterministic prefilter (no LLM, no embeddings) | value |
 | ----------------------------------------------- | ----- |
-| recall@1 (answer ranked #1)                     | 90%   |
-| recall@5 (answer in the top 5)                  | 93%   |
-| candidate recall (answer kept in the pool)      | 93%   |
-| MRR                                             | 0.91  |
+| recall@1 (answer ranked #1)                     | 97%   |
+| recall@5 (answer in the top 5)                  | 100%  |
+| candidate recall (answer kept in the pool)      | 100%  |
+| MRR                                             | 0.98  |
 
 This is the deterministic prefilter *floor*, **not** end-to-end retrieval
 accuracy. The aggregate already includes the harder queries the keyword pass

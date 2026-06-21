@@ -108,7 +108,7 @@ At the very end of your answer, on a new line, add a quality rating in the forma
 RELEVANCE_FLOOR = 5
 
 # Tier 0: trivial — very few matches, answer is obvious.
-TIER_0_MAX_RELEVANT = 3
+TIER_0_MAX_RELEVANT = 4
 TIER_0_MIN_SCORE = 10
 
 # Tier 1: focused — moderate matches with a concentrated top cluster.

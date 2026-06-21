@@ -144,6 +144,30 @@ def test_prefilter_expands_common_query_aliases():
                 content="Acme uses Snowflake as its data warehouse",
                 tags=["snowflake"],
             ),
+            Fact(
+                id="frontend",
+                category=FactCategory.preference,
+                content="The user prefers TypeScript for frontend work",
+                tags=["typescript", "frontend"],
+            ),
+            Fact(
+                id="packages",
+                category=FactCategory.preference,
+                content="The user prefers uv for Python package management",
+                tags=["python", "uv"],
+            ),
+            Fact(
+                id="validation",
+                category=FactCategory.preference,
+                content="The user prefers Pydantic v2 over v1 for data validation",
+                tags=["python", "pydantic"],
+            ),
+            Fact(
+                id="dedup",
+                category=FactCategory.project,
+                content="Engram deduplicates facts with a content hash plus an LLM check",
+                tags=["dedup"],
+            ),
         ]
     )
 
@@ -162,10 +186,34 @@ def test_prefilter_expands_common_query_aliases():
         for score, fact in store.prefilter_facts("what database backs analytics?")
         if score >= 5
     ]
+    frontend_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts("what language for browser UI code?")
+        if score >= 5
+    ]
+    package_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts("what installs project dependencies?")
+        if score >= 5
+    ]
+    validation_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts("preferred schema checker?")
+        if score >= 5
+    ]
+    dedup_ids = [
+        fact.id
+        for score, fact in store.prefilter_facts("what avoids duplicate memories?")
+        if score >= 5
+    ]
 
     assert credential_ids[0] == "secrets"
     assert shell_ids[0] == "terminal"
     assert database_ids[0] == "warehouse"
+    assert frontend_ids[0] == "frontend"
+    assert package_ids[0] == "packages"
+    assert validation_ids[0] == "validation"
+    assert dedup_ids[0] == "dedup"
 
 
 def test_prefilter_query_aliases_do_not_make_off_domain_queries_match():

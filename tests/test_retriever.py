@@ -39,7 +39,7 @@ def test_select_tier_0_no_relevant():
 
 
 def test_select_tier_0_few_strong_with_gap():
-    """≤5 matches, all ≥10, clear gap → Tier 0."""
+    """Few strong matches with a clear top result → Tier 0."""
     scored = [
         (20, Fact(category=FactCategory.personal_info, content="Alex's team")),
         (8, Fact(category=FactCategory.preference, content="unrelated")),
@@ -48,11 +48,11 @@ def test_select_tier_0_few_strong_with_gap():
     assert _select_tier(scored) == 0
 
 
-def test_select_tier_0_rejected_when_four_plus():
-    """4+ relevant facts → not Tier 0."""
+def test_select_tier_0_rejected_when_five_plus():
+    """5+ relevant facts → not Tier 0."""
     scored = [
         (15, Fact(category=FactCategory.preference, content=f"fact {i}"))
-        for i in range(4)
+        for i in range(5)
     ]
     assert _select_tier(scored) != 0
 
@@ -108,7 +108,7 @@ def test_select_tier_0_few_strong_matches():
         (10, Fact(category=FactCategory.preference, content="strong match")),
         (5, Fact(category=FactCategory.preference, content="weaker")),
     ]
-    # ≤5 relevant, top ≥10, gap=2.0 ≥2.0 → Tier 0
+    # ≤4 relevant and top ≥10 → Tier 0
     assert _select_tier(scored) == 0
 
 
