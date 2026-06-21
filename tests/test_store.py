@@ -189,69 +189,22 @@ def test_prefilter_expands_common_query_aliases():
         ]
     )
 
-    credential_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts("where do credentials come from?")
-        if score >= 5
-    ]
-    shell_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts("what color scheme for the shell?")
-        if score >= 5
-    ]
-    database_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts("what database backs analytics?")
-        if score >= 5
-    ]
-    frontend_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts("what language for browser UI code?")
-        if score >= 5
-    ]
-    package_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts("what installs project dependencies?")
-        if score >= 5
-    ]
-    validation_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts("preferred schema checker?")
-        if score >= 5
-    ]
-    dedup_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts("what avoids duplicate memories?")
-        if score >= 5
-    ]
-    api_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts(
-            "which server framework for Python services?"
-        )
-        if score >= 5
-    ]
-    extract_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts("how are facts pulled out of chats?")
-        if score >= 5
-    ]
-    manager_ids = [
-        fact.id
-        for score, fact in store.prefilter_facts("who approves Alex's work?")
-        if score >= 5
-    ]
+    cases = {
+        "credential rotation source": "secrets",
+        "shell appearance preference": "terminal",
+        "database storage choice": "warehouse",
+        "browser client code preference": "frontend",
+        "dependency tooling choice": "packages",
+        "checker for typed objects": "validation",
+        "duplicate fact detection": "dedup",
+        "service framework preference": "api",
+        "chats become structured records": "extract",
+        "who approves Alex deliverables?": "manager",
+    }
 
-    assert credential_ids[0] == "secrets"
-    assert shell_ids[0] == "terminal"
-    assert database_ids[0] == "warehouse"
-    assert frontend_ids[0] == "frontend"
-    assert package_ids[0] == "packages"
-    assert validation_ids[0] == "validation"
-    assert dedup_ids[0] == "dedup"
-    assert api_ids[0] == "api"
-    assert extract_ids[0] == "extract"
-    assert manager_ids[0] == "manager"
+    for query, expected_id in cases.items():
+        ids = [fact.id for score, fact in store.prefilter_facts(query) if score >= 5]
+        assert ids[0] == expected_id
 
 
 def test_prefilter_query_aliases_do_not_make_off_domain_queries_match():

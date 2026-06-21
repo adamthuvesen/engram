@@ -180,24 +180,6 @@ _QUERY_TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
     "worker": ("agent", "parallel"),
 }
 
-_QUERY_PHRASE_ALIASES: dict[str, tuple[str, ...]] = {
-    "browser ui": ("frontend", "typescript"),
-    "color scheme": ("theme", "dark", "terminal"),
-    "database backs": ("warehouse", "snowflake", "uses"),
-    "duplicate memories": ("deduplicate", "dedup", "hash"),
-    "job title": ("role", "engineer"),
-    "machine written": ("ai", "generated"),
-    "project dependencies": ("package", "uv"),
-    "pulled out of chats": ("extracts", "structured", "output"),
-    "schema checker": ("validation", "pydantic"),
-    "server framework": ("fastapi", "api"),
-    "signs off": ("manager", "approval"),
-    "spins up": ("fans", "parallel", "agents"),
-    "table processing": ("dataframe", "polars"),
-    "vector database": ("embedding", "retrieval"),
-    "work from": ("remote", "location"),
-}
-
 
 def _stem(word: str) -> str:
     """Cheap suffix strip — good enough for prefilter scoring.
@@ -1874,10 +1856,6 @@ class FactStore:
         for token in raw:
             alias_terms.update(_QUERY_TOKEN_ALIASES.get(token, ()))
             alias_terms.update(_QUERY_TOKEN_ALIASES.get(_stem(token), ()))
-        normalized_phrase_text = f" {' '.join(raw)} "
-        for phrase, aliases in _QUERY_PHRASE_ALIASES.items():
-            if f" {phrase} " in normalized_phrase_text:
-                alias_terms.update(aliases)
         unigrams.update(_stem(t) for t in alias_terms if t not in _STOPWORDS)
         return unigrams, bigrams
 
