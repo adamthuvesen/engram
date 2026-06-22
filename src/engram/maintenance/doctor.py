@@ -24,8 +24,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from engram.config import get_settings
-from engram.models import (
+from engram.core.config import get_settings
+from engram.core.models import (
     CandidateStatus,
     EVENT_LOG_META_VERSION,
     EventLogMeta,
@@ -37,7 +37,7 @@ from engram.models import (
     StoreTransaction,
     TransactionStatus,
 )
-from engram.store import AsyncFactStore, FactStore, _is_active_fact
+from engram.storage.store import AsyncFactStore, FactStore, _is_active_fact
 
 logger = logging.getLogger(__name__)
 
@@ -250,7 +250,7 @@ def _check_sync(
     read from ``.engram-sync-state``, and the number of local commits ahead
     of the upstream tracking branch.
     """
-    from engram.sync import read_sync_state
+    from engram.storage.sync import read_sync_state
 
     sync_info: dict[str, object] = {
         "remote_configured": False,

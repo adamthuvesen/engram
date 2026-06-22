@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
-from engram.models import FactCategory
+from engram.core.models import FactCategory
 
 
 class StructuredOutput(BaseModel):

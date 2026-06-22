@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from engram import server
-from engram.models import Fact, FactCategory
-from engram.store import AsyncFactStore, FactStore
+from engram.core.models import Fact, FactCategory
+from engram.storage.store import AsyncFactStore, FactStore
 
 
 def _make_store() -> FactStore:

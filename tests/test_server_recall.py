@@ -8,8 +8,8 @@ from pathlib import Path
 
 from engram import server
 from engram.llm import Completion
-from engram.models import Fact, FactCategory
-from engram.store import AsyncFactStore, FactStore
+from engram.core.models import Fact, FactCategory
+from engram.storage.store import AsyncFactStore, FactStore
 
 
 def _setup_store(monkeypatch) -> FactStore:
@@ -38,7 +38,7 @@ def _patch_complete(monkeypatch, responses):
         text, input_tokens, cached = queue.pop(0)
         return Completion(text=text, input_tokens=input_tokens, cached_tokens=cached)
 
-    monkeypatch.setattr("engram.retriever.complete_with_usage", fake)
+    monkeypatch.setattr("engram.recall.retriever.complete_with_usage", fake)
 
 
 async def _call(tool_name: str, **kwargs):
@@ -235,7 +235,7 @@ def test_recall_warns_on_stale(monkeypatch):
 
 
 def test_recall_trace_success(monkeypatch):
-    from engram.config import get_settings
+    from engram.core.config import get_settings
 
     store = _setup_store(monkeypatch)
     monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
@@ -295,7 +295,7 @@ def test_recall_trace_provider_failure(monkeypatch):
     async def boom(*args, **kwargs):
         raise RuntimeError("provider down")
 
-    monkeypatch.setattr("engram.retriever.complete_with_usage", boom)
+    monkeypatch.setattr("engram.recall.retriever.complete_with_usage", boom)
 
     result = asyncio.run(_call("recall_trace", query="failure"))
     parsed = _structured(result)

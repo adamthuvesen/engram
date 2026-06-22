@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from textual.widgets import DataTable, TabbedContent
 
-from engram.config import get_settings
+from engram.core.config import get_settings
 from engram.dashboard.app import EngramDashboard
 from engram.dashboard.constants import MIN_ACTIVE_CONFIDENCE, NO_PROJECT_LABEL
 from engram.dashboard.data import (
@@ -16,8 +16,8 @@ from engram.dashboard.data import (
     format_timestamp,
     load_dashboard_data,
 )
-from engram.models import CandidateStatus, Fact, FactCategory, MemoryCandidate
-from engram.store import FactStore
+from engram.core.models import CandidateStatus, Fact, FactCategory, MemoryCandidate
+from engram.storage.store import FactStore
 
 
 # ── Fixtures ──

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import yaml
 
-from engram.config import get_settings
-from engram.observer import extract_facts
-from engram.store import AsyncFactStore, FactStore
+from engram.core.config import get_settings
+from engram.extraction.observer import extract_facts
+from engram.storage.store import AsyncFactStore, FactStore
 
 logger = logging.getLogger(__name__)
 

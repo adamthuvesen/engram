@@ -10,11 +10,11 @@ from pathlib import Path
 import pytest
 
 from engram import cli
-from engram.config import get_settings
-from engram.interfaces import Envelope
-from engram.models import Fact, FactCategory, RecallRecord
+from engram.core.config import get_settings
+from engram.core.interfaces import Envelope
+from engram.core.models import Fact, FactCategory, RecallRecord
 from engram.operations import OperationResult
-from engram.store import FactStore
+from engram.storage.store import FactStore
 
 
 @pytest.fixture

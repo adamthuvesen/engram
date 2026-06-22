@@ -8,15 +8,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from engram import server
-from engram.doctor import DoctorIssue, repair_store, run_doctor
-from engram.models import (
+from engram.maintenance.doctor import DoctorIssue, repair_store, run_doctor
+from engram.core.models import (
     Fact,
     FactCategory,
     MemoryCandidate,
     StoreTransaction,
     TransactionStatus,
 )
-from engram.store import AsyncFactStore, FactStore
+from engram.storage.store import AsyncFactStore, FactStore
 
 
 def _make_store() -> FactStore:
@@ -308,6 +308,6 @@ def test_doctor_sync_group_is_local_only(monkeypatch):
                 network_calls.append(cmd)
         return real_run(cmd, *args, **kwargs)
 
-    monkeypatch.setattr("engram.doctor.subprocess.run", watching_run)
+    monkeypatch.setattr("engram.maintenance.doctor.subprocess.run", watching_run)
     run_doctor(store)
     assert network_calls == []

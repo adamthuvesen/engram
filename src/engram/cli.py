@@ -8,8 +8,8 @@ import sys
 from collections.abc import Awaitable, Callable
 from typing import Sequence
 
-from engram.config import configure_logging
-from engram.interfaces import Envelope, storage_error, validation_error
+from engram.core.config import configure_logging
+from engram.core.interfaces import Envelope, storage_error, validation_error
 from engram.operations import (
     EXIT_DOCTOR_ERROR,
     EXIT_NOT_FOUND,
@@ -42,7 +42,7 @@ from engram.operations import (
     synthesize as op_synthesize,
     unmark_stale as op_unmark_stale,
 )
-from engram.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
+from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
 
 CommandHandler = Callable[[argparse.Namespace], Awaitable[OperationResult]]
 

@@ -6,10 +6,10 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from engram.config import get_settings
-from engram.doctor import check_provider, repair_store, run_doctor
-from engram.importer import import_claude_code_memories
-from engram.interfaces import (
+from engram.core.config import get_settings
+from engram.maintenance.doctor import check_provider, repair_store, run_doctor
+from engram.extraction.importer import import_claude_code_memories
+from engram.core.interfaces import (
     Envelope,
     EnvelopeMeta,
     not_found_error,
@@ -17,11 +17,11 @@ from engram.interfaces import (
     storage_error,
     validation_error,
 )
-from engram.memory_audit import (
+from engram.maintenance.memory_audit import (
     audit_memory_store as _audit_memory_store,
     format_audit_result,
 )
-from engram.models import (
+from engram.core.models import (
     CandidateStatus,
     Fact,
     FactCategory,
@@ -29,20 +29,26 @@ from engram.models import (
     MemoryCandidate,
     RecallRecord,
 )
-from engram.observer import extract_facts, suggest_memories as _suggest_memories
-from engram.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
-from engram.retriever import (
+from engram.extraction.observer import (
+    extract_facts,
+    suggest_memories as _suggest_memories,
+)
+from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
+from engram.recall.retriever import (
     RELEVANCE_FLOOR,
     recall as _recall,
     recall_with_provenance as _recall_with_provenance,
 )
-from engram.store import AsyncFactStore, FactStore, format_facts_for_llm
-from engram.sync import (
+from engram.storage.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.storage.sync import (
     DEFAULT_GIT_TIMEOUT_SECONDS,
     SyncError,
     sync as _sync,
 )
-from engram.synthesizer import format_synthesis_result, synthesize as _synthesize
+from engram.maintenance.synthesizer import (
+    format_synthesis_result,
+    synthesize as _synthesize,
+)
 
 EXIT_OK = 0
 EXIT_VALIDATION = 1

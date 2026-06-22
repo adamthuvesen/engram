@@ -6,11 +6,11 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from engram.config import get_settings
+from engram.core.config import get_settings
 from engram.llm import complete_model
-from engram.models import Fact
-from engram.store import AsyncFactStore, FactStore, format_facts_for_llm
-from engram.structured_outputs import SynthesisResponse
+from engram.core.models import Fact
+from engram.storage.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.core.structured_outputs import SynthesisResponse
 
 logger = logging.getLogger(__name__)
 

@@ -5,8 +5,8 @@ import tempfile
 from pathlib import Path
 
 from engram.llm import Completion
-from engram.models import Fact, FactCategory
-from engram.retriever import (
+from engram.core.models import Fact, FactCategory
+from engram.recall.retriever import (
     _build_prefix,
     _extract_quality,
     _format_direct,
@@ -14,7 +14,7 @@ from engram.retriever import (
     _resolve_tier2_mode,
     _select_tier,
 )
-from engram.store import AsyncFactStore, FactStore
+from engram.storage.store import AsyncFactStore, FactStore
 
 
 def _make_store() -> FactStore:
@@ -177,7 +177,7 @@ def test_recall_tier0_logs_to_store():
         ]
     )
 
-    from engram.retriever import recall
+    from engram.recall.retriever import recall
 
     asyncio.run(recall("zagblort xylophone", store=store))
 
@@ -235,7 +235,7 @@ def test_select_tier_threshold_zero_disables_cap():
 
 def test_recall_stamps_selector_version():
     """Recall logs keep selector_version='v2' for stats continuity."""
-    from engram.config import get_settings
+    from engram.core.config import get_settings
 
     store = _make_store()
     store.append_facts(
@@ -249,7 +249,7 @@ def test_recall_stamps_selector_version():
         ]
     )
 
-    from engram.retriever import recall
+    from engram.recall.retriever import recall
 
     get_settings.cache_clear()
     asyncio.run(recall("zagblort xylophone", store=store))
@@ -301,7 +301,7 @@ def _patch_complete(monkeypatch, responses):
         text, input_tokens, cached = queue.pop(0)
         return Completion(text=text, input_tokens=input_tokens, cached_tokens=cached)
 
-    monkeypatch.setattr("engram.retriever.complete_with_usage", fake)
+    monkeypatch.setattr("engram.recall.retriever.complete_with_usage", fake)
     return calls
 
 
@@ -341,7 +341,7 @@ def test_parse_multilens_malformed_treated_as_direct():
 
 
 def test_recall_tier2_multilens_makes_two_llm_calls(monkeypatch):
-    from engram.config import get_settings
+    from engram.core.config import get_settings
 
     store = _make_store()
     _flat_tier2_facts(store)
@@ -362,7 +362,7 @@ def test_recall_tier2_multilens_makes_two_llm_calls(monkeypatch):
         ],
     )
 
-    from engram.retriever import recall
+    from engram.recall.retriever import recall
 
     try:
         asyncio.run(recall("retrieval", store=store))
@@ -381,7 +381,7 @@ def test_recall_tier2_multilens_makes_two_llm_calls(monkeypatch):
 
 
 def test_recall_tier2_with_async_store_makes_two_llm_calls(monkeypatch):
-    from engram.config import get_settings
+    from engram.core.config import get_settings
 
     store = _make_store()
     _flat_tier2_facts(store)
@@ -401,7 +401,7 @@ def test_recall_tier2_with_async_store_makes_two_llm_calls(monkeypatch):
         ],
     )
 
-    from engram.retriever import recall
+    from engram.recall.retriever import recall
 
     try:
         asyncio.run(recall("retrieval", store=async_store))
@@ -418,7 +418,7 @@ def test_recall_tier2_with_async_store_makes_two_llm_calls(monkeypatch):
 
 def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
     """Both calls in tier-2 multilens must pass the same cache_prefix."""
-    from engram.config import get_settings
+    from engram.core.config import get_settings
 
     store = _make_store()
     _flat_tier2_facts(store)
@@ -448,9 +448,9 @@ def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
             text="done\n[quality: high]", input_tokens=100, cached_tokens=50
         )
 
-    monkeypatch.setattr("engram.retriever.complete_with_usage", fake)
+    monkeypatch.setattr("engram.recall.retriever.complete_with_usage", fake)
 
-    from engram.retriever import recall
+    from engram.recall.retriever import recall
 
     try:
         asyncio.run(recall("retrieval", store=store))
@@ -467,7 +467,7 @@ def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
 
 
 def test_recall_tier2_default_single_mode_makes_one_llm_call(monkeypatch):
-    from engram.retriever import recall_with_provenance
+    from engram.recall.retriever import recall_with_provenance
 
     store = _make_store()
     _flat_tier2_facts(store)
@@ -503,7 +503,7 @@ def test_recall_tier0_unrelated_boost_only_fact_logs_no_quality():
         ]
     )
 
-    from engram.retriever import recall
+    from engram.recall.retriever import recall
 
     answer = asyncio.run(recall("zagblort xylophone", store=store))
 

@@ -28,9 +28,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from engram.llm import Completion
-from engram.models import Fact, FactCategory
-from engram.retriever import recall_with_provenance
-from engram.store import FactStore
+from engram.core.models import Fact, FactCategory
+from engram.recall.retriever import recall_with_provenance
+from engram.storage.store import FactStore
 
 
 class EvalFactSpec(BaseModel):
@@ -122,7 +122,7 @@ def _materialize_facts(specs: list[EvalFactSpec]) -> list[Fact]:
 def _patch_completions(
     monkeypatch_target, queue: list[tuple[str, int | None, int | None]]
 ):
-    """Replace ``engram.retriever.complete_with_usage`` with a queue stub."""
+    """Replace ``engram.recall.retriever.complete_with_usage`` with a queue stub."""
     pending = list(queue)
 
     async def fake(
@@ -169,7 +169,7 @@ async def run_fixture(
         if facts:
             store.append_facts(facts)
 
-        import engram.retriever as retriever_mod
+        import engram.recall.retriever as retriever_mod
 
         saved = retriever_mod.complete_with_usage
         # Tier-0 evals run without LLM calls; only patch when tier-1/2 mocks exist.

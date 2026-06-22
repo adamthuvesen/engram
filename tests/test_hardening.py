@@ -12,7 +12,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 import engram.server as server
-from engram.models import (
+from engram.core.models import (
     CandidateStatus,
     Fact,
     FactCategory,
@@ -20,7 +20,7 @@ from engram.models import (
     RecallRecord,
     TransactionStatus,
 )
-from engram.store import AsyncFactStore, FactStore
+from engram.storage.store import AsyncFactStore, FactStore
 
 
 def _make_store() -> FactStore:
@@ -93,7 +93,7 @@ def test_rewrite_failure_leaves_no_tmp_files():
         call_count[0] += 1
         raise OSError("Simulated fsync failure")
 
-    with patch("engram.store.os.fsync", side_effect=failing_fsync):
+    with patch("engram.storage.store.os.fsync", side_effect=failing_fsync):
         with pytest.raises(OSError, match="Simulated fsync failure"):
             store._rewrite(store.load_facts())
 
@@ -128,8 +128,8 @@ def test_rewrite_calls_fsync():
         original_replace(src, dst)
 
     with (
-        patch("engram.store.os.fsync", side_effect=tracking_fsync),
-        patch("engram.store.os.replace", side_effect=tracking_replace),
+        patch("engram.storage.store.os.fsync", side_effect=tracking_fsync),
+        patch("engram.storage.store.os.replace", side_effect=tracking_replace),
     ):
         store._rewrite(facts)
 
@@ -314,7 +314,7 @@ class _HardeningStructuredResponse(BaseModel):
 
 def test_complete_model_raw_json_parse(monkeypatch):
     """Raw JSON is validated into the requested Pydantic model."""
-    from engram import llm
+    from engram.llm import client as llm
 
     async def fake_complete(**kwargs):
         return '{"answer": 42}'
@@ -332,7 +332,7 @@ def test_complete_model_raw_json_parse(monkeypatch):
 
 def test_complete_model_unparseable_raises_validation_error(monkeypatch):
     """Completely unparseable output fails loudly at the structured boundary."""
-    from engram import llm
+    from engram.llm import client as llm
 
     async def fake_complete(**kwargs):
         return "This is not JSON at all!"
@@ -356,7 +356,7 @@ def test_complete_model_unparseable_raises_validation_error(monkeypatch):
 
 def test_complete_passes_num_retries(monkeypatch):
     """complete() passes num_retries=2 to litellm.acompletion."""
-    from engram import llm
+    from engram.llm import client as llm
 
     captured_kwargs: dict = {}
 
@@ -371,7 +371,7 @@ def test_complete_passes_num_retries(monkeypatch):
     fake_litellm.acompletion = fake_acompletion
 
     monkeypatch.setattr(llm, "_get_litellm", lambda: fake_litellm)
-    monkeypatch.setattr("engram.config.ensure_openai_api_key", lambda: "key")
+    monkeypatch.setattr("engram.core.config.ensure_openai_api_key", lambda: "key")
 
     result = asyncio.run(llm.complete(prompt="test", model="openai/gpt-4o-mini"))
     assert result == "hello"
@@ -440,7 +440,7 @@ def test_import_memories_empty_directory_returns_message(tmp_path, monkeypatch):
     projects_dir = tmp_path / "projects"
     projects_dir.mkdir()
     monkeypatch.setattr(
-        "engram.importer.get_settings",
+        "engram.extraction.importer.get_settings",
         lambda: MagicMock(claude_projects_dir=projects_dir),
     )
 
@@ -454,7 +454,7 @@ def test_import_memories_empty_directory_returns_message(tmp_path, monkeypatch):
 
 
 def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
-    from engram.importer import import_claude_code_memories
+    from engram.extraction.importer import import_claude_code_memories
 
     projects_dir = tmp_path / "projects"
     memory_dir = projects_dir / "-Users-alex-dev-example-project" / "memory"
@@ -469,7 +469,7 @@ def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "engram.importer.get_settings",
+        "engram.extraction.importer.get_settings",
         lambda: MagicMock(claude_projects_dir=projects_dir),
     )
 
@@ -488,7 +488,9 @@ def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
             }
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
     store = _make_store()
     result = asyncio.run(import_claude_code_memories(store=AsyncFactStore(store)))
@@ -639,7 +641,7 @@ def test_mcp_tools_return_text_and_structured_content():
 
 def test_dedup_collision_keeps_best_candidate(monkeypatch):
     """Two candidates superseding the same ancestor → only higher-confidence kept."""
-    from engram.observer import _dedup
+    from engram.extraction.observer import _dedup
 
     old_fact = _make_fact(id="ancestor", content="Old fact about Python")
     existing = [old_fact]
@@ -667,9 +669,11 @@ def test_dedup_collision_keeps_best_candidate(monkeypatch):
         side_effect=lambda fid, **kw: update_fact_calls.append(fid)
     )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
-    with patch("engram.observer._find_near_matches", return_value=existing):
+    with patch("engram.extraction.observer._find_near_matches", return_value=existing):
         kept = asyncio.run(_dedup(candidates, existing, store=fake_store))
 
     assert len(kept) == 1
@@ -684,7 +688,7 @@ def test_dedup_collision_keeps_best_candidate(monkeypatch):
 
 def test_near_match_short_fact_does_not_over_match():
     """A 2-token generic fact with 1 incidental overlap does not pass Jaccard ≥0.3."""
-    from engram.observer import _find_near_matches
+    from engram.extraction.observer import _find_near_matches
 
     # 2-token existing fact
     short_fact = _make_fact(content="python libraries")
@@ -814,7 +818,7 @@ def test_prefilter_cache_evicted_on_purge():
 
 
 def test_placeholder_detection_embedded():
-    from engram.config import _is_unresolved_env_placeholder
+    from engram.core.config import _is_unresolved_env_placeholder
 
     # Should detect
     assert _is_unresolved_env_placeholder("$OPENAI_API_KEY")
@@ -835,7 +839,7 @@ def test_placeholder_detection_embedded():
 
 
 def test_clean_project_name_strips_home_prefix():
-    from engram.importer import _clean_project_name
+    from engram.extraction.importer import _clean_project_name
 
     # Simulate mangled path for a project under the user's home dir
     # Claude mangles /Users/jdoe/dev/myproject as -Users-jdoe-dev-myproject
@@ -849,7 +853,7 @@ def test_clean_project_name_strips_home_prefix():
 
 
 def test_clean_project_name_repo_named_ai_is_kept():
-    from engram.importer import _clean_project_name
+    from engram.extraction.importer import _clean_project_name
 
     home_parts = [p for p in Path.home().parts if p and p != "/"]
     username = home_parts[-1] if home_parts else "jdoe"
@@ -862,7 +866,7 @@ def test_clean_project_name_repo_named_ai_is_kept():
 
 
 def test_clean_project_name_hyphenated_repo_is_kept():
-    from engram.importer import _clean_project_name
+    from engram.extraction.importer import _clean_project_name
 
     home_parts = [p for p in Path.home().parts if p and p != "/"]
     username = home_parts[-1] if home_parts else "jdoe"
@@ -874,7 +878,7 @@ def test_clean_project_name_hyphenated_repo_is_kept():
 
 
 def test_clean_project_name_outside_home():
-    from engram.importer import _clean_project_name
+    from engram.extraction.importer import _clean_project_name
 
     result = _clean_project_name("some-other-project")
     # Outside the home-path heuristic, preserve the full slug.

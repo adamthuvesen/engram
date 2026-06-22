@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from engram.interfaces import (
+from engram.core.interfaces import (
     Envelope,
     EnvelopeError,
     EnvelopeMeta,

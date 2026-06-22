@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from engram.models import Fact, FactCategory
-from engram.store import FactStore
-from engram.sync import SYNC_STATE_FILENAME, SyncError, read_sync_state, sync
+from engram.core.models import Fact, FactCategory
+from engram.storage.store import FactStore
+from engram.storage.sync import SYNC_STATE_FILENAME, SyncError, read_sync_state, sync
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="git binary not available"
@@ -115,7 +115,7 @@ def test_sync_errors_when_git_missing(monkeypatch, tmp_path: Path):
     repo = tmp_path / "data"
     repo.mkdir()
 
-    monkeypatch.setattr("engram.sync.shutil.which", lambda _: None)
+    monkeypatch.setattr("engram.storage.sync.shutil.which", lambda _: None)
     with pytest.raises(SyncError) as exc:
         sync(repo)
     assert exc.value.code == "git_not_found"
@@ -147,7 +147,7 @@ def test_sync_no_op_when_already_up_to_date(tmp_path: Path):
 
 
 def test_sync_untracks_managed_ignore_patterns(tmp_path: Path):
-    from engram.sync import COMPACTION_SENTINEL_FILENAME
+    from engram.storage.sync import COMPACTION_SENTINEL_FILENAME
 
     bare = _make_bare_repo(tmp_path)
     clone = _init_clone(tmp_path, "alice", bare)
@@ -172,7 +172,7 @@ def test_sync_untracks_managed_ignore_patterns(tmp_path: Path):
 
 
 def test_managed_setup_commits_only_managed_files(tmp_path: Path):
-    from engram.sync import _ensure_managed_repo_setup
+    from engram.storage.sync import _ensure_managed_repo_setup
 
     bare = _make_bare_repo(tmp_path)
     clone = _init_clone(tmp_path, "alice", bare)
@@ -323,7 +323,7 @@ def test_sync_state_unchanged_on_failure(monkeypatch, tmp_path: Path):
 
 
 def test_sync_skips_when_compaction_sentinel_present(tmp_path: Path):
-    from engram.sync import COMPACTION_SENTINEL_FILENAME
+    from engram.storage.sync import COMPACTION_SENTINEL_FILENAME
 
     bare = _make_bare_repo(tmp_path)
     clone = _init_clone(tmp_path, "alice", bare)
@@ -345,7 +345,7 @@ async def test_auto_sync_loop_runs_sync_on_interval(tmp_path: Path):
     """
     import asyncio
 
-    from engram.sync import SyncError, auto_sync_loop
+    from engram.storage.sync import SyncError, auto_sync_loop
 
     bare = _make_bare_repo(tmp_path)
     clone = _init_clone(tmp_path, "alice", bare)
@@ -383,8 +383,8 @@ async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatc
     """A sync error mid-loop must not stop the loop."""
     import asyncio
 
-    from engram import sync as sync_module
-    from engram.sync import SyncError, auto_sync_loop
+    from engram.storage import sync as sync_module
+    from engram.storage.sync import SyncError, auto_sync_loop
 
     bare = _make_bare_repo(tmp_path)
     clone = _init_clone(tmp_path, "alice", bare)
@@ -401,7 +401,7 @@ async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatc
             data_dir, timeout=timeout, skip_if_compacting=skip_if_compacting
         )
 
-    monkeypatch.setattr("engram.sync.sync", failing_sync)
+    monkeypatch.setattr("engram.storage.sync.sync", failing_sync)
 
     results: list[object] = []
     seen_failure_and_success = asyncio.Event()
@@ -434,7 +434,7 @@ async def test_auto_sync_loop_reports_unexpected_errors(tmp_path: Path, monkeypa
     """Unexpected errors should be visible to callers without killing the loop."""
     import asyncio
 
-    from engram.sync import SyncError, auto_sync_loop
+    from engram.storage.sync import SyncError, auto_sync_loop
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -442,7 +442,7 @@ async def test_auto_sync_loop_reports_unexpected_errors(tmp_path: Path, monkeypa
     def broken_sync(data_dir, *, timeout=30.0, skip_if_compacting=True):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("engram.sync.sync", broken_sync)
+    monkeypatch.setattr("engram.storage.sync.sync", broken_sync)
 
     results: list[object] = []
     got_error = asyncio.Event()

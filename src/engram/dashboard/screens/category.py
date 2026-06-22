@@ -11,7 +11,7 @@ from textual.widgets import DataTable, Input, Label, Static
 from engram.dashboard.constants import NO_PROJECT_LABEL, SEARCH_DEBOUNCE_S
 from engram.dashboard.data import DashboardData, format_age, get_facts_for_category
 from engram.dashboard.widgets.fact_detail import FactDetail
-from engram.models import Fact
+from engram.core.models import Fact
 
 
 class CategoryDetailScreen(ModalScreen):

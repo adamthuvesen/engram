@@ -4,9 +4,13 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from engram.models import Fact, FactCategory
-from engram.store import AsyncFactStore, FactStore
-from engram.synthesizer import SynthesisResult, format_synthesis_result, synthesize
+from engram.core.models import Fact, FactCategory
+from engram.storage.store import AsyncFactStore, FactStore
+from engram.maintenance.synthesizer import (
+    SynthesisResult,
+    format_synthesis_result,
+    synthesize,
+)
 
 
 def _make_store() -> FactStore:
@@ -71,7 +75,9 @@ def test_dry_run_does_not_modify_store(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.maintenance.synthesizer.complete_model", fake_complete_model
+    )
 
     result = asyncio.run(synthesize(dry_run=True, store=store))
     assert result.merged_groups == 1
@@ -114,7 +120,9 @@ def test_removes_stale_facts(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.maintenance.synthesizer.complete_model", fake_complete_model
+    )
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.removed == 1
@@ -154,7 +162,9 @@ def test_synthesize_accepts_async_store(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.maintenance.synthesizer.complete_model", fake_complete_model
+    )
 
     result = asyncio.run(synthesize(dry_run=False, store=AsyncFactStore(store)))
 
@@ -189,7 +199,9 @@ def test_rewrites_facts(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.maintenance.synthesizer.complete_model", fake_complete_model
+    )
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.rewritten == 1
@@ -241,7 +253,9 @@ def test_merges_duplicate_facts(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.maintenance.synthesizer.complete_model", fake_complete_model
+    )
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.merged_groups == 1
@@ -301,7 +315,9 @@ def test_project_filter_only_processes_matching(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.maintenance.synthesizer.complete_model", fake_complete_model
+    )
 
     result = asyncio.run(synthesize(project="alpha", store=store))
     assert result.total_analyzed == 1
@@ -339,7 +355,9 @@ def test_invalid_llm_response_defaults_to_keep(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.maintenance.synthesizer.complete_model", fake_complete_model
+    )
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.kept == 2  # both kept (one explicit, one defaulted)
@@ -364,7 +382,9 @@ def test_llm_error_defaults_all_to_keep(monkeypatch):
     ):
         raise RuntimeError("API error")
 
-    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.maintenance.synthesizer.complete_model", fake_complete_model
+    )
 
     result = asyncio.run(synthesize(dry_run=False, store=store))
     assert result.kept == 1
@@ -416,7 +436,9 @@ def test_three_way_merge_preserves_all_absorbed_ids(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.synthesizer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.maintenance.synthesizer.complete_model", fake_complete_model
+    )
 
     asyncio.run(synthesize(dry_run=False, store=store))
 

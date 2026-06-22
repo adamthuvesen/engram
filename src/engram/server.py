@@ -9,8 +9,8 @@ from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
 
-from engram.config import configure_logging, get_settings
-from engram.interfaces import Envelope, validation_error
+from engram.core.config import configure_logging, get_settings
+from engram.core.interfaces import Envelope, validation_error
 from engram.operations import (
     EXIT_VALIDATION,
     OperationResult,
@@ -40,8 +40,8 @@ from engram.operations import (
     synthesize as op_synthesize,
     unmark_stale as op_unmark_stale,
 )
-from engram.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
-from engram.store import AsyncFactStore, FactStore
+from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
+from engram.storage.store import AsyncFactStore, FactStore
 
 INSTRUCTIONS = """Engram — structured, cross-project memory for coding agents.
 
@@ -136,7 +136,7 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         settings = get_settings()
         auto_sync_task: asyncio.Task | None = None
         if settings.sync_enabled:
-            from engram.sync import auto_sync_loop
+            from engram.storage.sync import auto_sync_loop
 
             data_dir = get_store().data_dir
             auto_sync_task = asyncio.create_task(
@@ -160,24 +160,13 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
                 except (asyncio.CancelledError, Exception):
                     pass
                 # Final sync attempt on shutdown — best-effort.
-                from engram.sync import run_final_sync
+                from engram.storage.sync import run_final_sync
 
                 await run_final_sync(
                     get_store().data_dir, timeout=settings.sync_timeout
                 )
 
     app = FastMCP("engram", instructions=INSTRUCTIONS, lifespan=lifespan)
-    if not hasattr(app, "list_tools") and hasattr(app, "_list_tools"):
-
-        async def list_tools_compat():
-            try:
-                return await app._list_tools()
-            except TypeError as exc:
-                if "context" not in str(exc):
-                    raise
-                return await app._list_tools(None)
-
-        app.list_tools = list_tools_compat
     store_ref: FactStore | AsyncFactStore | None = store
 
     def get_store() -> AsyncFactStore:

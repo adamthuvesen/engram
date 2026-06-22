@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from engram.memory_audit import audit_facts, format_audit_result
-from engram.models import Fact, FactCategory
+from engram.maintenance.memory_audit import audit_facts, format_audit_result
+from engram.core.models import Fact, FactCategory
 from engram.operations import audit_memories
-from engram.store import FactStore
+from engram.storage.store import FactStore
 
 
 NOW = datetime(2026, 6, 19, tzinfo=timezone.utc)

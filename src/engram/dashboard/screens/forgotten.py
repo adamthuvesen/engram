@@ -8,7 +8,7 @@ from textual.widgets import DataTable, Input, Label
 from engram.dashboard.constants import NO_PROJECT_LABEL, SEARCH_DEBOUNCE_S
 from engram.dashboard.data import DashboardData, format_age
 from engram.dashboard.widgets.fact_detail import FactDetail
-from engram.models import Fact
+from engram.core.models import Fact
 
 
 class ForgottenScreen(Container):

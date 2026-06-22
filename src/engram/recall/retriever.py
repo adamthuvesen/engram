@@ -5,11 +5,11 @@ import logging
 import re
 import time
 
-from engram.config import get_settings
-from engram.interfaces import EnvelopeWarning, WarningCode
+from engram.core.config import get_settings
+from engram.core.interfaces import EnvelopeWarning, WarningCode
 from engram.llm import Completion, complete, complete_with_usage
-from engram.models import Fact, RecallRecord
-from engram.provenance import (
+from engram.core.models import Fact, RecallRecord
+from engram.core.provenance import (
     DEFAULT_MAX_PREFILTER_MATCHES,
     DEFAULT_MAX_SOURCES,
     DEFAULT_OUTPUT_EXCERPT_CHARS,
@@ -23,7 +23,7 @@ from engram.provenance import (
     UsageSummary,
     excerpt,
 )
-from engram.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.storage.store import AsyncFactStore, FactStore, format_facts_for_llm
 
 logger = logging.getLogger(__name__)
 

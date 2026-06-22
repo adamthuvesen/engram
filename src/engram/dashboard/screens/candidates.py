@@ -8,7 +8,7 @@ from textual.widgets import DataTable, Label, Select
 from engram.dashboard.constants import NO_PROJECT_LABEL
 from engram.dashboard.data import DashboardData
 from engram.dashboard.widgets.fact_detail import FactDetail
-from engram.models import CandidateStatus, MemoryCandidate
+from engram.core.models import CandidateStatus, MemoryCandidate
 
 
 class CandidatesScreen(Container):

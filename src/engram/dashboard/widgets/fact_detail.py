@@ -5,7 +5,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static
 
 from engram.dashboard.data import format_confidence, format_timestamp
-from engram.models import Fact, MemoryCandidate
+from engram.core.models import Fact, MemoryCandidate
 
 
 class FactDetail(Static):

@@ -18,9 +18,9 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from engram.models import Fact, FactCategory
-from engram.retriever import _select_tier
-from engram.store import FactStore
+from engram.core.models import Fact, FactCategory
+from engram.recall.retriever import _select_tier
+from engram.storage.store import FactStore
 
 # ---------------------------------------------------------------------------
 # Seed data — realistic cross-project facts
@@ -599,7 +599,7 @@ def main():
         f"{len(set(f.project for f in FACTS if f.project))} projects\n"
     )
 
-    from engram.retriever import RELEVANCE_FLOOR
+    from engram.recall.retriever import RELEVANCE_FLOOR
 
     # Run all queries
     results = []
