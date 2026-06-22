@@ -5,7 +5,7 @@ description = "Engram — structured, cross-project memory for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=2.0.0",
+    "fastmcp>=3.0.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "litellm>=1.40.0",

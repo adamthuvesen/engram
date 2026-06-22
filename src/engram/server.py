@@ -167,17 +167,6 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
                 )
 
     app = FastMCP("engram", instructions=INSTRUCTIONS, lifespan=lifespan)
-    if not hasattr(app, "list_tools") and hasattr(app, "_list_tools"):
-
-        async def list_tools_compat():
-            try:
-                return await app._list_tools()
-            except TypeError as exc:
-                if "context" not in str(exc):
-                    raise
-                return await app._list_tools(None)
-
-        app.list_tools = list_tools_compat
     store_ref: FactStore | AsyncFactStore | None = store
 
     def get_store() -> AsyncFactStore:
