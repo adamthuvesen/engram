@@ -13,7 +13,7 @@ from engram.dashboard.data import (
     get_facts_for_project,
 )
 from engram.dashboard.widgets.fact_detail import FactDetail
-from engram.models import Fact
+from engram.core.models import Fact
 
 
 class ProjectDetailView(Container):

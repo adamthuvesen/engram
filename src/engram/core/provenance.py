@@ -18,7 +18,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from engram.interfaces import EnvelopeWarning
+from engram.core.interfaces import EnvelopeWarning
 
 
 # Default truncation limits for trace excerpts. Trace must be cheap by default

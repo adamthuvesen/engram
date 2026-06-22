@@ -1,6 +1,6 @@
 """Tests for model improvements — category migration, FactBase inheritance."""
 
-from engram.models import (
+from engram.core.models import (
     CandidateStatus,
     Fact,
     FactCategory,

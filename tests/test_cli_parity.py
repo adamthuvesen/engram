@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 
 from engram import cli, server
-from engram.config import get_settings
-from engram.models import Fact, FactCategory, RecallRecord
-from engram.store import AsyncFactStore, FactStore
+from engram.core.config import get_settings
+from engram.core.models import Fact, FactCategory, RecallRecord
+from engram.storage.store import AsyncFactStore, FactStore
 
 
 @pytest.fixture

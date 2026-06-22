@@ -3,8 +3,8 @@
 import tempfile
 from pathlib import Path
 
-from engram.models import Fact, FactCategory
-from engram.store import FactStore
+from engram.core.models import Fact, FactCategory
+from engram.storage.store import FactStore
 
 
 def _make_store() -> FactStore:
@@ -69,7 +69,7 @@ def test_edit_fact_preserves_id_and_timestamps():
 
 
 def test_recall_log_roundtrip():
-    from engram.models import RecallRecord
+    from engram.core.models import RecallRecord
 
     store = _make_store()
     record = RecallRecord(
@@ -89,7 +89,7 @@ def test_recall_log_roundtrip():
 
 
 def test_load_recall_log_logs_corrupt_lines(caplog):
-    from engram.models import RecallRecord
+    from engram.core.models import RecallRecord
 
     store = _make_store()
     store.log_recall(
@@ -103,7 +103,7 @@ def test_load_recall_log_logs_corrupt_lines(caplog):
     with store.recall_log_path.open("a") as f:
         f.write("not json\n")
 
-    with caplog.at_level("WARNING", logger="engram.store"):
+    with caplog.at_level("WARNING", logger="engram.storage.store"):
         loaded = store.load_recall_log()
 
     assert len(loaded) == 1
@@ -138,7 +138,7 @@ def test_load_facts_fully_corrupt_returns_empty():
 
 def test_load_candidates_skips_corrupt_line():
     """A corrupt candidate line does not crash load_candidates."""
-    from engram.models import MemoryCandidate
+    from engram.core.models import MemoryCandidate
 
     store = _make_store()
 

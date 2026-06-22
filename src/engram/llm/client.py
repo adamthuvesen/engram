@@ -8,7 +8,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from engram.config import ensure_openai_api_key, get_settings
+from engram.core.config import ensure_openai_api_key, get_settings
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)

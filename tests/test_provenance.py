@@ -8,16 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from engram.interfaces import WarningCode
+from engram.core.interfaces import WarningCode
 from engram.llm import Completion
-from engram.models import Fact, FactCategory
-from engram.provenance import RecallProvenance, RecallTrace
-from engram.retriever import (
+from engram.core.models import Fact, FactCategory
+from engram.core.provenance import RecallProvenance, RecallTrace
+from engram.recall.retriever import (
     _extract_cited_ids,
     recall,
     recall_with_provenance,
 )
-from engram.store import FactStore
+from engram.storage.store import FactStore
 
 
 def _make_store() -> FactStore:
@@ -41,7 +41,7 @@ def _patch_complete(monkeypatch, responses):
         text, input_tokens, cached = queue.pop(0)
         return Completion(text=text, input_tokens=input_tokens, cached_tokens=cached)
 
-    monkeypatch.setattr("engram.retriever.complete_with_usage", fake)
+    monkeypatch.setattr("engram.recall.retriever.complete_with_usage", fake)
     return calls
 
 
@@ -108,7 +108,7 @@ def test_default_recall_no_provenance_in_text():
 
 
 def test_tier2_with_provenance_makes_exactly_two_calls(monkeypatch):
-    from engram.config import get_settings
+    from engram.core.config import get_settings
 
     store = _make_store()
     _flat_tier2(store)
@@ -153,7 +153,7 @@ def test_tier2_with_provenance_makes_exactly_two_calls(monkeypatch):
 
 
 def test_tier2_with_trace_still_two_calls(monkeypatch):
-    from engram.config import get_settings
+    from engram.core.config import get_settings
 
     store = _make_store()
     _flat_tier2(store)

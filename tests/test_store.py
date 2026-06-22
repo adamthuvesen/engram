@@ -10,14 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from engram.models import (
+from engram.core.models import (
     CandidateStatus,
     Fact,
     FactCategory,
     MemoryCandidate,
     RecallRecord,
 )
-from engram.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.storage.store import AsyncFactStore, FactStore, format_facts_for_llm
 
 
 def _make_store() -> FactStore:

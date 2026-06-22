@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from engram.llm import (
+from engram.llm.client import (
     Completion,
     _build_user_content,
     _extract_usage,
@@ -17,7 +17,7 @@ from engram.llm import (
     complete_model,
     complete_with_usage,
 )
-from engram.structured_outputs import ExtractionResponse
+from engram.core.structured_outputs import ExtractionResponse
 
 
 class _StructuredAnswer(BaseModel):
@@ -181,7 +181,7 @@ class _MockLitellm:
 @pytest.fixture
 def fresh_settings(monkeypatch, tmp_path):
     """Isolate settings so env vars from the shell don't leak into tests."""
-    from engram.config import get_settings
+    from engram.core.config import get_settings
 
     monkeypatch.setenv("ENGRAM_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
@@ -191,8 +191,8 @@ def fresh_settings(monkeypatch, tmp_path):
 
 def test_complete_with_usage_returns_text_and_tokens(monkeypatch, fresh_settings):
     mock = _MockLitellm()
-    monkeypatch.setattr("engram.llm._get_litellm", lambda: mock)
-    monkeypatch.setattr("engram.llm.ensure_openai_api_key", lambda: "k")
+    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
+    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
 
     result = asyncio.run(
         complete_with_usage(
@@ -209,8 +209,8 @@ def test_complete_with_usage_returns_text_and_tokens(monkeypatch, fresh_settings
 
 def test_complete_with_usage_anthropic_sends_cache_control(monkeypatch, fresh_settings):
     mock = _MockLitellm()
-    monkeypatch.setattr("engram.llm._get_litellm", lambda: mock)
-    monkeypatch.setattr("engram.llm.ensure_openai_api_key", lambda: "k")
+    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
+    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
 
     prefix = "PREFIX_BLOCK\n\n"
     prompt = prefix + "QUERY: x"
@@ -232,8 +232,8 @@ def test_complete_with_usage_anthropic_sends_cache_control(monkeypatch, fresh_se
 
 def test_complete_with_usage_openai_stays_plain_string(monkeypatch, fresh_settings):
     mock = _MockLitellm()
-    monkeypatch.setattr("engram.llm._get_litellm", lambda: mock)
-    monkeypatch.setattr("engram.llm.ensure_openai_api_key", lambda: "k")
+    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
+    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
 
     prefix = "PREFIX_BLOCK\n\n"
     prompt = prefix + "QUERY: x"
@@ -256,8 +256,8 @@ def test_complete_with_usage_missing_usage_returns_none(monkeypatch, fresh_setti
             self.last_kwargs = kwargs
             return _mock_response("answer", prompt_tokens=None)
 
-    monkeypatch.setattr("engram.llm._get_litellm", lambda: _NoUsage())
-    monkeypatch.setattr("engram.llm.ensure_openai_api_key", lambda: "k")
+    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: _NoUsage())
+    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
 
     result = asyncio.run(complete_with_usage(prompt="hi"))
     assert result.text == "answer"
@@ -307,7 +307,7 @@ def test_complete_model_returns_validated_model(monkeypatch):
         captured_kwargs.update(kwargs)
         return '{"answer": 42}'
 
-    monkeypatch.setattr("engram.llm.complete", fake_complete)
+    monkeypatch.setattr("engram.llm.client.complete", fake_complete)
 
     result = asyncio.run(
         complete_model(
@@ -327,7 +327,7 @@ def test_complete_model_invalid_json_raises_validation_error(monkeypatch):
     async def fake_complete(**kwargs):
         return "This is not JSON at all!"
 
-    monkeypatch.setattr("engram.llm.complete", fake_complete)
+    monkeypatch.setattr("engram.llm.client.complete", fake_complete)
 
     with pytest.raises(ValidationError):
         asyncio.run(

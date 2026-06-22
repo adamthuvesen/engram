@@ -1,6 +1,6 @@
 """Shared dashboard constants."""
 
-from engram.models import MIN_ACTIVE_CONFIDENCE as _MIN_ACTIVE_CONFIDENCE
+from engram.core.models import MIN_ACTIVE_CONFIDENCE as _MIN_ACTIVE_CONFIDENCE
 
 MIN_ACTIVE_CONFIDENCE = _MIN_ACTIVE_CONFIDENCE
 

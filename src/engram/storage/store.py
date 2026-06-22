@@ -19,8 +19,8 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from engram.config import get_settings
-from engram.models import (
+from engram.core.config import get_settings
+from engram.core.models import (
     CandidateStatus,
     EVENT_LOG_META_VERSION,
     EventLogMeta,
@@ -1473,7 +1473,7 @@ class FactStore:
 
         Returns a small summary: events before, events after, fact counts.
         """
-        from engram.sync import COMPACTION_SENTINEL_FILENAME
+        from engram.storage.sync import COMPACTION_SENTINEL_FILENAME
 
         sentinel = self.data_dir / COMPACTION_SENTINEL_FILENAME
         with _locked_store(self.data_dir):

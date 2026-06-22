@@ -132,8 +132,8 @@ def _no_op_completion():
 
 
 async def _run_query(store, lq: LabeledQuery) -> QueryResult:
-    import engram.retriever as retriever_mod
-    from engram.retriever import recall_with_provenance
+    import engram.recall.retriever as retriever_mod
+    from engram.recall.retriever import recall_with_provenance
 
     fake, calls = _no_op_completion()
     saved = retriever_mod.complete_with_usage
@@ -170,8 +170,8 @@ async def _run_query(store, lq: LabeledQuery) -> QueryResult:
 
 
 async def _evaluate_async(dataset: dict[str, Any]) -> Summary:
-    from engram.evals import EvalFactSpec, _materialize_facts
-    from engram.store import FactStore
+    from engram.recall.evals import EvalFactSpec, _materialize_facts
+    from engram.storage.store import FactStore
 
     corpus = [EvalFactSpec.model_validate(f) for f in dataset["corpus"]]
     queries = [LabeledQuery.model_validate(q) for q in dataset["queries"]]

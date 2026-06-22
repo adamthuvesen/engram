@@ -5,15 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from engram.config import get_settings
-from engram.evals import (
+from engram.core.config import get_settings
+from engram.recall.evals import (
     EvalBudget,
     EvalFactSpec,
     EvalFixture,
     representative_fixtures,
     run_fixture_sync,
 )
-from engram.models import FactCategory
+from engram.core.models import FactCategory
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +213,9 @@ def test_eval_fixture_temp_store_is_cleaned_up(monkeypatch):
             exited = True
             return self._tmp.__exit__(exc_type, exc, tb)
 
-    monkeypatch.setattr("engram.evals.TemporaryDirectory", TrackingTemporaryDirectory)
+    monkeypatch.setattr(
+        "engram.recall.evals.TemporaryDirectory", TrackingTemporaryDirectory
+    )
 
     fixture = EvalFixture(
         name="cleanup",

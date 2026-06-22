@@ -6,17 +6,23 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from engram.config import get_settings
+from engram.core.config import get_settings
 from engram.llm import complete_model
-from engram.models import (
+from engram.core.models import (
     CandidateStatus,
     EvidenceKind,
     Fact,
     IngestionRecord,
     MemoryCandidate,
 )
-from engram.store import AsyncFactStore, FactStore, _content_hash, _stem, _TOKEN_RE
-from engram.structured_outputs import DedupResponse, ExtractionResponse
+from engram.storage.store import (
+    AsyncFactStore,
+    FactStore,
+    _content_hash,
+    _stem,
+    _TOKEN_RE,
+)
+from engram.core.structured_outputs import DedupResponse, ExtractionResponse
 
 logger = logging.getLogger(__name__)
 

@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from engram.dashboard.constants import MIN_ACTIVE_CONFIDENCE, NO_PROJECT_LABEL
-from engram.models import CandidateStatus, Fact, MemoryCandidate
-from engram.store import FactStore, _is_active_fact, _is_expired_fact
+from engram.core.models import CandidateStatus, Fact, MemoryCandidate
+from engram.storage.store import FactStore, _is_active_fact, _is_expired_fact
 
 
 @dataclass

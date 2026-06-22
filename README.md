@@ -210,7 +210,7 @@ recall(query, format="json", with_provenance=True) →
 MCP-only alias). Maintenance tools always return JSON with a stable `status` and
 error codes (`validation_error`, `not_found`, `provider_error`, `storage_error`,
 `conflict`). Lists carry default safety caps; truncation is reported in
-`meta.truncated`. Stable warning codes live in `engram.interfaces`.
+`meta.truncated`. Stable warning codes live in `engram.core.interfaces`.
 
 ## Memory audit suggestions
 

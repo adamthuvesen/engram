@@ -23,8 +23,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from engram.memory_audit import audit_facts
-from engram.models import Fact, FactCategory, MIN_ACTIVE_CONFIDENCE
+from engram.maintenance.memory_audit import audit_facts
+from engram.core.models import Fact, FactCategory, MIN_ACTIVE_CONFIDENCE
 
 DATASET_PATH = Path(__file__).parent / "memory_audit_eval_dataset.json"
 

@@ -20,7 +20,7 @@ from engram.dashboard.screens.help import FOOTER_HINTS, HelpScreen
 from engram.dashboard.screens.overview import OverviewScreen
 from engram.dashboard.screens.projects import ProjectsScreen
 from engram.dashboard.screens.timeline import TimelineScreen
-from engram.store import FactStore
+from engram.storage.store import FactStore
 
 CSS_PATH = Path(__file__).parent / "styles" / "dashboard.tcss"
 

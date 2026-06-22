@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from engram.models import (
+from engram.core.models import (
     EVENT_LOG_META_VERSION,
     EventLogMeta,
     EventType,
@@ -390,7 +390,7 @@ def test_compaction_preserves_active_materialization(tmp_path):
     import tempfile
     from pathlib import Path
 
-    from engram.store import FactStore
+    from engram.storage.store import FactStore
 
     store = FactStore(data_dir=Path(tempfile.mkdtemp(dir=tmp_path)))
     f1 = Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="v1")
@@ -413,7 +413,7 @@ def test_compaction_drops_tombstones_when_disabled(tmp_path):
     import tempfile
     from pathlib import Path
 
-    from engram.store import FactStore
+    from engram.storage.store import FactStore
 
     store = FactStore(data_dir=Path(tempfile.mkdtemp(dir=tmp_path)))
     store.append_facts(
@@ -435,7 +435,7 @@ def test_compaction_failure_leaves_original_intact(tmp_path, monkeypatch):
     import tempfile
     from pathlib import Path
 
-    from engram.store import FactStore
+    from engram.storage.store import FactStore
 
     store = FactStore(data_dir=Path(tempfile.mkdtemp(dir=tmp_path)))
     store.append_facts(

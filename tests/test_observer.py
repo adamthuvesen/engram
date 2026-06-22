@@ -5,9 +5,14 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from engram.models import CandidateStatus, Fact, FactCategory
-from engram.observer import _dedup, _find_near_matches, extract_facts, suggest_memories
-from engram.store import AsyncFactStore, FactStore
+from engram.core.models import CandidateStatus, Fact, FactCategory
+from engram.extraction.observer import (
+    _dedup,
+    _find_near_matches,
+    extract_facts,
+    suggest_memories,
+)
+from engram.storage.store import AsyncFactStore, FactStore
 
 
 def _make_store() -> FactStore:
@@ -44,7 +49,9 @@ def test_suggest_memories_queues_pending_candidates(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
     candidates = asyncio.run(
         suggest_memories(
@@ -83,7 +90,9 @@ def test_suggest_memories_accepts_async_store(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
     candidates = asyncio.run(
         suggest_memories("User prefers async storage.", store=AsyncFactStore(store))
@@ -136,7 +145,9 @@ def test_extract_facts_marks_updates_and_removes_superseded_fact_from_active_rec
             },
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
     facts = asyncio.run(extract_facts("The user prefers polars now.", store=store))
 
@@ -190,7 +201,9 @@ def test_extract_facts_accepts_async_store_for_dedup_and_persist(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
     facts = asyncio.run(
         extract_facts("User prefers async storage.", store=AsyncFactStore(store))
@@ -233,7 +246,9 @@ def test_dedup_ignores_malformed_update_entries(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
     kept = asyncio.run(_dedup(candidates, existing, store=None))
 
@@ -273,7 +288,9 @@ def test_extract_facts_dedup_respects_project_scope(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
     facts = asyncio.run(
         extract_facts("User prefers polars.", project="alpha", store=store)
@@ -352,7 +369,9 @@ def test_extract_facts_dedups_against_older_than_200_exact_match(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
     facts = asyncio.run(extract_facts("User prefers polars.", store=store))
 
@@ -388,7 +407,9 @@ def test_extract_facts_validation_error_returns_no_facts(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
     facts = asyncio.run(extract_facts("User likes dark mode.", store=store))
 
@@ -422,9 +443,11 @@ def test_dedup_against_candidates_ignores_rejected(monkeypatch):
             },
         )
 
-    monkeypatch.setattr("engram.observer.complete_model", fake_complete_model)
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
 
-    from engram.models import MemoryCandidate
+    from engram.core.models import MemoryCandidate
 
     # Seed 3 rejected candidates with the same content
     rejected = [

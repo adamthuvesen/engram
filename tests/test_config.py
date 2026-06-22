@@ -2,7 +2,7 @@
 
 import os
 
-from engram.config import ensure_openai_api_key, load_cached_api_keys
+from engram.core.config import ensure_openai_api_key, load_cached_api_keys
 
 
 def test_load_cached_api_keys_parses_exports(tmp_path):
