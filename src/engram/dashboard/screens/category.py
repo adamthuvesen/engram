@@ -6,10 +6,21 @@ from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, Label, Static
+from textual.widgets import DataTable, Input, Static
 
-from engram.dashboard.constants import NO_PROJECT_LABEL, SEARCH_DEBOUNCE_S
-from engram.dashboard.data import DashboardData, format_age, get_facts_for_category
+from engram.dashboard.constants import NO_PROJECT_LABEL
+from engram.dashboard.data import (
+    DashboardData,
+    format_age,
+    get_facts_for_category,
+    shorten_project,
+)
+from engram.dashboard.tables import (
+    filter_facts_by_text,
+    item_by_id,
+    schedule_filter_timer,
+    short_cell,
+)
 from engram.dashboard.widgets.fact_detail import FactDetail
 from engram.core.models import Fact
 
@@ -29,9 +40,9 @@ class CategoryDetailScreen(ModalScreen):
         self._search_timer = None
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="cat-detail-container"):
-            yield Label(f"CATEGORY: {self._category.upper()}", classes="title")
-
+        container = Vertical(id="cat-detail-container")
+        container.border_title = f"category › {self._category}"
+        with container:
             with Horizontal(id="cat-stats-row"):
                 with Vertical(classes="cat-stat"):
                     yield Static(f"Facts: [b]{len(self._all_facts)}[/b]")
@@ -62,11 +73,9 @@ class CategoryDetailScreen(ModalScreen):
                     yield DataTable(id="cat-detail-table", cursor_type="row")
                 yield FactDetail(id="cat-fact-detail", classes="detail-pane")
 
-            yield Label("↑↓ nav  Enter detail  / search  Esc back", classes="hint")
-
     def on_mount(self) -> None:
         table = self.query_one("#cat-detail-table", DataTable)
-        table.add_columns("ID", "Project", "Content", "Confidence", "Tags", "Created")
+        table.add_columns("id", "project", "content", "confidence", "tags", "created")
         self._populate_table()
         table.focus()
 
@@ -76,8 +85,8 @@ class CategoryDetailScreen(ModalScreen):
         for f in self._filtered_facts:
             table.add_row(
                 f.id,
-                f.project or NO_PROJECT_LABEL,
-                f.content[:55] + ("..." if len(f.content) > 55 else ""),
+                shorten_project(f.project),
+                short_cell(f.content, 55),
                 f"{f.confidence:.0%}",
                 ", ".join(f.tags[:3]),
                 format_age(f.created_at),
@@ -85,24 +94,14 @@ class CategoryDetailScreen(ModalScreen):
             )
 
     def _apply_filters(self) -> None:
-        facts = list(self._all_facts)
-        if self._filter_text:
-            q = self._filter_text.lower()
-            facts = [
-                f
-                for f in facts
-                if q in f.content.lower()
-                or q in " ".join(f.tags).lower()
-                or q in (f.project or "").lower()
-                or q in f.id
-            ]
+        facts = filter_facts_by_text(self._all_facts, self._filter_text)
         self._filtered_facts = facts
         self._populate_table()
 
     def _schedule_filter(self) -> None:
-        if self._search_timer:
-            self._search_timer.stop()
-        self._search_timer = self.set_timer(SEARCH_DEBOUNCE_S, self._apply_filters)
+        self._search_timer = schedule_filter_timer(
+            self, self._search_timer, self._apply_filters
+        )
 
     @on(Input.Changed, "#cat-search-input")
     def on_search(self, event: Input.Changed) -> None:
@@ -119,10 +118,7 @@ class CategoryDetailScreen(ModalScreen):
                 detail.update_fact(fact)
 
     def _find_fact(self, fact_id: str) -> Fact | None:
-        for f in self._all_facts:
-            if f.id == fact_id:
-                return f
-        return None
+        return item_by_id(self._all_facts, fact_id)
 
     def on_key(self, event) -> None:
         focused = self.app.focused

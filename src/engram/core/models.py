@@ -249,6 +249,58 @@ def _event_sort_key(event: FactEvent) -> tuple[datetime, str]:
     return (event.timestamp, event.event_id)
 
 
+def _ensure_single_fact_id(events: list[FactEvent]) -> None:
+    fact_id = events[0].fact_id
+    if any(event.fact_id != fact_id for event in events):
+        raise ValueError(
+            f"replay_fact received events for multiple fact_ids: {fact_id} + others"
+        )
+
+
+def _fact_with_event_timestamp(fact: Fact, event: FactEvent, **updates) -> Fact:
+    return Fact.model_validate(
+        {**fact.model_dump(), **updates, "updated_at": event.timestamp}
+    )
+
+
+def _fact_after_event(fact: Fact, event: FactEvent) -> Fact:
+    if event.event_type is EventType.edited:
+        updates = {
+            key: value
+            for key, value in event.payload.items()
+            if key in EDITABLE_FACT_FIELDS
+        }
+        return _fact_with_event_timestamp(fact, event, **updates) if updates else fact
+    if event.event_type is EventType.stale:
+        return _fact_with_event_timestamp(
+            fact,
+            event,
+            stale=True,
+            stale_reason=event.payload.get("reason", ""),
+        )
+    if event.event_type is EventType.unstale:
+        return _fact_with_event_timestamp(fact, event, stale=False, stale_reason="")
+    if event.event_type in {
+        EventType.forgotten,
+        EventType.restored,
+        EventType.superseded,
+    }:
+        return _fact_with_event_timestamp(fact, event)
+    return fact
+
+
+def _lifecycle_after_event(
+    event_type: EventType, *, is_active: bool, is_forgotten: bool
+) -> tuple[bool, bool]:
+    if event_type is EventType.forgotten:
+        return False, True
+    if event_type is EventType.restored:
+        return True, False
+    if event_type is EventType.superseded:
+        return False, is_forgotten
+    return is_active, is_forgotten
+
+
 def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
     """Replay events for a single ``fact_id`` to its current materialized state.
 
@@ -264,11 +316,7 @@ def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
         return None, False
 
     ordered = sorted(events, key=_event_sort_key)
-    fact_id = ordered[0].fact_id
-    if any(e.fact_id != fact_id for e in ordered):
-        raise ValueError(
-            f"replay_fact received events for multiple fact_ids: {fact_id} + others"
-        )
+    _ensure_single_fact_id(ordered)
 
     fact: Fact | None = None
     is_active = True
@@ -286,54 +334,12 @@ def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
             # Skip mutation events that arrive before created — defensive only.
             continue
 
-        if event.event_type is EventType.edited:
-            updates = {
-                key: value
-                for key, value in event.payload.items()
-                if key in EDITABLE_FACT_FIELDS
-            }
-            if updates:
-                merged = {**fact.model_dump(), **updates, "updated_at": event.timestamp}
-                fact = Fact.model_validate(merged)
-        elif event.event_type is EventType.forgotten:
-            is_forgotten = True
-            is_active = False
-            fact = Fact.model_validate(
-                {**fact.model_dump(), "updated_at": event.timestamp}
-            )
-        elif event.event_type is EventType.restored:
-            is_forgotten = False
-            is_active = True
-            fact = Fact.model_validate(
-                {**fact.model_dump(), "updated_at": event.timestamp}
-            )
-        elif event.event_type is EventType.stale:
-            reason = event.payload.get("reason", "")
-            fact = Fact.model_validate(
-                {
-                    **fact.model_dump(),
-                    "stale": True,
-                    "stale_reason": reason,
-                    "updated_at": event.timestamp,
-                }
-            )
-        elif event.event_type is EventType.unstale:
-            fact = Fact.model_validate(
-                {
-                    **fact.model_dump(),
-                    "stale": False,
-                    "stale_reason": "",
-                    "updated_at": event.timestamp,
-                }
-            )
-        elif event.event_type is EventType.superseded:
-            # The current fact_id was superseded by another fact (recorded in
-            # payload['superseded_by']). Mark it as inactive in active recall;
-            # the supersedes link on the new fact captures the relationship.
-            is_active = False
-            fact = Fact.model_validate(
-                {**fact.model_dump(), "updated_at": event.timestamp}
-            )
+        fact = _fact_after_event(fact, event)
+        is_active, is_forgotten = _lifecycle_after_event(
+            event.event_type,
+            is_active=is_active,
+            is_forgotten=is_forgotten,
+        )
 
     if fact is None:
         return None, False

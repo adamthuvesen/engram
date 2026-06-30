@@ -1,99 +1,133 @@
-/* Engram Dashboard — Anthropic brand theme */
+/* Engram Dashboard — flat, terminal-native theme.
+   No card boxes: content sits on the terminal background. Structure comes from
+   one outlined region per tab (its name set in the border via border-title),
+   whitespace, and a single indigo $accent reserved for active/interactive bits.
+   Plain tables — muted lowercase headers, no fills, no zebra, faint selection. */
 
 Screen {
     background: $background;
+    align: left top;
+    padding: 1 0 0 2;
 }
 
-/* ── Tab styling ── */
-TabbedContent {
+/* Bounds the whole UI so it doesn't sprawl on a large terminal. Shrinks to fit
+   smaller ones (width/height: 100%). Raise these two caps for a roomier layout. */
+#frame {
+    width: 100%;
     height: 100%;
+    max-width: 130;
+    max-height: 45;
+}
+
+/* ── Status line (top) ── */
+#status-bar {
+    dock: top;
+    height: 1;
+    width: 100%;
+    background: $background;
+    color: $text;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+/* ── Layout: status line / [ rail | content ] / footer ── */
+#main {
+    layout: horizontal;
+    height: 1fr;
+    width: 100%;
+}
+
+#sidebar {
+    width: 20;
+    height: 1fr;
+    padding: 1 1 0 0;
+}
+
+#sidebar-title {
+    width: 100%;
+    color: $text-muted;
+    text-style: bold;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+#nav {
+    width: 100%;
+    height: auto;
+    background: $background;
+    border: none;
+    padding: 0;
+}
+
+#nav > .option-list--option {
+    padding: 0 1;
+}
+
+/* Active section stays visible even when focus is in the content */
+#nav > .option-list--option-highlighted {
+    background: $panel;
+    color: $text;
+    text-style: bold;
+}
+
+#nav:focus > .option-list--option-highlighted {
+    background: $accent 20%;
+    color: $text;
+    text-style: bold;
+}
+
+/* ── Tabbed content drives the panes; its top bar is hidden (the rail nav-
+   igates instead). One section visible at a time. ── */
+TabbedContent {
+    height: 1fr;
+    width: 1fr;
+}
+
+TabbedContent > Tabs {
+    display: none;
 }
 
 TabPane {
-    padding: 1 1;
+    padding: 0 0 0 1;
     height: 1fr;
 }
 
-Tabs {
-    dock: top;
-    background: $surface;
-    height: 3;
-}
-
-Tab {
-    padding: 0 3;
-    color: $text-muted;
-}
-
-Tab:hover {
-    color: $text;
-}
-
-Tab.-active {
-    color: $text;
-    text-style: bold;
-    background: $background;
-}
-
-Underline {
-    color: $accent;
-}
-
-/* ── Header ── */
-Header {
-    dock: top;
-    background: $surface;
-    color: $text;
-    height: 1;
-}
-
-HeaderTitle {
-    color: $accent;
-    text-style: bold;
-}
-
-/* ── Footer ── */
-Footer {
-    dock: bottom;
-    background: $surface;
-}
-
-FooterKey {
-    background: $surface;
-}
-
-FooterKey .footer-key--key {
-    color: $accent;
-    background: $background;
-}
-
-FooterKey .footer-key--description {
-    color: $text-muted;
-}
-
-/* ── Dynamic footer label ── */
+/* ── Footer key line (bottom) ── */
 #dynamic-footer {
     dock: bottom;
     height: 1;
-    background: $surface;
+    background: $background;
     color: $text-muted;
-    padding: 0 2;
-    text-align: center;
+    padding: 0 1;
+    text-align: left;
 }
 
-/* ── Global DataTable ── */
+/* ── One outlined region per tab; its name lives in the border ── */
+OverviewScreen,
+TimelineScreen,
+FactsScreen,
+CandidatesScreen,
+ForgottenScreen,
+ProjectsScreen {
+    border: round $card-border;
+    border-title-color: $text-muted;
+    border-title-align: left;
+    padding: 0 1;
+}
+
+/* ── Tables: plain text on the background ── */
 DataTable {
     background: $background;
 }
 
 DataTable > .datatable--header {
-    background: $surface;
-    color: $accent;
-    text-style: bold;
+    background: $background;
+    color: $text-muted;
+    text-style: none;
 }
 
 DataTable > .datatable--cursor {
-    background: $accent 30%;
+    background: $accent 18%;
     color: $text;
 }
 
@@ -102,34 +136,67 @@ DataTable > .datatable--even-row {
 }
 
 DataTable > .datatable--odd-row {
-    background: $surface-lighten-1;
+    background: $background;
+}
+
+/* ── Inputs & selects: flat single-row controls, not boxes ── */
+Input {
+    height: 1;
+    border: none;
+    background: $panel;
+    padding: 0 1;
+}
+
+Input:focus {
+    background: $accent 18%;
+}
+
+Select {
+    height: 1;
+}
+
+Select > SelectCurrent {
+    border: none;
+    background: $panel;
+    padding: 0 1;
+}
+
+Select > SelectCurrent:focus,
+Select.-expanded > SelectCurrent {
+    background: $accent 18%;
+}
+
+Select > SelectOverlay {
+    border: round $card-border;
+    background: $surface;
 }
 
 /* ── Shared layout classes ── */
 .filter-bar {
-    height: 3;
+    height: 1;
     width: 100%;
     layout: horizontal;
-    padding: 0 1;
-    background: $surface;
+    padding: 0;
+    background: $background;
     dock: top;
+    margin-bottom: 1;
 }
 
 .filter-bar Input {
     width: 1fr;
-    margin: 0 1;
+    margin: 0 1 0 0;
 }
 
 .filter-bar Select {
     width: 24;
-    margin: 0 1;
+    margin: 0 1 0 0;
 }
 
 .filter-bar .cand-stats {
     width: 1fr;
     content-align: right middle;
     color: $text-muted;
-    padding: 0 2;
+    padding: 0 1;
 }
 
 .screen-body {
@@ -157,12 +224,13 @@ DataTable > .datatable--odd-row {
     dock: bottom;
     height: 1;
     color: $text-muted;
-    padding: 0 2;
+    padding: 0;
 }
 
+/* Section eyebrow inside a panel — quiet, lowercase by convention */
 .panel-title {
-    text-style: bold;
-    color: $accent;
+    text-style: none;
+    color: $text-muted;
     margin-bottom: 1;
 }
 
@@ -171,25 +239,15 @@ OverviewScreen {
     scrollbar-size: 1 1;
 }
 
-#stats-row {
-    height: auto;
+#stat-strip {
+    height: 1;
     width: 100%;
-    layout: horizontal;
     margin: 0 0 1 0;
+    color: $text-muted;
 }
-
-#stats-row StatCard {
-    margin: 0 1 0 0;
-}
-
-#stat-total .stat-value { color: $text; }
-#stat-active .stat-value { color: $stat-active; }
-#stat-forgotten .stat-value { color: $stat-forgotten; }
-#stat-expired .stat-value { color: $stat-expired; }
-#stat-candidates .stat-value { color: $stat-pending; }
 
 #distributions {
-    height: 20;
+    height: 18;
     width: 100%;
     layout: horizontal;
     margin: 0 0 1 0;
@@ -198,13 +256,12 @@ OverviewScreen {
 .dist-panel {
     width: 1fr;
     height: 1fr;
-    padding: 1 2;
-    background: $surface;
-    border: round $primary-background-lighten-1;
+    padding: 0;
+    background: $background;
 }
 
 #cat-panel {
-    margin-right: 1;
+    margin-right: 3;
 }
 
 OverviewScreen OptionList {
@@ -216,31 +273,29 @@ OverviewScreen OptionList {
 }
 
 OverviewScreen OptionList:focus > .option-list--option-highlighted {
-    background: $accent 25%;
+    background: $accent 18%;
 }
 
 OverviewScreen OptionList > .option-list--option-highlighted {
-    background: $surface-lighten-1;
+    background: transparent;
 }
 
 #activity-panel {
     height: auto;
     width: 100%;
-    padding: 1 2;
-    background: $surface;
-    border: round $primary-background-lighten-1;
-    margin-bottom: 1;
+    padding: 0;
+    background: $background;
+    margin-bottom: 0;
 }
 
 #activity-panel Sparkline {
     width: 100%;
-    height: 3;
+    height: 2;
 }
 
 .activity-stats {
     color: $text-muted;
     margin-top: 1;
-    text-align: center;
     width: 100%;
 }
 
@@ -248,7 +303,6 @@ OverviewScreen OptionList > .option-list--option-highlighted {
     height: 1;
     width: 100%;
     color: $text-muted;
-    text-align: center;
 }
 
 /* ── Timeline ── */
@@ -260,8 +314,7 @@ TimelineScreen {
 #timeline-chart {
     width: 100%;
     height: 1fr;
-    background: $surface;
-    border: round $primary-background-lighten-1;
+    background: $background;
     margin: 0 0 1 0;
 }
 
@@ -274,10 +327,9 @@ TimelineScreen {
 .spark-panel {
     width: 1fr;
     height: auto;
-    padding: 1;
-    background: $surface;
-    border: round $primary-background-lighten-1;
-    margin: 0 1;
+    padding: 0;
+    background: $background;
+    margin: 0 3 0 0;
 }
 
 .spark-panel Sparkline {
@@ -331,7 +383,7 @@ ProjectsScreen {
 
 #proj-list-header {
     height: auto;
-    padding: 1;
+    padding: 0 0 1 0;
 }
 
 ProjectsScreen DataTable {
@@ -354,23 +406,23 @@ ProjectDetailView {
 
 .proj-stat-box {
     width: 1fr;
-    height: 8;
-    padding: 1;
-    background: $surface;
-    border: round $primary-background-lighten-1;
-    margin: 0 1;
+    height: auto;
+    padding: 0 2 0 0;
+    background: $background;
+    margin: 0;
 }
 
 .proj-stat-box .stat-value {
     text-style: bold;
-    color: $accent;
+    color: $text;
 }
 
 #proj-search-bar {
-    height: 3;
+    height: 1;
     width: 100%;
-    padding: 0 1;
-    background: $surface;
+    padding: 0;
+    background: $background;
+    margin-bottom: 1;
 }
 
 #proj-search-bar Input {
@@ -401,8 +453,10 @@ CategoryDetailScreen {
 #cat-detail-container {
     width: 90%;
     height: 85%;
-    background: $surface;
+    background: $background;
     border: round $accent;
+    border-title-color: $accent;
+    border-title-align: left;
     padding: 1 2;
 }
 
@@ -415,10 +469,9 @@ CategoryDetailScreen {
 .cat-stat {
     width: 1fr;
     height: auto;
-    padding: 1;
-    margin: 0 1;
-    background: $panel;
-    border: round $primary-background-lighten-1;
+    padding: 0 2 0 0;
+    margin: 0;
+    background: $background;
 }
 
 #cat-search-input {
@@ -442,51 +495,20 @@ CategoryDetailScreen DataTable {
 
 CategoryDetailScreen .title {
     text-style: bold;
-    color: $accent;
+    color: $text;
     margin-bottom: 1;
 }
 
-/* ── Stat card ── */
-StatCard {
-    width: 1fr;
-    height: 6;
-    padding: 1 2 0 2;
-    background: $surface;
-    border: round $primary-background-lighten-1;
-    margin: 0 0;
-}
-
-StatCard .stat-label {
-    color: $text-muted;
-    text-style: bold;
-    text-align: center;
-    width: 100%;
-}
-
-StatCard .stat-value {
-    width: 100%;
-    text-align: center;
-    text-style: bold;
-    color: $accent;
-    margin: 0;
-}
-
-StatCard .stat-spark {
-    width: 100%;
-    height: 1;
-    margin-top: 0;
-}
-
-/* ── Fact detail panel ── */
+/* ── Fact detail panel — divider, not a box ── */
 FactDetail {
-    padding: 1 2;
-    background: $surface;
-    border: tall $accent;
+    padding: 0 0 0 2;
+    background: $background;
+    border-left: tall $card-border;
 }
 
 FactDetail .detail-title {
     text-style: bold;
-    color: $accent;
+    color: $text;
     margin-bottom: 1;
 }
 
@@ -514,7 +536,7 @@ ConfirmScreen {
     width: 48;
     height: auto;
     padding: 2 4;
-    background: $surface;
+    background: $background;
     border: round $accent;
 }
 
@@ -536,14 +558,14 @@ HelpScreen {
 #help-container {
     width: 72;
     max-height: 80%;
-    background: $surface;
+    background: $background;
     border: round $accent;
     padding: 1 2;
 }
 
 .help-title {
     text-style: bold;
-    color: $accent;
+    color: $text;
     text-align: center;
     width: 100%;
     margin-bottom: 1;

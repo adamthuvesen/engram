@@ -44,6 +44,7 @@ _THREAD_LOCKS_GUARD = threading.Lock()
 _STORE_LOCK_DEPTHS = threading.local()
 P = ParamSpec("P")
 R = TypeVar("R")
+ModelT = TypeVar("ModelT")
 
 # Lightweight suffix-stripping stemmer (no NLTK dependency)
 _STEM_SUFFIXES = (
@@ -268,6 +269,51 @@ def _store_lock_depths() -> dict[Path, int]:
     return depths
 
 
+def _load_jsonl_records(
+    path: Path, model: type[ModelT], corrupt_label: str
+) -> list[ModelT]:
+    if not path.exists():
+        return []
+
+    records: list[ModelT] = []
+    with path.open() as fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(model.model_validate_json(line))
+            except (ValueError, ValidationError) as exc:
+                logger.warning(
+                    "Skipping corrupt %s at line %d: %s",
+                    corrupt_label,
+                    lineno,
+                    exc,
+                )
+    return records
+
+
+def _validated_jsonl_records(
+    path: Path, model: type[ModelT], corrupt_label: str
+) -> tuple[list[ModelT], int]:
+    if not path.exists():
+        return [], 0
+
+    records: list[ModelT] = []
+    corrupt = 0
+    with path.open() as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(model.model_validate_json(line))
+            except Exception:
+                corrupt += 1
+                logger.warning("Corrupt %s line dropped: %s", corrupt_label, line[:80])
+    return records, corrupt
+
+
 def format_facts_for_llm(facts: list[Fact]) -> str:
     """Format facts as a numbered list for LLM context."""
     if not facts:
@@ -285,6 +331,89 @@ def format_facts_for_llm(facts: list[Fact]) -> str:
             meta += f" [supersedes: {fact.supersedes}]"
         lines.append(f"{i}. {meta} {fact.content} (id: {fact.id})")
     return "\n".join(lines)
+
+
+def _compaction_created_event(fact_id: str, fact: Fact) -> FactEvent:
+    return FactEvent(
+        event_type=EventType.created,
+        fact_id=fact_id,
+        timestamp=fact.created_at,
+        actor="compaction",
+        payload=fact.model_dump(),
+    )
+
+
+def _compaction_forgotten_event(fact_id: str, fact: Fact) -> FactEvent:
+    return FactEvent(
+        event_type=EventType.forgotten,
+        fact_id=fact_id,
+        timestamp=fact.updated_at,
+        actor="compaction",
+        payload={"reason": "compacted_tombstone"},
+    )
+
+
+def _compacted_event_log(
+    materialized: dict[str, tuple[Fact, bool]],
+    *,
+    keep_tombstones: bool,
+) -> tuple[list[FactEvent], int]:
+    compacted: list[FactEvent] = []
+    tombstones = 0
+    for fact_id, (fact, is_active) in materialized.items():
+        if not is_active:
+            if not keep_tombstones:
+                continue
+            compacted.append(_compaction_created_event(fact_id, fact))
+            compacted.append(_compaction_forgotten_event(fact_id, fact))
+            tombstones += 1
+        else:
+            compacted.append(_compaction_created_event(fact_id, fact))
+    return compacted, tombstones
+
+
+def _legacy_migration_events(facts: list[Fact]) -> tuple[list[FactEvent], int, int]:
+    events: list[FactEvent] = []
+    forgotten_count = 0
+    superseded_count = 0
+    for fact in facts:
+        events.append(
+            FactEvent(
+                event_type=EventType.created,
+                fact_id=fact.id,
+                timestamp=fact.created_at,
+                actor="migration",
+                payload=fact.model_dump(),
+            )
+        )
+        if fact.supersedes:
+            superseded_count += 1
+            events.append(
+                FactEvent(
+                    event_type=EventType.superseded,
+                    fact_id=fact.supersedes,
+                    timestamp=fact.updated_at,
+                    actor="migration",
+                    payload={"superseded_by": fact.id},
+                )
+            )
+        if fact.confidence < MIN_ACTIVE_CONFIDENCE:
+            forgotten_count += 1
+            events.append(
+                FactEvent(
+                    event_type=EventType.forgotten,
+                    fact_id=fact.id,
+                    timestamp=fact.updated_at,
+                    actor="migration",
+                    payload={"reason": "migrated_from_legacy_low_confidence"},
+                )
+            )
+    return events, forgotten_count, superseded_count
+
+
+def _unique_ids(ids: list[str]) -> list[str]:
+    seen: set[str] = set()
+    return [item_id for item_id in ids if not (item_id in seen or seen.add(item_id))]
 
 
 @contextmanager
@@ -436,17 +565,7 @@ class FactStore:
                     fact = fact.model_copy(update={"confidence": 0.0})
                 out.append(fact)
             return out
-        facts = []
-        with self.facts_path.open() as fh:
-            for lineno, line in enumerate(fh, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    facts.append(Fact.model_validate_json(line))
-                except (ValueError, ValidationError) as exc:
-                    logger.warning("Skipping corrupt fact at line %d: %s", lineno, exc)
-        return facts
+        return _load_jsonl_records(self.facts_path, Fact, "fact")
 
     def load_candidates(
         self,
@@ -455,27 +574,15 @@ class FactStore:
         limit: int | None = None,
     ) -> list[MemoryCandidate]:
         """Load memory candidates filtered by status and project."""
-        if not self.candidates_path.exists():
-            return []
-
         candidates = []
-        with self.candidates_path.open() as fh:
-            for lineno, line in enumerate(fh, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    candidate = MemoryCandidate.model_validate_json(line)
-                except (ValueError, ValidationError) as exc:
-                    logger.warning(
-                        "Skipping corrupt candidate at line %d: %s", lineno, exc
-                    )
-                    continue
-                if status and candidate.status != status:
-                    continue
-                if project and candidate.project and candidate.project != project:
-                    continue
-                candidates.append(candidate)
+        for candidate in _load_jsonl_records(
+            self.candidates_path, MemoryCandidate, "candidate"
+        ):
+            if status and candidate.status != status:
+                continue
+            if project and candidate.project and candidate.project != project:
+                continue
+            candidates.append(candidate)
 
         candidates.sort(key=lambda c: c.updated_at, reverse=True)
         if limit:
@@ -551,44 +658,17 @@ class FactStore:
 
         now = datetime.now(timezone.utc)
         recency_cutoff = now - timedelta(days=7)
+        query_lower = query.lower()
 
         scored: list[tuple[int, Fact]] = []
         for fact in facts:
-            evidence_score = 0
-            content_unigrams, content_bigrams = self._get_cached_tokens(fact)
-
-            # Unigram overlap (stemmed)
-            overlap = len(query_unigrams & content_unigrams)
-            evidence_score += overlap * 5
-
-            # Bigram overlap — catches "coding style" vs "coding_style"
-            bigram_overlap = len(query_bigrams & content_bigrams)
-            evidence_score += bigram_overlap * 3
-
-            # Tag overlap (stem query tokens, compare to tags)
-            tag_set = {_stem(t) for t in fact.tags}
-            tag_overlap = len(query_unigrams & tag_set)
-            evidence_score += tag_overlap * 4
-
-            if fact.project and fact.project in query.lower():
-                evidence_score += 6
-            if any(token in fact.category.value for token in query_unigrams):
-                evidence_score += 3
-
-            score = evidence_score
-            if fact.supersedes:
-                score += 1
-            if fact.expires_at:
-                score += 1
-
-            # Recency boost
-            if fact.updated_at >= recency_cutoff:
-                score += 2
-
-            # Confidence boost
-            if fact.confidence > 0.8:
-                score += 1
-
+            score, evidence_score = self._prefilter_score(
+                fact,
+                query_lower=query_lower,
+                query_unigrams=query_unigrams,
+                query_bigrams=query_bigrams,
+                recency_cutoff=recency_cutoff,
+            )
             if evidence_score > 0:
                 scored.append((score, fact))
 
@@ -603,6 +683,41 @@ class FactStore:
             seen_ids = {fact.id for _, fact in scored}
             scored.extend((0, fact) for fact in facts if fact.id not in seen_ids)
         return scored[:limit] if limit else scored
+
+    def _prefilter_score(
+        self,
+        fact: Fact,
+        *,
+        query_lower: str,
+        query_unigrams: set[str],
+        query_bigrams: set[str],
+        recency_cutoff: datetime,
+    ) -> tuple[int, int]:
+        evidence_score = 0
+        content_unigrams, content_bigrams = self._get_cached_tokens(fact)
+
+        evidence_score += len(query_unigrams & content_unigrams) * 5
+        evidence_score += len(query_bigrams & content_bigrams) * 3
+
+        tag_set = {_stem(tag) for tag in fact.tags}
+        evidence_score += len(query_unigrams & tag_set) * 4
+
+        if fact.project and fact.project in query_lower:
+            evidence_score += 6
+        if any(token in fact.category.value for token in query_unigrams):
+            evidence_score += 3
+
+        score = evidence_score
+        if fact.supersedes:
+            score += 1
+        if fact.expires_at:
+            score += 1
+        if fact.updated_at >= recency_cutoff:
+            score += 2
+        if fact.confidence > 0.8:
+            score += 1
+
+        return score, evidence_score
 
     @property
     def pre_eventlog_backup_path(self) -> Path:
@@ -642,67 +757,9 @@ class FactStore:
 
             shutil.copy2(self.facts_path, self.pre_eventlog_backup_path)
 
-            # Build event sequence: meta sentinel, then created (+ optional
-            # forgotten / superseded) events for each legacy fact.
-            events: list[FactEvent] = []
-            forgotten_count = 0
-            superseded_count = 0
             now = datetime.now(timezone.utc)
-            for fact in facts:
-                events.append(
-                    FactEvent(
-                        event_type=EventType.created,
-                        fact_id=fact.id,
-                        timestamp=fact.created_at,
-                        actor="migration",
-                        payload=fact.model_dump(),
-                    )
-                )
-                if fact.supersedes:
-                    superseded_count += 1
-                    events.append(
-                        FactEvent(
-                            event_type=EventType.superseded,
-                            fact_id=fact.supersedes,
-                            timestamp=fact.updated_at,
-                            actor="migration",
-                            payload={"superseded_by": fact.id},
-                        )
-                    )
-                if fact.confidence < MIN_ACTIVE_CONFIDENCE:
-                    forgotten_count += 1
-                    events.append(
-                        FactEvent(
-                            event_type=EventType.forgotten,
-                            fact_id=fact.id,
-                            timestamp=fact.updated_at,
-                            actor="migration",
-                            payload={"reason": "migrated_from_legacy_low_confidence"},
-                        )
-                    )
-
-            meta = EventLogMeta(migrated_at=now)
-            tmp_path: Path | None = None
-            with _locked_write(self.facts_path):
-                try:
-                    with tempfile.NamedTemporaryFile(
-                        mode="w",
-                        dir=self.facts_path.parent,
-                        prefix=self.facts_path.stem,
-                        suffix=".tmp",
-                        delete=False,
-                    ) as f:
-                        tmp_path = Path(f.name)
-                        f.write(meta.model_dump_json() + "\n")
-                        for event in events:
-                            f.write(event.model_dump_json() + "\n")
-                        f.flush()
-                        os.fsync(f.fileno())
-                    os.replace(tmp_path, self.facts_path)
-                    tmp_path = None
-                finally:
-                    if tmp_path and tmp_path.exists():
-                        tmp_path.unlink()
+            events, forgotten_count, superseded_count = _legacy_migration_events(facts)
+            self._rewrite_event_log(EventLogMeta(migrated_at=now), events)
 
             summary = {
                 "migrated_facts": len(facts),
@@ -791,6 +848,60 @@ class FactStore:
                         f.write(candidate.model_dump_json() + "\n")
         logger.info("Appended %d memory candidate(s) to queue", len(candidates))
 
+    def _facts_by_id(self) -> dict[str, Fact]:
+        return {fact.id: fact for fact in self.load_facts()}
+
+    def _active_fact_by_id(self, fact_id: str) -> Fact | None:
+        fact = self._facts_by_id().get(fact_id)
+        if fact is None or fact.confidence == 0.0:
+            return None
+        return fact
+
+    def _event_and_result_for_update(
+        self, existing: Fact, updates: dict, now: datetime
+    ) -> tuple[FactEvent, Fact]:
+        if updates.get("confidence") == 0.0 and len(updates) == 1:
+            return (
+                FactEvent(
+                    event_type=EventType.forgotten,
+                    fact_id=existing.id,
+                    timestamp=now,
+                    payload={},
+                ),
+                existing.model_copy(update={"confidence": 0.0, "updated_at": now}),
+            )
+
+        return (
+            FactEvent(
+                event_type=EventType.edited,
+                fact_id=existing.id,
+                timestamp=now,
+                payload=updates,
+            ),
+            Fact.model_validate(
+                {**existing.model_dump(), **updates, "updated_at": now}
+            ),
+        )
+
+    def _append_fact_event(
+        self,
+        event_type: EventType,
+        fact_id: str,
+        now: datetime,
+        payload: dict | None = None,
+    ) -> None:
+        self.append_events(
+            [
+                FactEvent(
+                    event_type=event_type,
+                    fact_id=fact_id,
+                    timestamp=now,
+                    payload=payload or {},
+                )
+            ]
+        )
+        self._tok_cache.pop(fact_id, None)
+
     def update_fact(self, fact_id: str, **updates) -> Fact | None:
         """Update a fact by appending an ``edited`` event to the log.
 
@@ -800,44 +911,17 @@ class FactStore:
         of an edit, preserving the "confidence-zero means inactive" contract.
         """
         with _locked_store(self.data_dir):
-            facts_by_id = {fact.id: fact for fact in self.load_facts()}
-            existing = facts_by_id.get(fact_id)
+            existing = self._facts_by_id().get(fact_id)
             if existing is None:
                 return None
             if existing.confidence == 0.0 and "confidence" not in updates:
                 return None
 
             now = datetime.now(timezone.utc)
-
-            # Pure forget path — emit a forgotten event, not an edit.
-            if updates.get("confidence") == 0.0 and len(updates) == 1:
-                self.append_events(
-                    [
-                        FactEvent(
-                            event_type=EventType.forgotten,
-                            fact_id=fact_id,
-                            timestamp=now,
-                            payload={},
-                        )
-                    ]
-                )
-                return existing.model_copy(
-                    update={"confidence": 0.0, "updated_at": now}
-                )
-
-            self.append_events(
-                [
-                    FactEvent(
-                        event_type=EventType.edited,
-                        fact_id=fact_id,
-                        timestamp=now,
-                        payload=updates,
-                    )
-                ]
-            )
+            event, updated = self._event_and_result_for_update(existing, updates, now)
+            self.append_events([event])
             self._tok_cache.pop(fact_id, None)
-            merged = {**existing.model_dump(), **updates, "updated_at": now}
-            return Fact.model_validate(merged)
+            return updated
 
     def update_candidate(self, candidate_id: str, **updates) -> MemoryCandidate | None:
         """Update a candidate in-place by rewriting the candidate JSONL file."""
@@ -920,7 +1004,7 @@ class FactStore:
             return []
 
         with _locked_store(self.data_dir):
-            facts_by_id = {fact.id: fact for fact in self.load_facts()}
+            facts_by_id = self._facts_by_id()
             now = datetime.now(timezone.utc)
             events: list[FactEvent] = []
             updated_facts: list[Fact] = []
@@ -930,36 +1014,11 @@ class FactStore:
                 if existing is None:
                     continue
 
-                if field_updates.get("confidence") == 0.0 and len(field_updates) == 1:
-                    events.append(
-                        FactEvent(
-                            event_type=EventType.forgotten,
-                            fact_id=fact_id,
-                            timestamp=now,
-                            payload={},
-                        )
-                    )
-                    updated_facts.append(
-                        existing.model_copy(
-                            update={"confidence": 0.0, "updated_at": now}
-                        )
-                    )
-                    continue
-
-                events.append(
-                    FactEvent(
-                        event_type=EventType.edited,
-                        fact_id=fact_id,
-                        timestamp=now,
-                        payload=field_updates,
-                    )
+                event, updated = self._event_and_result_for_update(
+                    existing, field_updates, now
                 )
-                merged = {
-                    **existing.model_dump(),
-                    **field_updates,
-                    "updated_at": now,
-                }
-                updated_facts.append(Fact.model_validate(merged))
+                events.append(event)
+                updated_facts.append(updated)
 
             if events:
                 self.append_events(events)
@@ -1012,21 +1071,16 @@ class FactStore:
     def forget(self, fact_id: str, reason: str = "") -> Fact | None:
         """Soft-delete a fact by appending a ``forgotten`` event."""
         with _locked_store(self.data_dir):
-            existing = next((f for f in self.load_facts() if f.id == fact_id), None)
-            if existing is None or existing.confidence == 0.0:
+            existing = self._active_fact_by_id(fact_id)
+            if existing is None:
                 return None
             now = datetime.now(timezone.utc)
-            self.append_events(
-                [
-                    FactEvent(
-                        event_type=EventType.forgotten,
-                        fact_id=fact_id,
-                        timestamp=now,
-                        payload={"reason": reason} if reason else {},
-                    )
-                ]
+            self._append_fact_event(
+                EventType.forgotten,
+                fact_id,
+                now,
+                {"reason": reason} if reason else {},
             )
-            self._tok_cache.pop(fact_id, None)
             if reason:
                 logger.info("Forgot fact %s: %s", fact_id, reason)
             return existing.model_copy(update={"confidence": 0.0, "updated_at": now})
@@ -1054,17 +1108,7 @@ class FactStore:
                 return None
 
             now = datetime.now(timezone.utc)
-            self.append_events(
-                [
-                    FactEvent(
-                        event_type=EventType.restored,
-                        fact_id=fact_id,
-                        timestamp=now,
-                        payload={},
-                    )
-                ]
-            )
-            self._tok_cache.pop(fact_id, None)
+            self._append_fact_event(EventType.restored, fact_id, now)
             logger.info("Restored fact %s", fact_id)
             return fact.model_copy(update={"updated_at": now})
 
@@ -1089,9 +1133,8 @@ class FactStore:
         or was already forgotten.
         """
         with _locked_store(self.data_dir):
-            facts_by_id = {fact.id: fact for fact in self.load_facts()}
-            existing = facts_by_id.get(fact_id)
-            if existing is None or existing.confidence == 0.0:
+            existing = self._active_fact_by_id(fact_id)
+            if existing is None:
                 return None
 
             now = datetime.now(timezone.utc)
@@ -1139,6 +1182,73 @@ class FactStore:
         logger.info("Corrected fact %s -> %s: %s", fact_id, new_fact.id, reason)
         return new_fact
 
+    def _active_sources_for_merge(self, source_ids: list[str]) -> list[Fact] | None:
+        facts_by_id = self._facts_by_id()
+        sources: list[Fact] = []
+        for source_id in source_ids:
+            fact = facts_by_id.get(source_id)
+            if fact is None or fact.confidence == 0.0:
+                return None
+            sources.append(fact)
+        if len({fact.project for fact in sources}) > 1:
+            return None
+        return sources
+
+    def _merged_fact(
+        self,
+        sources: list[Fact],
+        merged_content: str,
+        *,
+        category: FactCategory | None,
+        tags: list[str] | None,
+        project: str | None,
+        reason: str,
+        now: datetime,
+    ) -> Fact:
+        primary = sources[0]
+        return Fact(
+            id=uuid4().hex[:12],
+            category=category or primary.category,
+            content=merged_content,
+            source=primary.source,
+            confidence=max(fact.confidence for fact in sources),
+            created_at=now,
+            updated_at=now,
+            observed_at=now,
+            project=project if project is not None else primary.project,
+            tags=tags if tags is not None else list(primary.tags),
+            supersedes=primary.id,
+            evidence_kind=primary.evidence_kind,
+            why_store=reason or "merged",
+        )
+
+    def _merge_events(
+        self,
+        sources: list[Fact],
+        new_fact: Fact,
+        *,
+        reason: str,
+        now: datetime,
+    ) -> list[FactEvent]:
+        events = [
+            FactEvent(
+                event_type=EventType.superseded,
+                fact_id=source.id,
+                timestamp=now,
+                payload={"superseded_by": new_fact.id, "reason": reason},
+            )
+            for source in sources
+        ]
+        events.append(
+            FactEvent(
+                event_type=EventType.created,
+                fact_id=new_fact.id,
+                timestamp=now,
+                payload=new_fact.model_dump(),
+            )
+        )
+        return events
+
     def merge_facts(
         self,
         source_ids: list[str],
@@ -1161,58 +1271,30 @@ class FactStore:
         if len(source_ids) < 2:
             return None
 
-        # Deduplicate while preserving order.
-        seen: set[str] = set()
-        unique_ids = [sid for sid in source_ids if not (sid in seen or seen.add(sid))]
+        unique_ids = _unique_ids(source_ids)
         if len(unique_ids) < 2:
             return None
 
         with _locked_store(self.data_dir):
-            facts_by_id = {fact.id: fact for fact in self.load_facts()}
-            sources: list[Fact] = []
-            for sid in unique_ids:
-                fact = facts_by_id.get(sid)
-                if fact is None or fact.confidence == 0.0:
-                    return None
-                sources.append(fact)
-
-            scopes = {fact.project for fact in sources}
-            if len(scopes) > 1:
+            sources = self._active_sources_for_merge(unique_ids)
+            if sources is None:
                 return None
 
-            primary = sources[0]
             now = datetime.now(timezone.utc)
-            new_fact = Fact(
-                id=uuid4().hex[:12],
-                category=category or primary.category,
-                content=merged_content,
-                source=primary.source,
-                confidence=max(f.confidence for f in sources),
-                created_at=now,
-                updated_at=now,
-                observed_at=now,
-                project=project if project is not None else primary.project,
-                tags=tags if tags is not None else list(primary.tags),
-                supersedes=primary.id,
-                evidence_kind=primary.evidence_kind,
-                why_store=reason or "merged",
+            new_fact = self._merged_fact(
+                sources,
+                merged_content,
+                category=category,
+                tags=tags,
+                project=project,
+                reason=reason,
+                now=now,
             )
-            events: list[FactEvent] = [
-                FactEvent(
-                    event_type=EventType.superseded,
-                    fact_id=src.id,
-                    timestamp=now,
-                    payload={"superseded_by": new_fact.id, "reason": reason},
-                )
-                for src in sources
-            ]
-            events.append(
-                FactEvent(
-                    event_type=EventType.created,
-                    fact_id=new_fact.id,
-                    timestamp=now,
-                    payload=new_fact.model_dump(),
-                )
+            events = self._merge_events(
+                sources,
+                new_fact,
+                reason=reason,
+                now=now,
             )
             self.append_events(events)
             for src in sources:
@@ -1232,21 +1314,16 @@ class FactStore:
     def mark_stale(self, fact_id: str, reason: str = "") -> Fact | None:
         """Mark a fact stale by appending a ``stale`` event."""
         with _locked_store(self.data_dir):
-            existing = next((f for f in self.load_facts() if f.id == fact_id), None)
-            if existing is None or existing.confidence == 0.0:
+            existing = self._active_fact_by_id(fact_id)
+            if existing is None:
                 return None
             now = datetime.now(timezone.utc)
-            self.append_events(
-                [
-                    FactEvent(
-                        event_type=EventType.stale,
-                        fact_id=fact_id,
-                        timestamp=now,
-                        payload={"reason": reason} if reason else {},
-                    )
-                ]
+            self._append_fact_event(
+                EventType.stale,
+                fact_id,
+                now,
+                {"reason": reason} if reason else {},
             )
-            self._tok_cache.pop(fact_id, None)
             self.log_ingestion(
                 IngestionRecord(
                     source="mark_stale",
@@ -1262,21 +1339,11 @@ class FactStore:
     def unmark_stale(self, fact_id: str) -> Fact | None:
         """Reverse a stale marking by appending an ``unstale`` event."""
         with _locked_store(self.data_dir):
-            existing = next((f for f in self.load_facts() if f.id == fact_id), None)
-            if existing is None or existing.confidence == 0.0:
+            existing = self._active_fact_by_id(fact_id)
+            if existing is None:
                 return None
             now = datetime.now(timezone.utc)
-            self.append_events(
-                [
-                    FactEvent(
-                        event_type=EventType.unstale,
-                        fact_id=fact_id,
-                        timestamp=now,
-                        payload={},
-                    )
-                ]
-            )
-            self._tok_cache.pop(fact_id, None)
+            self._append_fact_event(EventType.unstale, fact_id, now)
             return existing.model_copy(
                 update={"stale": False, "stale_reason": "", "updated_at": now}
             )
@@ -1416,24 +1483,9 @@ class FactStore:
                 os.fsync(f.fileno())
 
     def _load_transactions(self) -> list[StoreTransaction]:
-        if not self.transaction_log_path.exists():
-            return []
-
-        transactions: list[StoreTransaction] = []
-        with self.transaction_log_path.open() as fh:
-            for lineno, line in enumerate(fh, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    transactions.append(StoreTransaction.model_validate_json(line))
-                except (ValueError, ValidationError) as exc:
-                    logger.warning(
-                        "Skipping corrupt transaction at line %d: %s",
-                        lineno,
-                        exc,
-                    )
-        return transactions
+        return _load_jsonl_records(
+            self.transaction_log_path, StoreTransaction, "transaction"
+        )
 
     def _pending_transactions(self) -> list[StoreTransaction]:
         prepared: dict[str, StoreTransaction] = {}
@@ -1491,66 +1543,14 @@ class FactStore:
             materialized = materialize_events(events)
 
             now = datetime.now(timezone.utc)
-            compacted: list[FactEvent] = []
-            tombstones = 0
-            for fact_id, (fact, is_active) in materialized.items():
-                if not is_active:
-                    if not keep_tombstones:
-                        continue
-                    compacted.append(
-                        FactEvent(
-                            event_type=EventType.created,
-                            fact_id=fact_id,
-                            timestamp=fact.created_at,
-                            actor="compaction",
-                            payload=fact.model_dump(),
-                        )
-                    )
-                    compacted.append(
-                        FactEvent(
-                            event_type=EventType.forgotten,
-                            fact_id=fact_id,
-                            timestamp=fact.updated_at,
-                            actor="compaction",
-                            payload={"reason": "compacted_tombstone"},
-                        )
-                    )
-                    tombstones += 1
-                else:
-                    compacted.append(
-                        FactEvent(
-                            event_type=EventType.created,
-                            fact_id=fact_id,
-                            timestamp=fact.created_at,
-                            actor="compaction",
-                            payload=fact.model_dump(),
-                        )
-                    )
+            compacted, tombstones = _compacted_event_log(
+                materialized,
+                keep_tombstones=keep_tombstones,
+            )
 
             sentinel.write_text(f"compaction started at {now.isoformat()}\n")
             try:
-                meta = EventLogMeta(migrated_at=now)
-                tmp_path: Path | None = None
-                with _locked_write(self.facts_path):
-                    try:
-                        with tempfile.NamedTemporaryFile(
-                            mode="w",
-                            dir=self.facts_path.parent,
-                            prefix=self.facts_path.stem,
-                            suffix=".tmp",
-                            delete=False,
-                        ) as fh:
-                            tmp_path = Path(fh.name)
-                            fh.write(meta.model_dump_json() + "\n")
-                            for event in compacted:
-                                fh.write(event.model_dump_json() + "\n")
-                            fh.flush()
-                            os.fsync(fh.fileno())
-                        os.replace(tmp_path, self.facts_path)
-                        tmp_path = None
-                    finally:
-                        if tmp_path and tmp_path.exists():
-                            tmp_path.unlink()
+                self._rewrite_event_log(EventLogMeta(migrated_at=now), compacted)
             finally:
                 sentinel.unlink(missing_ok=True)
 
@@ -1653,22 +1653,62 @@ class FactStore:
 
     def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
         """Load recent recall log entries."""
-        if not self.recall_log_path.exists():
-            return []
-        records = []
-        with self.recall_log_path.open() as fh:
-            for lineno, line in enumerate(fh, 1):
+        records = _load_jsonl_records(self.recall_log_path, RecallRecord, "recall log")
+        records.sort(key=lambda r: r.timestamp, reverse=True)
+        return records[:limit] if limit is not None else records
+
+    def _validated_event_log_records(
+        self,
+    ) -> tuple[EventLogMeta | None, list[FactEvent], int]:
+        meta: EventLogMeta | None = None
+        events: list[FactEvent] = []
+        corrupt = 0
+        first_data_line = True
+        with self.facts_path.open() as fh:
+            for line in fh:
                 line = line.strip()
                 if not line:
                     continue
+                if first_data_line:
+                    first_data_line = False
+                    try:
+                        meta = EventLogMeta.model_validate_json(line)
+                        continue
+                    except (ValueError, ValidationError):
+                        pass
                 try:
-                    records.append(RecallRecord.model_validate_json(line))
-                except (ValueError, ValidationError) as exc:
-                    logger.warning(
-                        "Skipping corrupt recall log at line %d: %s", lineno, exc
-                    )
-        records.sort(key=lambda r: r.timestamp, reverse=True)
-        return records[:limit] if limit is not None else records
+                    events.append(FactEvent.model_validate_json(line))
+                except Exception:
+                    corrupt += 1
+                    logger.warning("Corrupt facts line dropped: %s", line[:80])
+        return meta, events, corrupt
+
+    def _rewrite_event_log(
+        self,
+        meta: EventLogMeta,
+        events: list[FactEvent],
+    ) -> None:
+        tmp_path: Path | None = None
+        with _locked_write(self.facts_path):
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    dir=self.facts_path.parent,
+                    prefix=self.facts_path.stem,
+                    suffix=".tmp",
+                    delete=False,
+                ) as fh:
+                    tmp_path = Path(fh.name)
+                    fh.write(meta.model_dump_json() + "\n")
+                    for event in events:
+                        fh.write(event.model_dump_json() + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_path, self.facts_path)
+                tmp_path = None
+            finally:
+                if tmp_path and tmp_path.exists():
+                    tmp_path.unlink()
 
     def repair(self) -> dict:
         """Recover from truncated/corrupt JSONL lines.
@@ -1684,68 +1724,18 @@ class FactStore:
         # facts.jsonl — format-aware
         if self.facts_path.exists():
             if self._is_event_log_format():
-                meta: EventLogMeta | None = None
-                events: list[FactEvent] = []
-                corrupt = 0
-                first_data_line = True
-                with self.facts_path.open() as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        if first_data_line:
-                            first_data_line = False
-                            try:
-                                meta = EventLogMeta.model_validate_json(line)
-                                continue
-                            except (ValueError, ValidationError):
-                                pass
-                        try:
-                            events.append(FactEvent.model_validate_json(line))
-                        except Exception:
-                            corrupt += 1
-                            logger.warning("Corrupt facts line dropped: %s", line[:80])
+                meta, events, corrupt = self._validated_event_log_records()
                 if corrupt > 0:
-                    meta = meta or EventLogMeta()
-                    tmp_path: Path | None = None
-                    with _locked_write(self.facts_path):
-                        try:
-                            with tempfile.NamedTemporaryFile(
-                                mode="w",
-                                dir=self.facts_path.parent,
-                                prefix=self.facts_path.stem,
-                                suffix=".tmp",
-                                delete=False,
-                            ) as f:
-                                tmp_path = Path(f.name)
-                                f.write(meta.model_dump_json() + "\n")
-                                for event in events:
-                                    f.write(event.model_dump_json() + "\n")
-                                f.flush()
-                                os.fsync(f.fileno())
-                            os.replace(tmp_path, self.facts_path)
-                            tmp_path = None
-                        finally:
-                            if tmp_path and tmp_path.exists():
-                                tmp_path.unlink()
+                    self._rewrite_event_log(meta or EventLogMeta(), events)
                 # Treat unique active fact_ids as the "valid" count to preserve
                 # the legacy semantic the caller checks.
                 materialized = materialize_events(events)
                 result["facts_valid"] = len(materialized)
                 result["facts_corrupt"] = corrupt
             else:
-                valid_facts: list[Fact] = []
-                corrupt = 0
-                with self.facts_path.open() as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            valid_facts.append(Fact.model_validate_json(line))
-                        except Exception:
-                            corrupt += 1
-                            logger.warning("Corrupt facts line dropped: %s", line[:80])
+                valid_facts, corrupt = _validated_jsonl_records(
+                    self.facts_path, Fact, "facts"
+                )
                 if corrupt > 0:
                     self._rewrite(valid_facts)
                 result["facts_valid"] = len(valid_facts)
@@ -1756,20 +1746,9 @@ class FactStore:
 
         # candidates.jsonl — unchanged legacy semantics
         if self.candidates_path.exists():
-            valid_candidates: list[MemoryCandidate] = []
-            corrupt = 0
-            with self.candidates_path.open() as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        valid_candidates.append(
-                            MemoryCandidate.model_validate_json(line)
-                        )
-                    except Exception:
-                        corrupt += 1
-                        logger.warning("Corrupt candidates line dropped: %s", line[:80])
+            valid_candidates, corrupt = _validated_jsonl_records(
+                self.candidates_path, MemoryCandidate, "candidates"
+            )
             if corrupt > 0:
                 self._rewrite(valid_candidates, path=self.candidates_path)
             result["candidates_valid"] = len(valid_candidates)

@@ -34,16 +34,43 @@ KEYBINDINGS: list[tuple[str, str, str]] = [
 ]
 
 # Compact hints for the dynamic footer, keyed by widget context.
+# Keys are accent-highlighted; groups separated by " | ", items by " · ".
+_GLOBAL = "   [dim]|[/]   [$accent]t[/] theme · [$accent]?[/] help · [$accent]q[/] quit"
+
+
+def _hint(items: str) -> str:
+    return items + _GLOBAL
+
+
 FOOTER_HINTS: dict[str, str] = {
-    "facts-table": "↑↓ nav  Enter detail  / search  s sort  Space select  f forget",
-    "cand-table": "↑↓ nav  Enter detail  s sort  Space select  a approve  r reject",
-    "forgotten-table": "↑↓ nav  Enter detail  s sort  Space select  u restore",
-    "proj-overview-table": "↑↓ nav  Enter drill in  s sort",
-    "proj-detail-table": "↑↓ nav  Enter detail  / search  Esc back",
-    "cat-detail-table": "↑↓ nav  Enter detail  / search",
-    "search-input": "Type to filter  ↓ or Tab to table  Esc close",
-    "filter": "← → switch filters  ↓ to table",
-    "default": "? help  1-6 tabs  t theme  q quit",
+    "facts-table": _hint(
+        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]/[/] search · "
+        "[$accent]s[/] sort · [$accent]space[/] select · [$accent]f[/] forget"
+    ),
+    "cand-table": _hint(
+        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]s[/] sort · "
+        "[$accent]space[/] select · [$accent]a[/] approve · [$accent]r[/] reject"
+    ),
+    "forgotten-table": _hint(
+        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]s[/] sort · "
+        "[$accent]space[/] select · [$accent]u[/] restore"
+    ),
+    "proj-overview-table": _hint(
+        "[$accent]↑↓[/] nav · [$accent]↵[/] drill in · [$accent]s[/] sort"
+    ),
+    "proj-detail-table": _hint(
+        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]/[/] search · "
+        "[$accent]esc[/] back"
+    ),
+    "cat-detail-table": _hint(
+        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]/[/] search"
+    ),
+    "search-input": _hint(
+        "type to filter · [$accent]↓[/] or [$accent]tab[/] to table · "
+        "[$accent]esc[/] close"
+    ),
+    "filter": _hint("[$accent]← →[/] switch filters · [$accent]↓[/] to table"),
+    "default": "[$accent]1-6[/] tabs · [$accent]t[/] theme · [$accent]?[/] help · [$accent]q[/] quit",
 }
 
 

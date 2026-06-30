@@ -5,8 +5,14 @@ from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import DataTable, Label, Select
 
-from engram.dashboard.constants import NO_PROJECT_LABEL
-from engram.dashboard.data import DashboardData
+from engram.dashboard.data import DashboardData, shorten_project
+from engram.dashboard.tables import (
+    focus_nav_from_top_row,
+    handle_table_key,
+    item_by_id,
+    next_sort_state,
+    short_cell,
+)
 from engram.dashboard.widgets.fact_detail import FactDetail
 from engram.core.models import CandidateStatus, MemoryCandidate
 
@@ -51,15 +57,10 @@ class CandidatesScreen(Container):
                 yield DataTable(id="cand-table", cursor_type="row")
             yield FactDetail(id="cand-detail", classes="detail-pane")
 
-        yield Label(
-            "↑↓ nav  Enter detail  s sort  Space select  a approve  r reject",
-            classes="hint",
-        )
-
     def on_mount(self) -> None:
         table = self.query_one("#cand-table", DataTable)
         table.add_columns(
-            "", "ID", "Status", "Category", "Project", "Content", "Why Store"
+            "", "id", "status", "category", "project", "content", "why store"
         )
         self._populate_table()
 
@@ -76,9 +77,9 @@ class CandidatesScreen(Container):
                 c.id,
                 f"{status_icon} {c.status.value}",
                 c.category.value,
-                c.project or NO_PROJECT_LABEL,
-                c.content[:45] + ("..." if len(c.content) > 45 else ""),
-                c.why_store[:25] + ("..." if len(c.why_store) > 25 else ""),
+                shorten_project(c.project),
+                short_cell(c.content, 45),
+                short_cell(c.why_store, 25),
                 key=c.id,
             )
 
@@ -113,31 +114,25 @@ class CandidatesScreen(Container):
                 detail.update_fact(candidate)
 
     def _find_candidate(self, cid: str) -> MemoryCandidate | None:
-        for c in self._data.candidates:
-            if c.id == cid:
-                return c
-        return None
+        return item_by_id(self._data.candidates, cid)
 
     def _get_pending_targets(self) -> list[str]:
+        pending_ids = {
+            c.id for c in self._data.candidates if c.status == CandidateStatus.pending
+        }
         if self._selected_ids:
-            return [
-                cid
-                for cid in self._selected_ids
-                if any(
-                    c.id == cid and c.status == CandidateStatus.pending
-                    for c in self._data.candidates
-                )
-            ]
+            return [cid for cid in self._selected_ids if cid in pending_ids]
         if self._selected and self._selected.status == CandidateStatus.pending:
             return [self._selected.id]
         return []
 
     def _cycle_sort(self, reverse: bool) -> None:
-        if reverse:
-            self._sort_reverse = not self._sort_reverse
-        else:
-            self._sort_index = (self._sort_index + 1) % len(self.SORT_COLUMNS)
-        col = self.SORT_COLUMNS[self._sort_index]
+        self._sort_index, self._sort_reverse, col = next_sort_state(
+            self.SORT_COLUMNS,
+            self._sort_index,
+            self._sort_reverse,
+            reverse=reverse,
+        )
         self._filtered.sort(
             key=lambda c: str(getattr(c, col) or ""),
             reverse=self._sort_reverse,
@@ -150,14 +145,7 @@ class CandidatesScreen(Container):
         table = self.query_one("#cand-table", DataTable)
         focused = self.app.focused
 
-        if focused is table and event.key == "up" and table.cursor_row == 0:
-            event.prevent_default()
-            try:
-                from textual.widgets import Tabs
-
-                self.app.query_one(Tabs).focus()
-            except Exception:
-                pass
+        if focus_nav_from_top_row(self.app, table, event):
             return
 
         if isinstance(focused, Select) and event.key == "down":
@@ -165,37 +153,15 @@ class CandidatesScreen(Container):
             table.focus()
             return
 
-        if focused is table and event.key == "space":
-            event.prevent_default()
-            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-            if row_key.value:
-                cid = row_key.value
-                if cid in self._selected_ids:
-                    self._selected_ids.discard(cid)
-                else:
-                    self._selected_ids.add(cid)
-                self._populate_table()
-            return
-
-        if focused is table and event.key == "ctrl+a":
-            event.prevent_default()
-            self._selected_ids = {c.id for c in self._filtered}
-            self._populate_table()
-            return
-
-        if focused is table and event.key == "ctrl+d":
-            event.prevent_default()
-            self._selected_ids.clear()
-            self._populate_table()
-            return
-
-        if focused is table and event.key == "s":
-            event.prevent_default()
-            self._cycle_sort(reverse=False)
-            return
-        if focused is table and event.key == "S":
-            event.prevent_default()
-            self._cycle_sort(reverse=True)
+        if handle_table_key(
+            event,
+            focused=focused,
+            table=table,
+            selected_ids=self._selected_ids,
+            visible_ids=(candidate.id for candidate in self._filtered),
+            refresh_table=self._populate_table,
+            cycle_sort=self._cycle_sort,
+        ):
             return
 
     def key_escape(self) -> None:

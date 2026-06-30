@@ -186,28 +186,52 @@ async def _dedup(
     store: FactStore | AsyncFactStore | None,
 ) -> list[Fact]:
     """Two-phase dedup: exact content hash, then scoped LLM dedup for near-matches."""
-    existing_hashes = {_content_hash(f.content) for f in existing}
+    after_exact = _drop_exact_duplicates(candidates, existing)
+    if not after_exact:
+        return []
+
+    near_matches = _find_near_matches(after_exact, existing)
+    if not near_matches:
+        return after_exact
+
+    result = await complete_model(
+        prompt=_dedup_prompt(after_exact, near_matches),
+        system=DEDUP_SYSTEM,
+        response_model=DedupResponse,
+    )
+
+    new_indices = _valid_dedup_indices(result.new, after_exact)
+    duplicate_indices = _valid_dedup_indices(result.duplicates, after_exact)
+    raw_update_map = _dedup_update_map(result, after_exact, near_matches)
+    resolved_update_map = _resolve_update_collisions(raw_update_map, after_exact)
+
+    return await _apply_dedup_decisions(
+        after_exact,
+        new_indices,
+        duplicate_indices,
+        raw_update_map,
+        resolved_update_map,
+        store,
+    )
+
+
+def _drop_exact_duplicates(candidates: list[Fact], existing: list[Fact]) -> list[Fact]:
+    existing_hashes = {_content_hash(fact.content) for fact in existing}
     after_exact: list[Fact] = []
     for fact in candidates:
         if _content_hash(fact.content) in existing_hashes:
             logger.info("Exact-match dedup dropped: %s", fact.content[:60])
             continue
         after_exact.append(fact)
+    return after_exact
 
-    if not after_exact:
-        return []
 
-    # Only ask the LLM about existing facts with meaningful token overlap.
-    near_matches = _find_near_matches(after_exact, existing)
-    if not near_matches:
-        return after_exact
-
-    existing_summary = "\n".join(_format_fact_for_dedup(f) for f in near_matches)
+def _dedup_prompt(candidates: list[Fact], near_matches: list[Fact]) -> str:
+    existing_summary = "\n".join(_format_fact_for_dedup(fact) for fact in near_matches)
     candidate_summary = "\n".join(
-        f"[{i}] {_format_fact_for_dedup(f)}" for i, f in enumerate(after_exact)
+        f"[{i}] {_format_fact_for_dedup(fact)}" for i, fact in enumerate(candidates)
     )
-
-    prompt = f"""EXISTING FACTS:
+    return f"""EXISTING FACTS:
 {existing_summary}
 
 NEW CANDIDATE FACTS:
@@ -215,41 +239,38 @@ NEW CANDIDATE FACTS:
 
 Classify each new fact as genuinely new, a duplicate, or an update to an existing fact."""
 
-    result = await complete_model(
-        prompt=prompt,
-        system=DEDUP_SYSTEM,
-        response_model=DedupResponse,
-    )
 
-    new_indices = {
-        idx
-        for idx in result.new
-        if isinstance(idx, int) and 0 <= idx < len(after_exact)
-    }
-    duplicate_indices = {
-        idx
-        for idx in result.duplicates
-        if isinstance(idx, int) and 0 <= idx < len(after_exact)
-    }
+def _valid_dedup_indices(indices: list[int], facts: list[Fact]) -> set[int]:
+    return {idx for idx in indices if isinstance(idx, int) and 0 <= idx < len(facts)}
 
+
+def _dedup_update_map(
+    result: DedupResponse,
+    candidates: list[Fact],
+    near_matches: list[Fact],
+) -> dict[int, str]:
     near_ids = {fact.id for fact in near_matches}
     raw_update_map: dict[int, str] = {}
     for update in result.updates:
         new_idx = update.new_idx
         existing_id = update.existing_id
-        if not isinstance(new_idx, int) or not 0 <= new_idx < len(after_exact):
+        if not isinstance(new_idx, int) or not 0 <= new_idx < len(candidates):
             logger.warning("Skipping dedup update with invalid new_idx: %s", update)
             continue
         if not isinstance(existing_id, str) or existing_id not in near_ids:
             logger.warning("Skipping dedup update with invalid existing_id: %s", update)
             continue
         raw_update_map[new_idx] = existing_id
+    return raw_update_map
 
-    # Detect collisions: multiple candidates targeting the same ancestor.
-    # Keep only the highest-confidence candidate per ancestor.
+
+def _resolve_update_collisions(
+    raw_update_map: dict[int, str],
+    candidates: list[Fact],
+) -> dict[int, str]:
     ancestor_to_candidates: dict[str, list[tuple[int, Fact]]] = defaultdict(list)
     for new_idx, old_id in raw_update_map.items():
-        ancestor_to_candidates[old_id].append((new_idx, after_exact[new_idx]))
+        ancestor_to_candidates[old_id].append((new_idx, candidates[new_idx]))
 
     resolved_update_map: dict[int, str] = {}
     for old_id, cands in ancestor_to_candidates.items():
@@ -265,10 +286,20 @@ Classify each new fact as genuinely new, a duplicate, or an update to an existin
                 dropped_count,
                 old_id,
             )
+    return resolved_update_map
 
+
+async def _apply_dedup_decisions(
+    candidates: list[Fact],
+    new_indices: set[int],
+    duplicate_indices: set[int],
+    raw_update_map: dict[int, str],
+    resolved_update_map: dict[int, str],
+    store: FactStore | AsyncFactStore | None,
+) -> list[Fact]:
     dropped_update_indices = set(raw_update_map) - set(resolved_update_map)
     kept = []
-    for i, fact in enumerate(after_exact):
+    for i, fact in enumerate(candidates):
         if i in new_indices:
             kept.append(fact)
         elif i in resolved_update_map:

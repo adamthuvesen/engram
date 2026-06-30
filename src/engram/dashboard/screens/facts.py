@@ -3,10 +3,20 @@
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import DataTable, Input, Label, Select
+from textual.widgets import DataTable, Input, Select
 
-from engram.dashboard.constants import NO_PROJECT_LABEL, SEARCH_DEBOUNCE_S
-from engram.dashboard.data import DashboardData, format_age
+from engram.dashboard.constants import NO_PROJECT_LABEL
+from engram.dashboard.data import DashboardData, format_age, shorten_project
+from engram.dashboard.tables import (
+    filter_facts_by_text,
+    focus_nav_from_top_row,
+    handle_table_key,
+    item_by_id,
+    next_sort_state,
+    schedule_filter_timer,
+    short_cell,
+    sort_by_column,
+)
 from engram.dashboard.widgets.fact_detail import FactDetail
 from engram.core.models import Fact, FactCategory
 
@@ -55,15 +65,10 @@ class FactsScreen(Container):
                 yield DataTable(id="facts-table", cursor_type="row")
             yield FactDetail(id="detail-pane", classes="detail-pane")
 
-        yield Label(
-            "↑↓ nav  Enter detail  / search  s sort  Space select  f forget",
-            classes="hint",
-        )
-
     def on_mount(self) -> None:
         table = self.query_one("#facts-table", DataTable)
         table.add_columns(
-            "", "ID", "Category", "Project", "Content", "Conf", "Tags", "Created"
+            "", "id", "category", "project", "content", "conf", "tags", "created"
         )
         self._populate_table()
 
@@ -76,8 +81,8 @@ class FactsScreen(Container):
                 sel,
                 fact.id,
                 fact.category.value,
-                fact.project or NO_PROJECT_LABEL,
-                fact.content[:55] + ("..." if len(fact.content) > 55 else ""),
+                shorten_project(fact.project),
+                short_cell(fact.content, 55),
                 f"{fact.confidence:.0%}",
                 ", ".join(fact.tags[:3]),
                 format_age(fact.created_at),
@@ -96,19 +101,10 @@ class FactsScreen(Container):
                 else self._filter_project
             )
             facts = [f for f in facts if f.project == target]
-        if self._filter_text:
-            q = self._filter_text.lower()
-            facts = [
-                f
-                for f in facts
-                if q in f.content.lower()
-                or q in " ".join(f.tags).lower()
-                or q in (f.project or "").lower()
-                or q in f.id
-            ]
+        facts = filter_facts_by_text(facts, self._filter_text)
 
         col = self.SORT_COLUMNS[self._sort_index]
-        facts.sort(key=lambda f: getattr(f, col) or "", reverse=self._sort_reverse)
+        sort_by_column(facts, col, reverse=self._sort_reverse)
 
         self._filtered_facts = facts
         # Selection refers to filtered rows; reset when the set changes.
@@ -116,9 +112,9 @@ class FactsScreen(Container):
         self._populate_table()
 
     def _schedule_filter(self) -> None:
-        if self._search_timer:
-            self._search_timer.stop()
-        self._search_timer = self.set_timer(SEARCH_DEBOUNCE_S, self._apply_filters)
+        self._search_timer = schedule_filter_timer(
+            self, self._search_timer, self._apply_filters
+        )
 
     @on(Input.Changed, "#search-input")
     def on_search(self, event: Input.Changed) -> None:
@@ -146,10 +142,7 @@ class FactsScreen(Container):
                 detail.update_fact(fact)
 
     def _find_fact(self, fact_id: str) -> Fact | None:
-        for f in self._data.active_facts:
-            if f.id == fact_id:
-                return f
-        return None
+        return item_by_id(self._data.active_facts, fact_id)
 
     def _get_action_targets(self) -> list[str]:
         if self._selected_ids:
@@ -159,15 +152,13 @@ class FactsScreen(Container):
         return []
 
     def _cycle_sort(self, reverse: bool) -> None:
-        if reverse:
-            self._sort_reverse = not self._sort_reverse
-        else:
-            self._sort_index = (self._sort_index + 1) % len(self.SORT_COLUMNS)
-        col = self.SORT_COLUMNS[self._sort_index]
-        self._filtered_facts.sort(
-            key=lambda f: getattr(f, col) or "",
-            reverse=self._sort_reverse,
+        self._sort_index, self._sort_reverse, col = next_sort_state(
+            self.SORT_COLUMNS,
+            self._sort_index,
+            self._sort_reverse,
+            reverse=reverse,
         )
+        sort_by_column(self._filtered_facts, col, reverse=self._sort_reverse)
         self._populate_table()
         direction = "▼" if self._sort_reverse else "▲"
         self.app.notify(f"Sort: {col} {direction}", severity="information")
@@ -176,14 +167,7 @@ class FactsScreen(Container):
         table = self.query_one("#facts-table", DataTable)
         focused = self.app.focused
 
-        if focused is table and event.key == "up" and table.cursor_row == 0:
-            event.prevent_default()
-            try:
-                from textual.widgets import Tabs
-
-                self.app.query_one(Tabs).focus()
-            except Exception:
-                pass
+        if focus_nav_from_top_row(self.app, table, event):
             return
 
         if event.key == "down" and isinstance(focused, (Select, Input)):
@@ -215,37 +199,15 @@ class FactsScreen(Container):
             self.query_one("#search-input", Input).focus()
             return
 
-        if focused is table and event.key == "space":
-            event.prevent_default()
-            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
-            if row_key.value:
-                fid = row_key.value
-                if fid in self._selected_ids:
-                    self._selected_ids.discard(fid)
-                else:
-                    self._selected_ids.add(fid)
-                self._populate_table()
-            return
-
-        if focused is table and event.key == "ctrl+a":
-            event.prevent_default()
-            self._selected_ids = {f.id for f in self._filtered_facts}
-            self._populate_table()
-            return
-
-        if focused is table and event.key == "ctrl+d":
-            event.prevent_default()
-            self._selected_ids.clear()
-            self._populate_table()
-            return
-
-        if focused is table and event.key == "s":
-            event.prevent_default()
-            self._cycle_sort(reverse=False)
-            return
-        if focused is table and event.key == "S":
-            event.prevent_default()
-            self._cycle_sort(reverse=True)
+        if handle_table_key(
+            event,
+            focused=focused,
+            table=table,
+            selected_ids=self._selected_ids,
+            visible_ids=(fact.id for fact in self._filtered_facts),
+            refresh_table=self._populate_table,
+            cycle_sort=self._cycle_sort,
+        ):
             return
 
     def key_escape(self) -> None:

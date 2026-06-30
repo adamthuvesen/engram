@@ -5,12 +5,19 @@ from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import DataTable, Input, Label, Static
 
-from engram.dashboard.constants import SEARCH_DEBOUNCE_S
 from engram.dashboard.data import (
     DashboardData,
     ProjectHealth,
     format_age,
     get_facts_for_project,
+)
+from engram.dashboard.tables import (
+    filter_facts_by_text,
+    focus_nav_from_top_row,
+    item_by_id,
+    next_sort_state,
+    schedule_filter_timer,
+    short_cell,
 )
 from engram.dashboard.widgets.fact_detail import FactDetail
 from engram.core.models import Fact
@@ -69,11 +76,9 @@ class ProjectDetailView(Container):
                 yield DataTable(id="proj-detail-table", cursor_type="row")
             yield FactDetail(id="proj-fact-detail", classes="detail-pane")
 
-        yield Label("↑↓ nav  Enter detail  / search  Esc back", classes="hint")
-
     def on_mount(self) -> None:
         table = self.query_one("#proj-detail-table", DataTable)
-        table.add_columns("ID", "Category", "Content", "Confidence", "Tags", "Created")
+        table.add_columns("id", "category", "content", "confidence", "tags", "created")
         self._populate_table()
         table.focus()
 
@@ -84,7 +89,7 @@ class ProjectDetailView(Container):
             table.add_row(
                 f.id,
                 f.category.value,
-                f.content[:55] + ("..." if len(f.content) > 55 else ""),
+                short_cell(f.content, 55),
                 f"{f.confidence:.0%}",
                 ", ".join(f.tags[:3]),
                 format_age(f.created_at),
@@ -92,21 +97,16 @@ class ProjectDetailView(Container):
             )
 
     def _apply_filters(self) -> None:
-        facts = list(self._all_facts)
-        if self._filter_text:
-            q = self._filter_text.lower()
-            facts = [
-                f
-                for f in facts
-                if q in f.content.lower() or q in " ".join(f.tags).lower() or q in f.id
-            ]
+        facts = filter_facts_by_text(
+            self._all_facts, self._filter_text, include_project=False
+        )
         self._filtered_facts = facts
         self._populate_table()
 
     def _schedule_filter(self) -> None:
-        if self._search_timer:
-            self._search_timer.stop()
-        self._search_timer = self.set_timer(SEARCH_DEBOUNCE_S, self._apply_filters)
+        self._search_timer = schedule_filter_timer(
+            self, self._search_timer, self._apply_filters
+        )
 
     @on(Input.Changed, "#proj-search-input")
     def on_search(self, event: Input.Changed) -> None:
@@ -123,10 +123,7 @@ class ProjectDetailView(Container):
                 detail.update_fact(fact)
 
     def _find_fact(self, fact_id: str) -> Fact | None:
-        for f in self._all_facts:
-            if f.id == fact_id:
-                return f
-        return None
+        return item_by_id(self._all_facts, fact_id)
 
     def refresh_data(self, data: DashboardData, health: ProjectHealth) -> None:
         self._data = data
@@ -138,14 +135,8 @@ class ProjectDetailView(Container):
         table = self.query_one("#proj-detail-table", DataTable)
         focused = self.app.focused
 
-        if focused is table and event.key == "up" and table.cursor_row == 0:
-            event.prevent_default()
-            try:
-                from textual.widgets import Tabs
-
-                self.app.query_one(Tabs).focus()
-            except Exception:
-                pass
+        if focus_nav_from_top_row(self.app, table, event):
+            return
 
         if event.key == "down" and isinstance(focused, Input):
             event.prevent_default()
@@ -193,18 +184,17 @@ class ProjectsScreen(Container):
                 id="proj-list-header",
             )
             yield DataTable(id="proj-overview-table", cursor_type="row")
-            yield Label("↑↓ nav  Enter drill in  s sort", classes="hint")
 
     def on_mount(self) -> None:
         table = self.query_one("#proj-overview-table", DataTable)
         table.add_columns(
-            "Project",
-            "Active",
-            "Forgotten",
-            "Expired",
-            "Health",
-            "Supersessions",
-            "Age",
+            "project",
+            "active",
+            "forgotten",
+            "expired",
+            "health",
+            "supersessions",
+            "age",
         )
         self._populate_table()
 
@@ -249,12 +239,13 @@ class ProjectsScreen(Container):
         self.mount(self._detail_view)
 
     def _cycle_sort(self, reverse: bool) -> None:
-        if reverse:
-            self._sort_reverse = not self._sort_reverse
-        else:
-            self._sort_index = (self._sort_index + 1) % len(self.SORT_COLUMNS)
+        self._sort_index, self._sort_reverse, col = next_sort_state(
+            self.SORT_COLUMNS,
+            self._sort_index,
+            self._sort_reverse,
+            reverse=reverse,
+        )
         self._populate_table()
-        col = self.SORT_COLUMNS[self._sort_index]
         direction = "▼" if self._sort_reverse else "▲"
         self.app.notify(f"Sort: {col} {direction}", severity="information")
 
@@ -270,14 +261,8 @@ class ProjectsScreen(Container):
         table = self.query_one("#proj-overview-table", DataTable)
         focused = self.app.focused
 
-        if focused is table and event.key == "up" and table.cursor_row == 0:
-            event.prevent_default()
-            try:
-                from textual.widgets import Tabs
-
-                self.app.query_one(Tabs).focus()
-            except Exception:
-                pass
+        if focus_nav_from_top_row(self.app, table, event):
+            return
 
         if focused is table and event.key == "s":
             event.prevent_default()
