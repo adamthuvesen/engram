@@ -30,10 +30,8 @@ from engram.dashboard.data import (
     format_bytes,
     load_dashboard_data,
 )
-from engram.dashboard.screens.candidates import CandidatesScreen
 from engram.dashboard.screens.category import CategoryDetailScreen
 from engram.dashboard.screens.facts import FactsScreen
-from engram.dashboard.screens.forgotten import ForgottenScreen
 from engram.dashboard.screens.help import FOOTER_HINTS, HelpScreen
 from engram.dashboard.screens.overview import OverviewScreen
 from engram.dashboard.screens.projects import ProjectsScreen
@@ -111,17 +109,6 @@ SECTIONS = (
     DashboardSection(
         "overview", "overview", OverviewScreen, "#cat-list", lambda d: d.active_count
     ),
-    DashboardSection("timeline", "timeline", TimelineScreen),
-    DashboardSection(
-        "facts", "facts", FactsScreen, "#facts-table", lambda d: d.active_count
-    ),
-    DashboardSection(
-        "candidates",
-        "candidates",
-        CandidatesScreen,
-        "#cand-table",
-        lambda d: d.pending_count,
-    ),
     DashboardSection(
         "projects",
         "projects",
@@ -130,12 +117,9 @@ SECTIONS = (
         lambda d: len(d.projects),
     ),
     DashboardSection(
-        "forgotten",
-        "forgotten",
-        ForgottenScreen,
-        "#forgotten-table",
-        lambda d: d.forgotten_count,
+        "facts", "facts", FactsScreen, "#facts-table", lambda d: d.active_count
     ),
+    DashboardSection("timeline", "timeline", TimelineScreen),
 )
 SECTION_BY_ID = {section.id: section for section in SECTIONS}
 SECTION_INDEX = {section.id: index for index, section in enumerate(SECTIONS)}
@@ -174,7 +158,6 @@ class EngramDashboard(App):
         self._undo_timer: Timer | None = None
         self._dirty_tabs: set[str] = set()
         self._pending_forget: list[str] = []
-        self._pending_reject: list[str] = []
 
     def compose(self) -> ComposeResult:
         d = self._data
@@ -414,54 +397,6 @@ class EngramDashboard(App):
         self.notify(
             f"Restored {restored} fact{'s' if restored > 1 else ''}",
             severity="information",
-        )
-
-    def action_approve_candidate(self, candidate_id: str) -> None:
-        self.action_approve_candidates([candidate_id])
-
-    def action_approve_candidates(self, candidate_ids: list[str]) -> None:
-        self._store.approve_candidates(candidate_ids)
-        self._force_refresh()
-        count = len(candidate_ids)
-        self.notify(
-            f"Approved {count} candidate{'s' if count > 1 else ''}",
-            severity="information",
-        )
-
-    def action_reject_candidate(self, candidate_id: str) -> None:
-        self.action_reject_candidates([candidate_id])
-
-    def action_reject_candidates(self, candidate_ids: list[str]) -> None:
-        count = len(candidate_ids)
-        if count > 1:
-            self._pending_reject = candidate_ids
-            self.push_screen(
-                ConfirmScreen(f"Reject {count} candidates?"),
-                callback=self._on_reject_confirmed,
-            )
-        else:
-            self._do_reject(candidate_ids)
-
-    def _on_reject_confirmed(self, confirmed: bool) -> None:
-        if confirmed:
-            self._do_reject(self._pending_reject)
-        self._pending_reject = []
-
-    def _do_reject(self, candidate_ids: list[str]) -> None:
-        self._store.reject_candidates(candidate_ids, reason="Rejected via dashboard")
-        self._force_refresh()
-        count = len(candidate_ids)
-        self.notify(
-            f"Rejected {count} candidate{'s' if count > 1 else ''}", severity="warning"
-        )
-
-    def action_restore_facts(self, fact_ids: list[str]) -> None:
-        for fid in fact_ids:
-            self._store.restore_fact(fid)
-        self._force_refresh()
-        count = len(fact_ids)
-        self.notify(
-            f"Restored {count} fact{'s' if count > 1 else ''}", severity="information"
         )
 
     def _force_refresh(self) -> None:

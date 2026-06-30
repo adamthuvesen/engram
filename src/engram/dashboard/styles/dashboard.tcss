@@ -106,8 +106,6 @@ TabPane {
 OverviewScreen,
 TimelineScreen,
 FactsScreen,
-CandidatesScreen,
-ForgottenScreen,
 ProjectsScreen {
     border: round $card-border;
     border-title-color: $text-muted;
@@ -344,28 +342,6 @@ FactsScreen {
 }
 
 FactsScreen DataTable {
-    width: 100%;
-    height: 100%;
-}
-
-/* ── Candidates ── */
-CandidatesScreen {
-    width: 100%;
-    height: 100%;
-}
-
-CandidatesScreen DataTable {
-    width: 100%;
-    height: 100%;
-}
-
-/* ── Forgotten ── */
-ForgottenScreen {
-    width: 100%;
-    height: 100%;
-}
-
-ForgottenScreen DataTable {
     width: 100%;
     height: 100%;
 }

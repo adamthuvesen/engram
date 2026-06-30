@@ -9,7 +9,7 @@ from textual.widgets import Label, Static
 # (key, context, description)
 KEYBINDINGS: list[tuple[str, str, str]] = [
     # Global
-    ("1-6", "Global", "Switch tabs"),
+    ("1-4", "Global", "Switch tabs"),
     ("t", "Global", "Toggle theme"),
     ("?", "Global", "Show help"),
     ("q", "Global", "Quit"),
@@ -26,11 +26,7 @@ KEYBINDINGS: list[tuple[str, str, str]] = [
     ("Ctrl+D", "Tables", "Deselect all"),
     # Facts
     ("f", "Facts", "Forget selected"),
-    # Candidates
-    ("a", "Candidates", "Approve selected"),
-    ("r", "Candidates", "Reject selected"),
-    # Forgotten
-    ("u", "Forgotten", "Unforgive / restore selected"),
+    ("Ctrl+Z", "Facts", "Undo last forget"),
 ]
 
 # Compact hints for the dynamic footer, keyed by widget context.
@@ -47,14 +43,6 @@ FOOTER_HINTS: dict[str, str] = {
         "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]/[/] search · "
         "[$accent]s[/] sort · [$accent]space[/] select · [$accent]f[/] forget"
     ),
-    "cand-table": _hint(
-        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]s[/] sort · "
-        "[$accent]space[/] select · [$accent]a[/] approve · [$accent]r[/] reject"
-    ),
-    "forgotten-table": _hint(
-        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]s[/] sort · "
-        "[$accent]space[/] select · [$accent]u[/] restore"
-    ),
     "proj-overview-table": _hint(
         "[$accent]↑↓[/] nav · [$accent]↵[/] drill in · [$accent]s[/] sort"
     ),
@@ -70,7 +58,7 @@ FOOTER_HINTS: dict[str, str] = {
         "[$accent]esc[/] close"
     ),
     "filter": _hint("[$accent]← →[/] switch filters · [$accent]↓[/] to table"),
-    "default": "[$accent]1-6[/] tabs · [$accent]t[/] theme · [$accent]?[/] help · [$accent]q[/] quit",
+    "default": "[$accent]1-4[/] tabs · [$accent]t[/] theme · [$accent]?[/] help · [$accent]q[/] quit",
 }
 
 
