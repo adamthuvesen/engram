@@ -315,7 +315,23 @@ def _check_facts_relationships(
     if not facts:
         return
 
-    # Duplicates: same project + category + normalized content among active facts.
+    issues.extend(issue for issue in _fact_relationship_issues(facts) if issue)
+
+
+def _fact_relationship_issues(facts: list[Fact]) -> list[DoctorIssue | None]:
+    fact_ids = {fact.id for fact in facts}
+    edges: dict[str, str] = {
+        fact.id: fact.supersedes for fact in facts if fact.supersedes
+    }
+    return [
+        _duplicate_fact_issue(facts),
+        _orphaned_supersession_issue(facts, fact_ids),
+        _circular_supersession_issue(edges),
+        _stale_forgotten_issue(facts),
+    ]
+
+
+def _duplicate_fact_issue(facts: list[Fact]) -> DoctorIssue | None:
     by_signature: dict[tuple[str | None, str, str], list[str]] = defaultdict(list)
     for fact in facts:
         if fact.confidence < MIN_ACTIVE_CONFIDENCE or fact.stale:
@@ -327,44 +343,46 @@ def _check_facts_relationships(
         )
         by_signature[sig].append(fact.id)
     duplicates: list[list[str]] = [ids for ids in by_signature.values() if len(ids) > 1]
-    if duplicates:
-        flat: list[str] = []
-        for group in duplicates:
-            flat.extend(group)
-        issues.append(
-            DoctorIssue(
-                code="duplicate_facts",
-                severity="warning",
-                category="facts",
-                message=f"Detected {len(duplicates)} duplicate fact group(s).",
-                ids=flat,
-                repair="Use `merge_memories` to consolidate, or `forget` the duplicates.",
-            )
-        )
+    if not duplicates:
+        return None
 
-    # Broken supersession references and circular chains.
-    fact_ids = {f.id for f in facts}
-    edges: dict[str, str] = {f.id: f.supersedes for f in facts if f.supersedes}
-    orphans: list[str] = [
-        f.id for f in facts if f.supersedes and f.supersedes not in fact_ids
+    flat: list[str] = []
+    for group in duplicates:
+        flat.extend(group)
+    return DoctorIssue(
+        code="duplicate_facts",
+        severity="warning",
+        category="facts",
+        message=f"Detected {len(duplicates)} duplicate fact group(s).",
+        ids=flat,
+        repair="Use `merge_memories` to consolidate, or `forget` the duplicates.",
+    )
+
+
+def _orphaned_supersession_issue(
+    facts: list[Fact],
+    fact_ids: set[str],
+) -> DoctorIssue | None:
+    orphans = [
+        fact.id for fact in facts if fact.supersedes and fact.supersedes not in fact_ids
     ]
-    if orphans:
-        issues.append(
-            DoctorIssue(
-                code="orphaned_supersession",
-                severity="warning",
-                category="facts",
-                message=f"{len(orphans)} fact(s) reference a missing supersession ancestor.",
-                ids=orphans,
-                repair=(
-                    "Run `engram doctor --repair --repair-orphaned-supersessions` "
-                    "to clear missing supersedes links."
-                ),
-                repairable=True,
-            )
-        )
+    if not orphans:
+        return None
+    return DoctorIssue(
+        code="orphaned_supersession",
+        severity="warning",
+        category="facts",
+        message=f"{len(orphans)} fact(s) reference a missing supersession ancestor.",
+        ids=orphans,
+        repair=(
+            "Run `engram doctor --repair --repair-orphaned-supersessions` "
+            "to clear missing supersedes links."
+        ),
+        repairable=True,
+    )
 
-    # Cycle detection over the supersession graph.
+
+def _circular_supersession_issue(edges: dict[str, str]) -> DoctorIssue | None:
     cycles: list[str] = []
     for start in edges:
         seen: set[str] = set()
@@ -375,33 +393,30 @@ def _check_facts_relationships(
             if node == start:
                 cycles.append(start)
                 break
-    if cycles:
-        issues.append(
-            DoctorIssue(
-                code="circular_supersession",
-                severity="error",
-                category="facts",
-                message=f"{len(cycles)} circular supersession chain(s).",
-                ids=cycles,
-                repair="Break the cycle by editing one fact to remove its supersedes link.",
-            )
-        )
+    if not cycles:
+        return None
+    return DoctorIssue(
+        code="circular_supersession",
+        severity="error",
+        category="facts",
+        message=f"{len(cycles)} circular supersession chain(s).",
+        ids=cycles,
+        repair="Break the cycle by editing one fact to remove its supersedes link.",
+    )
 
-    # Stale + forgotten on the same fact is contradictory.
-    contradictory = [f.id for f in facts if f.stale and f.confidence == 0.0]
-    if contradictory:
-        issues.append(
-            DoctorIssue(
-                code="stale_and_forgotten",
-                severity="info",
-                category="facts",
-                message=(
-                    f"{len(contradictory)} fact(s) are marked both stale and forgotten."
-                ),
-                ids=contradictory,
-                repair="Pick one — usually `forget` is sufficient.",
-            )
-        )
+
+def _stale_forgotten_issue(facts: list[Fact]) -> DoctorIssue | None:
+    contradictory = [fact.id for fact in facts if fact.stale and fact.confidence == 0.0]
+    if not contradictory:
+        return None
+    return DoctorIssue(
+        code="stale_and_forgotten",
+        severity="info",
+        category="facts",
+        message=(f"{len(contradictory)} fact(s) are marked both stale and forgotten."),
+        ids=contradictory,
+        repair="Pick one — usually `forget` is sufficient.",
+    )
 
 
 def _check_candidates(
@@ -462,6 +477,49 @@ async def check_provider() -> DoctorIssue | None:
     return None
 
 
+def _record_provider_check(
+    *,
+    check_provider_flag: bool,
+    provider_issue: DoctorIssue | None,
+    issues: list[DoctorIssue],
+    checks_run: list[str],
+    checks_skipped: list[str],
+) -> None:
+    if check_provider_flag:
+        if provider_issue is not None:
+            issues.append(provider_issue)
+        checks_run.append("provider")
+    else:
+        checks_skipped.append("provider")
+
+
+def _doctor_status(issues: list[DoctorIssue]) -> str:
+    severities = Counter(issue.severity for issue in issues)
+    if severities.get("error"):
+        return "error"
+    if severities.get("warning"):
+        return "warning"
+    return "ok"
+
+
+def _doctor_counts(
+    *,
+    facts: list[Fact],
+    facts_valid: int,
+    candidates_valid: int,
+    issues: list[DoctorIssue],
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    return {
+        "facts_valid": facts_valid,
+        "candidates_valid": candidates_valid,
+        "active_facts": sum(1 for fact in facts if _is_active_fact(fact, now)),
+        "stale_facts": sum(1 for fact in facts if fact.stale),
+        "forgotten_facts": sum(1 for fact in facts if fact.confidence == 0.0),
+        "issues": len(issues),
+    }
+
+
 def run_doctor(
     store: FactStore | AsyncFactStore | None = None,
     *,
@@ -503,36 +561,25 @@ def run_doctor(
     _check_candidates(candidates, issues)
     checks_run.extend(["facts_relationships", "candidates_lifecycle"])
 
-    if check_provider_flag:
-        if provider_issue is not None:
-            issues.append(provider_issue)
-        checks_run.append("provider")
-    else:
-        checks_skipped.append("provider")
-
-    severities = Counter(issue.severity for issue in issues)
-    if severities.get("error"):
-        status = "error"
-    elif severities.get("warning"):
-        status = "warning"
-    else:
-        status = "ok"
-
-    now = datetime.now(timezone.utc)
-    counts: dict[str, Any] = {
-        "facts_valid": facts_valid,
-        "candidates_valid": candidates_valid,
-        "active_facts": sum(1 for f in facts if _is_active_fact(f, now)),
-        "stale_facts": sum(1 for f in facts if f.stale),
-        "forgotten_facts": sum(1 for f in facts if f.confidence == 0.0),
-        "issues": len(issues),
-    }
+    _record_provider_check(
+        check_provider_flag=check_provider_flag,
+        provider_issue=provider_issue,
+        issues=issues,
+        checks_run=checks_run,
+        checks_skipped=checks_skipped,
+    )
+    counts = _doctor_counts(
+        facts=facts,
+        facts_valid=facts_valid,
+        candidates_valid=candidates_valid,
+        issues=issues,
+    )
 
     _check_sync(sync_store, issues, counts=counts)
     checks_run.append("sync")
 
     return DoctorReport(
-        status=status,
+        status=_doctor_status(issues),
         issues=issues,
         counts=counts,
         checks_run=checks_run,

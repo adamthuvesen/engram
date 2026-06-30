@@ -11,6 +11,7 @@ from engram.maintenance.doctor import check_provider, repair_store, run_doctor
 from engram.extraction.importer import import_claude_code_memories
 from engram.core.interfaces import (
     Envelope,
+    EnvelopeError,
     EnvelopeMeta,
     not_found_error,
     provider_error,
@@ -69,6 +70,40 @@ class OperationResult:
         return self.envelope.to_json() if as_json else self.text
 
 
+def failure_result(
+    error: EnvelopeError, text: str, exit_code: int = EXIT_RUNTIME
+) -> OperationResult:
+    return OperationResult(
+        envelope=Envelope.failure(error),
+        text=text,
+        exit_code=exit_code,
+    )
+
+
+def validation_result(
+    message: str,
+    *,
+    text: str | None = None,
+    ids: list[str] | None = None,
+    details: dict | None = None,
+) -> OperationResult:
+    return failure_result(
+        validation_error(message, ids=ids, details=details),
+        text or message,
+        EXIT_VALIDATION,
+    )
+
+
+def missing_result(
+    message: str, *, text: str | None = None, ids: list[str] | None = None
+) -> OperationResult:
+    return failure_result(
+        not_found_error(message, ids=ids),
+        text or message,
+        EXIT_NOT_FOUND,
+    )
+
+
 def async_store(store: FactStore | AsyncFactStore | None = None) -> AsyncFactStore:
     if store is None:
         return AsyncFactStore()
@@ -87,43 +122,25 @@ def category_from_value(value: str | None) -> FactCategory | None:
 
 
 def invalid_category_result(value: str) -> OperationResult:
-    env = Envelope.failure(
-        validation_error(
-            f"Invalid category: {value}",
-            details={"valid": [c.value for c in FactCategory]},
-        )
-    )
     valid = ", ".join(c.value for c in FactCategory)
-    return OperationResult(
-        envelope=env,
+    return validation_result(
+        f"Invalid category: {value}",
         text=f"Invalid category: {value}. Use one of: {valid}",
-        exit_code=EXIT_VALIDATION,
+        details={"valid": [c.value for c in FactCategory]},
     )
 
 
 def invalid_format_result(value: str) -> OperationResult:
-    env = Envelope.failure(
-        validation_error(
-            f"Unsupported format: {value}. Use 'text' or 'json'.",
-            details={"parameter": "format", "value": value},
-        )
-    )
-    return OperationResult(
-        envelope=env,
+    return validation_result(
+        f"Unsupported format: {value}. Use 'text' or 'json'.",
         text=f"Unsupported format: {value}. Use 'text' or 'json'.",
-        exit_code=EXIT_VALIDATION,
+        details={"parameter": "format", "value": value},
     )
 
 
 def invalid_positive_int_result(parameter: str) -> OperationResult:
     message = f"{parameter} must be greater than zero"
-    return OperationResult(
-        envelope=Envelope.failure(
-            validation_error(message, details={"parameter": parameter})
-        ),
-        text=message,
-        exit_code=EXIT_VALIDATION,
-    )
+    return validation_result(message, details={"parameter": parameter})
 
 
 def fact_payload(fact: Fact) -> dict:
@@ -167,15 +184,12 @@ async def remember(
             store=async_store(store),
         )
     except Exception as exc:
-        return OperationResult(
-            envelope=Envelope.failure(
-                provider_error(
-                    f"Memory extraction failed: {exc}",
-                    details={"exception_type": type(exc).__name__},
-                )
+        return failure_result(
+            provider_error(
+                f"Memory extraction failed: {exc}",
+                details={"exception_type": type(exc).__name__},
             ),
             text=f"Memory extraction failed: {exc}",
-            exit_code=EXIT_RUNTIME,
         )
 
     if not facts:
@@ -209,15 +223,12 @@ async def suggest_memories(
             store=async_store(store),
         )
     except Exception as exc:
-        return OperationResult(
-            envelope=Envelope.failure(
-                provider_error(
-                    f"Memory suggestion failed: {exc}",
-                    details={"exception_type": type(exc).__name__},
-                )
+        return failure_result(
+            provider_error(
+                f"Memory suggestion failed: {exc}",
+                details={"exception_type": type(exc).__name__},
             ),
             text=f"Memory suggestion failed: {exc}",
-            exit_code=EXIT_RUNTIME,
         )
 
     if not candidates:
@@ -257,16 +268,10 @@ async def list_candidates(
         candidate_status = CandidateStatus(status)
     except ValueError:
         valid = ", ".join(item.value for item in CandidateStatus)
-        env = Envelope.failure(
-            validation_error(
-                f"Unsupported status: {status}. Use one of: {valid}.",
-                details={"valid": [item.value for item in CandidateStatus]},
-            )
-        )
-        return OperationResult(
-            envelope=env,
+        return validation_result(
+            f"Unsupported status: {status}. Use one of: {valid}.",
             text=f"Unsupported status: {status}. Use one of: {valid}.",
-            exit_code=EXIT_VALIDATION,
+            details={"valid": [item.value for item in CandidateStatus]},
         )
 
     store_obj = async_store(store)
@@ -315,16 +320,11 @@ async def approve_candidates(
     if edits:
         stray = [eid for eid in edits if eid not in candidate_ids]
         if stray:
-            return OperationResult(
-                envelope=Envelope.failure(
-                    validation_error(
-                        "--edit ids must also appear in candidate_ids",
-                        ids=stray,
-                        details={"stray_edit_ids": stray},
-                    )
-                ),
+            return validation_result(
+                "--edit ids must also appear in candidate_ids",
                 text=f"--edit ids not in approve list: {', '.join(stray)}",
-                exit_code=EXIT_VALIDATION,
+                ids=stray,
+                details={"stray_edit_ids": stray},
             )
         # Edits rewrite candidates.jsonl outside the approval transaction; a
         # crash mid-loop leaves edits applied but candidates un-approved (safe
@@ -335,15 +335,10 @@ async def approve_candidates(
             if updated is None:
                 missing.append(candidate_id)
         if missing:
-            return OperationResult(
-                envelope=Envelope.failure(
-                    not_found_error(
-                        "Candidate(s) not found for --edit",
-                        ids=missing,
-                    )
-                ),
+            return missing_result(
+                "Candidate(s) not found for --edit",
                 text=f"Candidate(s) not found: {', '.join(missing)}",
-                exit_code=EXIT_NOT_FOUND,
+                ids=missing,
             )
 
     facts = await store_obj.approve_candidates(candidate_ids)
@@ -473,15 +468,12 @@ async def recall_trace(
             max_prefilter_matches=max_prefilter_matches,
         )
     except Exception as exc:
-        return OperationResult(
-            envelope=Envelope.failure(
-                provider_error(
-                    f"Recall trace failed: {exc}",
-                    details={"exception_type": type(exc).__name__},
-                )
+        return failure_result(
+            provider_error(
+                f"Recall trace failed: {exc}",
+                details={"exception_type": type(exc).__name__},
             ),
             text=f"Recall trace failed: {exc}",
-            exit_code=EXIT_RUNTIME,
         )
 
     data = {
@@ -527,16 +519,10 @@ async def recall_context(
         )
 
     if mode != "prompt":
-        env = Envelope.failure(
-            validation_error(
-                f"Unsupported mode: {mode}. Use 'answer' or 'prompt'.",
-                details={"parameter": "mode", "value": mode},
-            )
-        )
-        return OperationResult(
-            envelope=env,
+        return validation_result(
+            f"Unsupported mode: {mode}. Use 'answer' or 'prompt'.",
             text=f"Unsupported mode: {mode}. Use 'answer' or 'prompt'.",
-            exit_code=EXIT_VALIDATION,
+            details={"parameter": "mode", "value": mode},
         )
 
     settings = get_settings()
@@ -572,12 +558,10 @@ async def forget(
 ) -> OperationResult:
     fact = await async_store(store).forget(fact_id, reason)
     if fact is None:
-        return OperationResult(
-            envelope=Envelope.failure(
-                not_found_error(f"Fact {fact_id} not found", ids=[fact_id])
-            ),
+        return missing_result(
+            f"Fact {fact_id} not found",
             text=f"Fact not found: {fact_id}",
-            exit_code=EXIT_NOT_FOUND,
+            ids=[fact_id],
         )
     return OperationResult(
         envelope=Envelope.success(data={"fact": fact_payload(fact), "forgotten": True}),
@@ -608,45 +592,35 @@ async def edit_fact(
         updates["project"] = project
 
     if not updates:
-        env = Envelope.failure(validation_error("No changes specified."))
-        return OperationResult(
-            envelope=env,
-            text="No changes specified.",
-            exit_code=EXIT_VALIDATION,
-        )
+        return validation_result("No changes specified.")
 
     store_obj = async_store(store)
     all_facts = await store_obj.load_facts()
     existing = next((f for f in all_facts if f.id == fact_id), None)
     if existing is None:
-        return OperationResult(
-            envelope=Envelope.failure(
-                not_found_error(f"Fact {fact_id} not found", ids=[fact_id])
-            ),
+        return missing_result(
+            f"Fact {fact_id} not found",
             text=f"Fact not found: {fact_id}",
-            exit_code=EXIT_NOT_FOUND,
+            ids=[fact_id],
         )
     if existing.confidence == 0.0:
         text = (
             f"Fact {fact_id} is forgotten and cannot be edited. "
             "Restore it first by approving a candidate that supersedes it."
         )
-        return OperationResult(
-            envelope=Envelope.failure(
-                validation_error(text, ids=[fact_id], details={"forgotten": True})
-            ),
+        return validation_result(
+            text,
             text=text,
-            exit_code=EXIT_VALIDATION,
+            ids=[fact_id],
+            details={"forgotten": True},
         )
 
     fact = await store_obj.update_fact(fact_id, **updates)
     if fact is None:
-        return OperationResult(
-            envelope=Envelope.failure(
-                not_found_error(f"Fact {fact_id} not found", ids=[fact_id])
-            ),
+        return missing_result(
+            f"Fact {fact_id} not found",
             text=f"Fact not found: {fact_id}",
-            exit_code=EXIT_NOT_FOUND,
+            ids=[fact_id],
         )
 
     await store_obj.log_ingestion(
@@ -734,12 +708,10 @@ async def correct_memory(
         reason=reason,
     )
     if new_fact is None:
-        return OperationResult(
-            envelope=Envelope.failure(
-                not_found_error(f"Active fact {fact_id} not found", ids=[fact_id])
-            ),
+        return missing_result(
+            f"Active fact {fact_id} not found",
             text=f"Active fact {fact_id} not found",
-            exit_code=EXIT_NOT_FOUND,
+            ids=[fact_id],
         )
 
     data = {
@@ -769,16 +741,10 @@ async def merge_memories(
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
     if len(source_ids) < 2:
-        env = Envelope.failure(
-            validation_error(
-                "merge_memories requires at least two source IDs",
-                details={"received": len(source_ids)},
-            )
-        )
-        return OperationResult(
-            envelope=env,
+        return validation_result(
+            "merge_memories requires at least two source IDs",
             text="merge_memories requires at least two source IDs",
-            exit_code=EXIT_VALIDATION,
+            details={"received": len(source_ids)},
         )
 
     cat = category_from_value(category)
@@ -794,16 +760,10 @@ async def merge_memories(
         reason=reason,
     )
     if result is None:
-        env = Envelope.failure(
-            validation_error(
-                "Could not merge — sources missing, forgotten, or in different projects.",
-                ids=source_ids,
-            )
-        )
-        return OperationResult(
-            envelope=env,
+        return validation_result(
+            "Could not merge — sources missing, forgotten, or in different projects.",
             text="Could not merge — sources missing, forgotten, or in different projects.",
-            exit_code=EXIT_VALIDATION,
+            ids=source_ids,
         )
 
     new_fact, superseded_ids = result
@@ -829,12 +789,10 @@ async def mark_stale(
 ) -> OperationResult:
     fact = await async_store(store).mark_stale(fact_id, reason)
     if fact is None:
-        return OperationResult(
-            envelope=Envelope.failure(
-                not_found_error(f"Fact {fact_id} not found", ids=[fact_id])
-            ),
+        return missing_result(
+            f"Fact {fact_id} not found",
             text=f"Fact {fact_id} not found",
-            exit_code=EXIT_NOT_FOUND,
+            ids=[fact_id],
         )
     return OperationResult(
         envelope=Envelope.success(
@@ -855,12 +813,10 @@ async def unmark_stale(
 ) -> OperationResult:
     fact = await async_store(store).unmark_stale(fact_id)
     if fact is None:
-        return OperationResult(
-            envelope=Envelope.failure(
-                not_found_error(f"Fact {fact_id} not found", ids=[fact_id])
-            ),
+        return missing_result(
+            f"Fact {fact_id} not found",
             text=f"Fact {fact_id} not found",
-            exit_code=EXIT_NOT_FOUND,
+            ids=[fact_id],
         )
     return OperationResult(
         envelope=Envelope.success(data={"fact_id": fact.id, "stale": False}),
@@ -874,25 +830,15 @@ async def import_memories(
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
     if source != "claude_code":
-        env = Envelope.failure(
-            validation_error(
-                f"Unsupported import source: {source}. Use 'claude_code'.",
-                details={"parameter": "source", "value": source},
-            )
-        )
-        return OperationResult(
-            envelope=env,
+        return validation_result(
+            f"Unsupported import source: {source}. Use 'claude_code'.",
             text=f"Unsupported import source: {source}. Use 'claude_code'.",
-            exit_code=EXIT_VALIDATION,
+            details={"parameter": "source", "value": source},
         )
 
     result = await import_claude_code_memories(store=async_store(store))
     if "error" in result:
-        return OperationResult(
-            envelope=Envelope.failure(storage_error(result["error"])),
-            text=result["error"],
-            exit_code=EXIT_RUNTIME,
-        )
+        return failure_result(storage_error(result["error"]), text=result["error"])
     if result.get("message") and result.get("total_facts", 0) == 0:
         return OperationResult(
             envelope=Envelope.success(data=result),
@@ -1180,6 +1126,52 @@ def _parse_since(value: str | datetime | None) -> datetime | None:
     return parsed
 
 
+def _recall_stats_meta(limit: int, total: int, returned: int) -> EnvelopeMeta:
+    truncated = total > returned
+    return EnvelopeMeta(
+        limit=limit,
+        requested_limit=limit,
+        returned=returned,
+        total=total,
+        truncated=truncated,
+        truncation_reason="limit" if truncated else None,
+    )
+
+
+def _empty_recall_stats_result(
+    *,
+    limit: int,
+    total: int,
+    include_records: bool,
+) -> OperationResult:
+    text = "No recall data yet."
+    data = {**_recall_stats_payload([]), "message": text}
+    if include_records:
+        data["records"] = []
+    return OperationResult(
+        envelope=Envelope.success(
+            data=data,
+            meta=_recall_stats_meta(limit, total=total, returned=0),
+        ),
+        text=text,
+    )
+
+
+def _recall_stats_lines(records: list[RecallRecord], payload: dict) -> list[str]:
+    lines = _format_recall_summary(records, "# Recall Stats\n")
+    selector_versions = payload["selector_versions"]
+    if len(selector_versions) >= 2:
+        for version in selector_versions:
+            subset = [r for r in records if r.selector_version == version]
+            lines.append("")
+            lines.extend(
+                _format_recall_summary(subset, heading=f"# Selector {version}\n")
+            )
+    elif selector_versions:
+        lines.insert(1, f"*Selector version:* `{selector_versions[0]}`")
+    return lines
+
+
 async def recall_stats(
     *,
     limit: int = 500,
@@ -1193,13 +1185,7 @@ async def recall_stats(
     try:
         since_dt = _parse_since(since)
     except ValueError as exc:
-        return OperationResult(
-            envelope=Envelope.failure(
-                validation_error(str(exc), details={"parameter": "since"})
-            ),
-            text=str(exc),
-            exit_code=EXIT_VALIDATION,
-        )
+        return validation_result(str(exc), details={"parameter": "since"})
 
     all_records = await async_store(store).load_recall_log(limit=None)
     filtered_records = [
@@ -1209,36 +1195,14 @@ async def recall_stats(
     ]
     records = filtered_records[:limit]
     if not records:
-        text = "No recall data yet."
-        data = {**_recall_stats_payload(records), "message": text}
-        if include_records:
-            data["records"] = []
-        return OperationResult(
-            envelope=Envelope.success(
-                data=data,
-                meta=EnvelopeMeta(
-                    limit=limit,
-                    requested_limit=limit,
-                    returned=0,
-                    total=len(filtered_records),
-                    truncated=False,
-                ),
-            ),
-            text=text,
+        return _empty_recall_stats_result(
+            limit=limit,
+            total=len(filtered_records),
+            include_records=include_records,
         )
 
-    lines = _format_recall_summary(records, "# Recall Stats\n")
     payload = _recall_stats_payload(records)
-    selector_versions = payload["selector_versions"]
-    if len(selector_versions) >= 2:
-        for version in selector_versions:
-            subset = [r for r in records if r.selector_version == version]
-            lines.append("")
-            lines.extend(
-                _format_recall_summary(subset, heading=f"# Selector {version}\n")
-            )
-    elif selector_versions:
-        lines.insert(1, f"*Selector version:* `{selector_versions[0]}`")
+    lines = _recall_stats_lines(records, payload)
 
     if include_records:
         payload["records"] = [record.model_dump(mode="json") for record in records]
@@ -1246,15 +1210,10 @@ async def recall_stats(
     return OperationResult(
         envelope=Envelope.success(
             data=payload,
-            meta=EnvelopeMeta(
-                limit=limit,
-                requested_limit=limit,
-                returned=len(records),
+            meta=_recall_stats_meta(
+                limit,
                 total=len(filtered_records),
-                truncated=len(filtered_records) > len(records),
-                truncation_reason=(
-                    "limit" if len(filtered_records) > len(records) else None
-                ),
+                returned=len(records),
             ),
         ),
         text="\n".join(lines),
@@ -1281,8 +1240,9 @@ async def sync(
         details: dict = {"sync_error_code": exc.code}
         if exc.git_stderr:
             details["git_stderr"] = exc.git_stderr
-        env = Envelope.failure(storage_error(exc.message, details=details))
-        return OperationResult(envelope=env, text=exc.message, exit_code=EXIT_RUNTIME)
+        return failure_result(
+            storage_error(exc.message, details=details), text=exc.message
+        )
 
     if result.get("status") == "skipped":
         text = f"Sync skipped: {result.get('reason', 'unknown')}."

@@ -94,45 +94,56 @@ async def synthesize(
             result.compaction = await _maybe_compact(store)
         return result
 
-    # Group by (project, category) so related facts land in the same batch
-    groups: dict[tuple[str | None, str], list[Fact]] = defaultdict(list)
-    for fact in facts:
-        groups[(fact.project, fact.category.value)].append(fact)
-
     result = SynthesisResult(total_analyzed=len(facts))
 
-    for group_facts in groups.values():
-        for i in range(0, len(group_facts), batch_size):
-            batch = group_facts[i : i + batch_size]
-            batch_actions = await _synthesize_batch(batch, store)
+    for batch in _synthesis_batches(facts, batch_size):
+        batch_actions = await _synthesize_batch(batch, store)
+        _record_synthesis_actions(result, batch_actions)
 
-            for action in batch_actions:
-                act = action.get("action", "keep")
-                if act == "keep":
-                    result.kept += 1
-                elif act == "remove":
-                    result.removed += 1
-                    result.details.append(action)
-                elif act == "rewrite":
-                    result.rewritten += 1
-                    result.details.append(action)
-                elif act == "merge":
-                    result.merged_groups += 1
-                    result.details.append(action)
-                elif act == "merge_source":
-                    result.merged_sources += 1
-                else:
-                    result.errors.append(
-                        f"Unknown action '{act}' for fact {action.get('fact_id')}"
-                    )
-
-            if not dry_run:
-                await _apply_actions(batch_actions, store)
+        if not dry_run:
+            await _apply_actions(batch_actions, store)
 
     if compact and not dry_run:
         result.compaction = await _maybe_compact(store)
 
     return result
+
+
+def _synthesis_batches(facts: list[Fact], batch_size: int) -> list[list[Fact]]:
+    groups: dict[tuple[str | None, str], list[Fact]] = defaultdict(list)
+    for fact in facts:
+        groups[(fact.project, fact.category.value)].append(fact)
+
+    batches: list[list[Fact]] = []
+    for group_facts in groups.values():
+        for i in range(0, len(group_facts), batch_size):
+            batches.append(group_facts[i : i + batch_size])
+    return batches
+
+
+def _record_synthesis_actions(
+    result: SynthesisResult,
+    actions: list[dict],
+) -> None:
+    for action in actions:
+        act = action.get("action", "keep")
+        if act == "keep":
+            result.kept += 1
+        elif act == "remove":
+            result.removed += 1
+            result.details.append(action)
+        elif act == "rewrite":
+            result.rewritten += 1
+            result.details.append(action)
+        elif act == "merge":
+            result.merged_groups += 1
+            result.details.append(action)
+        elif act == "merge_source":
+            result.merged_sources += 1
+        else:
+            result.errors.append(
+                f"Unknown action '{act}' for fact {action.get('fact_id')}"
+            )
 
 
 async def _maybe_compact(store: FactStore | AsyncFactStore) -> dict | None:
@@ -195,59 +206,66 @@ async def _apply_actions(
     updates: dict[str, dict] = {}
 
     for action in actions:
-        fact_id = action.get("fact_id")
-        if not fact_id:
-            continue
-
-        act = action.get("action", "keep")
-
-        if act == "keep":
-            continue
-
-        elif act == "remove":
-            updates[fact_id] = {"confidence": 0.0}
-
-        elif act == "rewrite":
-            new_content = action.get("new_content")
-            if not new_content:
-                logger.warning(
-                    "Rewrite action for %s missing new_content, skipping", fact_id
-                )
-                continue
-            upd: dict = {"content": new_content}
-            if "new_tags" in action:
-                upd["tags"] = action["new_tags"]
-            updates[fact_id] = upd
-
-        elif act == "merge":
-            merged_content = action.get("merged_content")
-            if not merged_content:
-                logger.warning(
-                    "Merge action for %s missing merged_content, skipping", fact_id
-                )
-                continue
-            upd = {"content": merged_content}
-            if "merged_tags" in action:
-                upd["tags"] = action["merged_tags"]
-            # Primary link to first absorbed fact
-            merge_with = action.get("merge_with", [])
-            if merge_with:
-                upd["supersedes"] = merge_with[0]
-                # Encode additional absorbed IDs in tags so the full audit trail is preserved
-                if len(merge_with) > 1:
-                    extra_tags = [f"merged:{fid}" for fid in merge_with[1:]]
-                    existing_tags = upd.get("tags", [])
-                    upd["tags"] = list(set(existing_tags + extra_tags))
-            updates[fact_id] = upd
-
-        elif act == "merge_source":
-            updates[fact_id] = {"confidence": 0.0}
+        update = _update_for_action(action)
+        if update:
+            fact_id, fields = update
+            updates[fact_id] = fields
 
     if updates:
         if isinstance(store, AsyncFactStore):
             await store.batch_update_facts(updates)
         else:
             store.batch_update_facts(updates)
+
+
+def _update_for_action(action: dict) -> tuple[str, dict] | None:
+    fact_id = action.get("fact_id")
+    if not fact_id:
+        return None
+
+    act = action.get("action", "keep")
+    if act == "keep":
+        return None
+    if act in {"remove", "merge_source"}:
+        return fact_id, {"confidence": 0.0}
+    if act == "rewrite":
+        return _rewrite_update(fact_id, action)
+    if act == "merge":
+        return _merge_update(fact_id, action)
+    return None
+
+
+def _rewrite_update(fact_id: str, action: dict) -> tuple[str, dict] | None:
+    new_content = action.get("new_content")
+    if not new_content:
+        logger.warning("Rewrite action for %s missing new_content, skipping", fact_id)
+        return None
+
+    update: dict = {"content": new_content}
+    if "new_tags" in action:
+        update["tags"] = action["new_tags"]
+    return fact_id, update
+
+
+def _merge_update(fact_id: str, action: dict) -> tuple[str, dict] | None:
+    merged_content = action.get("merged_content")
+    if not merged_content:
+        logger.warning("Merge action for %s missing merged_content, skipping", fact_id)
+        return None
+
+    update = {"content": merged_content}
+    if "merged_tags" in action:
+        update["tags"] = action["merged_tags"]
+
+    merge_with = action.get("merge_with", [])
+    if merge_with:
+        update["supersedes"] = merge_with[0]
+        if len(merge_with) > 1:
+            extra_tags = [f"merged:{fid}" for fid in merge_with[1:]]
+            existing_tags = update.get("tags", [])
+            update["tags"] = list(set(existing_tags + extra_tags))
+
+    return fact_id, update
 
 
 def format_synthesis_result(result: SynthesisResult, dry_run: bool) -> str:

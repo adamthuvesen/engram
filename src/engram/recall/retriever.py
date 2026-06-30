@@ -128,6 +128,34 @@ _MULTILENS_HEADING_RE = re.compile(
 _CITED_ID_RE = re.compile(r"\b([0-9a-f]{12})\b")
 
 
+def _tier_decision(
+    tier: int,
+    *,
+    relevant_count: int,
+    top_score: int | None,
+    gap_ratio: float | None,
+    cap_applied: bool = False,
+) -> TierDecision:
+    return TierDecision(
+        tier=tier,
+        rules=SELECTOR_VERSION,
+        relevant_count=relevant_count,
+        top_score=top_score,
+        gap_ratio=gap_ratio,
+        cap_applied=cap_applied,
+    )
+
+
+def _relevance_gap(relevant_scores: list[int]) -> float:
+    top = relevant_scores[0]
+    comparison = relevant_scores[-1] if len(relevant_scores) < 5 else relevant_scores[4]
+    return top / comparison if comparison > 0 else float("inf")
+
+
+def _reported_gap(gap: float) -> float | None:
+    return gap if gap != float("inf") else None
+
+
 def _select_tier_with_decision(
     scored_facts: list[tuple[int, Fact]],
     min_prefilter_for_tier2: int = 0,
@@ -138,51 +166,40 @@ def _select_tier_with_decision(
     provenance can capture the threshold inputs that drove the choice.
     """
     if not scored_facts:
-        return TierDecision(
-            tier=0,
-            rules=SELECTOR_VERSION,
+        return _tier_decision(
+            0,
             relevant_count=0,
             top_score=None,
             gap_ratio=None,
-            cap_applied=False,
         )
 
     relevant = [s for s, _ in scored_facts if s >= RELEVANCE_FLOOR]
 
     if not relevant:
-        return TierDecision(
-            tier=0,
-            rules=SELECTOR_VERSION,
+        return _tier_decision(
+            0,
             relevant_count=0,
             top_score=scored_facts[0][0] if scored_facts else None,
             gap_ratio=None,
-            cap_applied=False,
         )
 
     top = relevant[0]
-    if len(relevant) < 5:
-        gap = top / relevant[-1] if relevant[-1] > 0 else float("inf")
-    else:
-        gap = top / relevant[4] if relevant[4] > 0 else float("inf")
+    gap = _relevance_gap(relevant)
 
     if len(relevant) <= TIER_0_MAX_RELEVANT and top >= TIER_0_MIN_SCORE:
-        return TierDecision(
-            tier=0,
-            rules=SELECTOR_VERSION,
+        return _tier_decision(
+            0,
             relevant_count=len(relevant),
             top_score=top,
-            gap_ratio=gap if gap != float("inf") else None,
-            cap_applied=False,
+            gap_ratio=_reported_gap(gap),
         )
 
     if top >= 15 and gap >= TIER_1_MIN_GAP:
-        return TierDecision(
-            tier=1,
-            rules=SELECTOR_VERSION,
+        return _tier_decision(
+            1,
             relevant_count=len(relevant),
             top_score=top,
-            gap_ratio=gap if gap != float("inf") else None,
-            cap_applied=False,
+            gap_ratio=_reported_gap(gap),
         )
 
     chosen = 2
@@ -193,12 +210,11 @@ def _select_tier_with_decision(
             chosen = 1
             cap_applied = True
 
-    return TierDecision(
-        tier=chosen,
-        rules=SELECTOR_VERSION,
+    return _tier_decision(
+        chosen,
         relevant_count=len(relevant),
         top_score=top,
-        gap_ratio=gap if gap != float("inf") else None,
+        gap_ratio=_reported_gap(gap),
         cap_applied=cap_applied,
     )
 
@@ -275,6 +291,30 @@ def _build_prefix(facts_text: str) -> str:
     leading run of tokens.
     """
     return f"STORED FACTS:\n{facts_text}\n\n"
+
+
+def _multilens_search_prompt(prefix: str, query: str) -> str:
+    return (
+        prefix + f"QUERY: {query}\n\n"
+        "INSTRUCTIONS: Apply the three perspectives described in the system prompt "
+        "and return one response with the `## DIRECT`, `## CONTEXTUAL`, and `## TEMPORAL` sections."
+    )
+
+
+def _multilens_synthesis_prompt(
+    prefix: str,
+    query: str,
+    sections: dict[str, str],
+) -> str:
+    return (
+        prefix
+        + f"ORIGINAL QUERY: {query}\n\n"
+        + "MULTI-LENS FINDINGS:\n"
+        + f"## DIRECT\n{sections['direct'] or '(none)'}\n\n"
+        + f"## CONTEXTUAL\n{sections['contextual'] or '(none)'}\n\n"
+        + f"## TEMPORAL\n{sections['temporal'] or '(none)'}\n\n"
+        + "Synthesize these findings into a clear, concise answer."
+    )
 
 
 def _parse_multilens_sections(text: str) -> dict[str, str]:
@@ -378,14 +418,29 @@ def _build_warnings(
     - ``forgotten_fact``: matched facts whose confidence is 0.
     - ``conflicting_facts``: two cited facts in the same project+category.
     """
-    warnings: list[EnvelopeWarning] = []
+    superseded_by = _superseded_by_map(all_facts)
+    stale_ids, superseded_ids, forgotten_ids = _warning_id_groups(
+        scored_facts,
+        superseded_by,
+    )
+    warnings = _state_warnings(
+        stale_ids,
+        superseded_ids,
+        forgotten_ids,
+        superseded_by,
+    )
+    warnings.extend(_conflict_warnings(scored_facts, cited_ids))
+    return warnings
 
-    # Build lookup of supersession edges across all facts (active or not).
-    superseded_by: dict[str, str] = {}
-    for fact in all_facts:
-        if fact.supersedes:
-            superseded_by[fact.supersedes] = fact.id
 
+def _superseded_by_map(facts: list[Fact]) -> dict[str, str]:
+    return {fact.supersedes: fact.id for fact in facts if fact.supersedes}
+
+
+def _warning_id_groups(
+    scored_facts: list[tuple[int, Fact]],
+    superseded_by: dict[str, str],
+) -> tuple[list[str], list[str], list[str]]:
     stale_ids: list[str] = []
     superseded_ids: list[str] = []
     forgotten_ids: list[str] = []
@@ -398,7 +453,16 @@ def _build_warnings(
             superseded_ids.append(fact.supersedes)
         if fact.confidence == 0.0:
             forgotten_ids.append(fact.id)
+    return stale_ids, superseded_ids, forgotten_ids
 
+
+def _state_warnings(
+    stale_ids: list[str],
+    superseded_ids: list[str],
+    forgotten_ids: list[str],
+    superseded_by: dict[str, str],
+) -> list[EnvelopeWarning]:
+    warnings: list[EnvelopeWarning] = []
     if stale_ids:
         warnings.append(
             EnvelopeWarning(
@@ -424,12 +488,18 @@ def _build_warnings(
                 ids=sorted(set(forgotten_ids)),
             )
         )
+    return warnings
 
-    # Conflict detection: two or more cited facts share project+category.
-    cited_facts = [f for _, f in scored_facts if f.id in cited_ids]
+
+def _conflict_warnings(
+    scored_facts: list[tuple[int, Fact]],
+    cited_ids: set[str],
+) -> list[EnvelopeWarning]:
+    cited_facts = [fact for _, fact in scored_facts if fact.id in cited_ids]
     buckets: dict[tuple[str | None, str], list[str]] = {}
     for fact in cited_facts:
         buckets.setdefault((fact.project, fact.category.value), []).append(fact.id)
+    warnings: list[EnvelopeWarning] = []
     for (project, category), ids in buckets.items():
         if len(ids) >= 2:
             warnings.append(
@@ -443,7 +513,6 @@ def _build_warnings(
                     details={"project": project, "category": category},
                 )
             )
-
     return warnings
 
 
@@ -459,6 +528,49 @@ def _usage_from_totals(totals: dict[str, int | None]) -> UsageSummary:
         cached_tokens=cached_tokens,
         output_tokens=totals.get("output_tokens"),
         cache_hit_ratio=ratio,
+    )
+
+
+def _completion_trace(
+    *,
+    name: str,
+    system: str,
+    prompt: str,
+    completion: Completion,
+    elapsed_ms: float,
+    excerpt_chars: int,
+    output_chars: int,
+) -> tuple[LLMCallTrace, bool]:
+    prompt_excerpt, prompt_truncated = excerpt(prompt, excerpt_chars)
+    output_excerpt, output_truncated = excerpt(completion.text, output_chars)
+    return (
+        LLMCallTrace(
+            name=name,
+            system_excerpt=excerpt(system, excerpt_chars)[0],
+            prompt_excerpt=prompt_excerpt,
+            output_excerpt=output_excerpt,
+            elapsed_ms=elapsed_ms,
+            input_tokens=completion.input_tokens,
+            cached_tokens=completion.cached_tokens,
+        ),
+        prompt_truncated or output_truncated,
+    )
+
+
+def _failed_call_trace(
+    *,
+    name: str,
+    system: str,
+    prompt: str,
+    error: Exception,
+    excerpt_chars: int,
+) -> LLMCallTrace:
+    return LLMCallTrace(
+        name=name,
+        system_excerpt=excerpt(system, excerpt_chars)[0],
+        prompt_excerpt=excerpt(prompt, excerpt_chars)[0],
+        output_excerpt="",
+        error=str(error),
     )
 
 
@@ -522,14 +634,7 @@ async def recall_with_provenance(
     )
     tier = decision.tier
     prefilter_count = len([s for s, _ in scored_facts if s > 0])
-    usage_totals: dict[str, int | None] = {
-        "llm_calls": None,
-        "input_tokens": None,
-        "cached_tokens": None,
-        "output_tokens": None,
-    }
 
-    call_traces: list[LLMCallTrace] = []
     excerpt_chars = (
         DEFAULT_PROMPT_EXCERPT_CHARS * 4
         if verbose_trace
@@ -541,28 +646,108 @@ async def recall_with_provenance(
         else DEFAULT_OUTPUT_EXCERPT_CHARS
     )
 
-    cited_ids: list[str] = []
+    (
+        answer,
+        quality,
+        usage_totals,
+        cited_ids,
+        call_traces,
+        truncated_any,
+    ) = await _run_recall_tier(
+        tier,
+        scored_facts,
+        query,
+        settings,
+        prefilter_count=prefilter_count,
+        with_trace=with_trace,
+        excerpt_chars=excerpt_chars,
+        output_chars=output_chars,
+    )
 
-    truncated_any = False
+    latency_ms = (time.monotonic() - t0) * 1000
+
+    provenance = await _build_recall_provenance(
+        store,
+        query=query,
+        project=project,
+        tier=tier,
+        quality=quality,
+        decision=decision,
+        scored_facts=scored_facts,
+        cited_ids=cited_ids,
+        usage_totals=usage_totals,
+        latency_ms=latency_ms,
+        prefilter_count=prefilter_count,
+        max_prefilter_matches=max_prefilter_matches,
+        max_sources=max_sources,
+    )
+    trace_obj = _trace_for_recall(
+        with_trace=with_trace,
+        provenance=provenance,
+        call_traces=call_traces,
+        excerpt_chars=excerpt_chars,
+        truncated_any=truncated_any,
+        verbose_trace=verbose_trace,
+    )
+
+    await _record_recall_observation(
+        store,
+        query=query,
+        project=project,
+        tier=tier,
+        prefilter_count=prefilter_count,
+        latency_ms=latency_ms,
+        quality=quality,
+        usage_totals=usage_totals,
+    )
+
+    logger.info(
+        "recall tier=%d prefilter=%d latency=%.0fms quality=%s calls=%s input=%s cached=%s",
+        tier,
+        prefilter_count,
+        latency_ms,
+        quality,
+        usage_totals.get("llm_calls"),
+        usage_totals.get("input_tokens"),
+        usage_totals.get("cached_tokens"),
+    )
+    return answer, quality, provenance, trace_obj
+
+
+async def _run_recall_tier(
+    tier: int,
+    scored_facts: list[tuple[int, Fact]],
+    query: str,
+    settings,
+    *,
+    prefilter_count: int,
+    with_trace: bool,
+    excerpt_chars: int,
+    output_chars: int,
+) -> tuple[str, str, dict[str, int | None], list[str], list[LLMCallTrace], bool]:
     if tier == 0:
+        usage_totals: dict[str, int | None] = {
+            "llm_calls": 0,
+            "input_tokens": None,
+            "cached_tokens": None,
+            "output_tokens": None,
+        }
         answer = _format_direct(scored_facts, query)
-        usage_totals["llm_calls"] = 0
-        if any(s >= RELEVANCE_FLOOR for s, _ in scored_facts):
+        if any(score >= RELEVANCE_FLOOR for score, _ in scored_facts):
             quality = "high"
-            cited_ids = [f.id for s, f in scored_facts if s >= RELEVANCE_FLOOR][:10]
+            cited_ids = [
+                fact.id for score, fact in scored_facts if score >= RELEVANCE_FLOOR
+            ][:10]
         elif prefilter_count > 0:
             quality = "low"
+            cited_ids = []
         else:
             quality = "none"
-    elif tier == 1:
-        (
-            answer,
-            quality,
-            usage_totals,
-            cited_ids,
-            call_traces,
-            truncated_any,
-        ) = await _single_agent_recall(
+            cited_ids = []
+        return answer, quality, usage_totals, cited_ids, [], False
+
+    if tier == 1:
+        return await _single_agent_recall(
             scored_facts,
             query,
             settings,
@@ -570,55 +755,45 @@ async def recall_with_provenance(
             excerpt_chars=excerpt_chars,
             output_chars=output_chars,
         )
-    else:
-        tier2_mode = _resolve_tier2_mode(settings.tier2_mode)
-        if tier2_mode == "single":
-            (
-                answer,
-                quality,
-                usage_totals,
-                cited_ids,
-                call_traces,
-                truncated_any,
-            ) = await _single_call_tier2_recall(
-                scored_facts,
-                query,
-                settings,
-                with_trace=with_trace,
-                excerpt_chars=excerpt_chars,
-                output_chars=output_chars,
-            )
-        else:
-            (
-                answer,
-                quality,
-                usage_totals,
-                cited_ids,
-                call_traces,
-                truncated_any,
-            ) = await _multilens_recall(
-                scored_facts,
-                query,
-                settings,
-                with_trace=with_trace,
-                excerpt_chars=excerpt_chars,
-                output_chars=output_chars,
-            )
 
-    latency_ms = (time.monotonic() - t0) * 1000
+    tier2_runner = (
+        _single_call_tier2_recall
+        if _resolve_tier2_mode(settings.tier2_mode) == "single"
+        else _multilens_recall
+    )
+    return await tier2_runner(
+        scored_facts,
+        query,
+        settings,
+        with_trace=with_trace,
+        excerpt_chars=excerpt_chars,
+        output_chars=output_chars,
+    )
 
-    # Build provenance from artifacts already computed.
+
+async def _build_recall_provenance(
+    store: FactStore | AsyncFactStore,
+    *,
+    query: str,
+    project: str | None,
+    tier: int,
+    quality: str,
+    decision: TierDecision,
+    scored_facts: list[tuple[int, Fact]],
+    cited_ids: list[str],
+    usage_totals: dict[str, int | None],
+    latency_ms: float,
+    prefilter_count: int,
+    max_prefilter_matches: int,
+    max_sources: int,
+) -> RecallProvenance:
     cited_set = set(cited_ids)
     prefilter_matches = [
         PrefilterMatch(id=fact.id, score=score, above_floor=score >= RELEVANCE_FLOOR)
         for score, fact in scored_facts[:max_prefilter_matches]
     ]
-    sources = _build_source_summaries(scored_facts, cited_set, max_sources=max_sources)
     all_facts = await _load_all_facts(store)
-    warnings = _build_warnings(scored_facts, all_facts, cited_set)
-    usage = _usage_from_totals(usage_totals)
-
-    provenance = RecallProvenance(
+    return RecallProvenance(
         query=query,
         project=project,
         tier=tier,
@@ -626,25 +801,50 @@ async def recall_with_provenance(
         selected_decision=decision,
         prefilter_count=prefilter_count,
         prefilter_matches=prefilter_matches,
-        source_fact_ids=[m.id for m in prefilter_matches if m.above_floor],
-        sources=sources,
+        source_fact_ids=[match.id for match in prefilter_matches if match.above_floor],
+        sources=_build_source_summaries(
+            scored_facts,
+            cited_set,
+            max_sources=max_sources,
+        ),
         cited_fact_ids=list(cited_ids),
-        warnings=warnings,
-        usage=usage,
+        warnings=_build_warnings(scored_facts, all_facts, cited_set),
+        usage=_usage_from_totals(usage_totals),
         latency_ms=latency_ms,
     )
 
-    trace_obj: RecallTrace | None = None
-    if with_trace:
-        trace_obj = RecallTrace(
-            provenance=provenance,
-            calls=call_traces,
-            excerpt_chars=excerpt_chars,
-            truncated=truncated_any,
-            verbose=verbose_trace,
-        )
 
-    # Log for observability (unchanged contract)
+def _trace_for_recall(
+    *,
+    with_trace: bool,
+    provenance: RecallProvenance,
+    call_traces: list[LLMCallTrace],
+    excerpt_chars: int,
+    truncated_any: bool,
+    verbose_trace: bool,
+) -> RecallTrace | None:
+    if not with_trace:
+        return None
+    return RecallTrace(
+        provenance=provenance,
+        calls=call_traces,
+        excerpt_chars=excerpt_chars,
+        truncated=truncated_any,
+        verbose=verbose_trace,
+    )
+
+
+async def _record_recall_observation(
+    store: FactStore | AsyncFactStore,
+    *,
+    query: str,
+    project: str | None,
+    tier: int,
+    prefilter_count: int,
+    latency_ms: float,
+    quality: str,
+    usage_totals: dict[str, int | None],
+) -> None:
     try:
         await _log_recall(
             store,
@@ -663,18 +863,6 @@ async def recall_with_provenance(
         )
     except Exception:
         logger.debug("Failed to log recall record", exc_info=True)
-
-    logger.info(
-        "recall tier=%d prefilter=%d latency=%.0fms quality=%s calls=%s input=%s cached=%s",
-        tier,
-        prefilter_count,
-        latency_ms,
-        quality,
-        usage_totals.get("llm_calls"),
-        usage_totals.get("input_tokens"),
-        usage_totals.get("cached_tokens"),
-    )
-    return answer, quality, provenance, trace_obj
 
 
 async def _prefilter_facts(
@@ -801,11 +989,7 @@ async def _multilens_recall(
         "output_tokens": None,
     }
 
-    search_prompt = (
-        prefix + f"QUERY: {query}\n\n"
-        "INSTRUCTIONS: Apply the three perspectives described in the system prompt "
-        "and return one response with the `## DIRECT`, `## CONTEXTUAL`, and `## TEMPORAL` sections."
-    )
+    search_prompt = _multilens_search_prompt(prefix, query)
 
     traces: list[LLMCallTrace] = []
     truncated_any = False
@@ -826,12 +1010,12 @@ async def _multilens_recall(
         logger.warning("multi-lens search call failed: %s", exc)
         if with_trace:
             traces.append(
-                LLMCallTrace(
+                _failed_call_trace(
                     name="multilens_search",
-                    system_excerpt=excerpt(MULTI_LENS_SYSTEM, excerpt_chars)[0],
-                    prompt_excerpt=excerpt(search_prompt, excerpt_chars)[0],
-                    output_excerpt="",
-                    error=str(exc),
+                    system=MULTI_LENS_SYSTEM,
+                    prompt=search_prompt,
+                    error=exc,
+                    excerpt_chars=excerpt_chars,
                 )
             )
         raise
@@ -841,30 +1025,19 @@ async def _multilens_recall(
     multilens_cited = _extract_cited_ids(search_completion.text, candidate_ids)
 
     if with_trace:
-        prompt_excerpt, prompt_truncated = excerpt(search_prompt, excerpt_chars)
-        output_excerpt, output_truncated = excerpt(search_completion.text, output_chars)
-        traces.append(
-            LLMCallTrace(
-                name="multilens_search",
-                system_excerpt=excerpt(MULTI_LENS_SYSTEM, excerpt_chars)[0],
-                prompt_excerpt=prompt_excerpt,
-                output_excerpt=output_excerpt,
-                elapsed_ms=search_elapsed,
-                input_tokens=search_completion.input_tokens,
-                cached_tokens=search_completion.cached_tokens,
-            )
+        trace, truncated = _completion_trace(
+            name="multilens_search",
+            system=MULTI_LENS_SYSTEM,
+            prompt=search_prompt,
+            completion=search_completion,
+            elapsed_ms=search_elapsed,
+            excerpt_chars=excerpt_chars,
+            output_chars=output_chars,
         )
-        truncated_any = truncated_any or prompt_truncated or output_truncated
+        traces.append(trace)
+        truncated_any = truncated_any or truncated
 
-    synthesis_prompt = (
-        prefix
-        + f"ORIGINAL QUERY: {query}\n\n"
-        + "MULTI-LENS FINDINGS:\n"
-        + f"## DIRECT\n{sections['direct'] or '(none)'}\n\n"
-        + f"## CONTEXTUAL\n{sections['contextual'] or '(none)'}\n\n"
-        + f"## TEMPORAL\n{sections['temporal'] or '(none)'}\n\n"
-        + "Synthesize these findings into a clear, concise answer."
-    )
+    synthesis_prompt = _multilens_synthesis_prompt(prefix, query, sections)
 
     t_synth = time.monotonic()
     synthesis_completion = await asyncio.wait_for(
@@ -884,22 +1057,17 @@ async def _multilens_recall(
     cited_ids = synthesis_cited or multilens_cited
 
     if with_trace:
-        prompt_excerpt, prompt_truncated = excerpt(synthesis_prompt, excerpt_chars)
-        output_excerpt, output_truncated = excerpt(
-            synthesis_completion.text, output_chars
+        trace, truncated = _completion_trace(
+            name="synthesis",
+            system=SYNTHESIS_SYSTEM,
+            prompt=synthesis_prompt,
+            completion=synthesis_completion,
+            elapsed_ms=synth_elapsed,
+            excerpt_chars=excerpt_chars,
+            output_chars=output_chars,
         )
-        traces.append(
-            LLMCallTrace(
-                name="synthesis",
-                system_excerpt=excerpt(SYNTHESIS_SYSTEM, excerpt_chars)[0],
-                prompt_excerpt=prompt_excerpt,
-                output_excerpt=output_excerpt,
-                elapsed_ms=synth_elapsed,
-                input_tokens=synthesis_completion.input_tokens,
-                cached_tokens=synthesis_completion.cached_tokens,
-            )
-        )
-        truncated_any = truncated_any or prompt_truncated or output_truncated
+        traces.append(trace)
+        truncated_any = truncated_any or truncated
 
     return answer, quality, totals, cited_ids, traces, truncated_any
 

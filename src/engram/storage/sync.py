@@ -89,6 +89,16 @@ def _run_git(
     )
 
 
+def _require_git_success(
+    proc: subprocess.CompletedProcess[str],
+    *,
+    code: str,
+    message: str,
+) -> None:
+    if proc.returncode != 0:
+        raise SyncError(code=code, message=message, git_stderr=proc.stderr)
+
+
 def _ensure_git_available() -> None:
     if shutil.which("git") is None:
         raise SyncError(
@@ -243,12 +253,11 @@ def _ensure_managed_file(
 def _commit_untrack(data_dir: Path, paths: list[str], timeout: float) -> bool:
     """Commit removal of tracked local-only files without other staged changes."""
     head_proc = _run_git(["rev-parse", "HEAD"], cwd=data_dir, timeout=timeout)
-    if head_proc.returncode != 0:
-        raise SyncError(
-            code="untrack_locks_commit_failed",
-            message="Failed to resolve HEAD before untracking engram state files.",
-            git_stderr=head_proc.stderr,
-        )
+    _require_git_success(
+        head_proc,
+        code="untrack_locks_commit_failed",
+        message="Failed to resolve HEAD before untracking engram state files.",
+    )
     head_before = head_proc.stdout.strip()
 
     head_paths_proc = _run_git(
@@ -256,12 +265,11 @@ def _commit_untrack(data_dir: Path, paths: list[str], timeout: float) -> bool:
         cwd=data_dir,
         timeout=timeout,
     )
-    if head_paths_proc.returncode != 0:
-        raise SyncError(
-            code="untrack_locks_commit_failed",
-            message="Failed to inspect tracked engram state files.",
-            git_stderr=head_paths_proc.stderr,
-        )
+    _require_git_success(
+        head_paths_proc,
+        code="untrack_locks_commit_failed",
+        message="Failed to inspect tracked engram state files.",
+    )
     head_paths = [p for p in head_paths_proc.stdout.splitlines() if p.strip()]
     new_commit = ""
     if head_paths:
@@ -270,31 +278,28 @@ def _commit_untrack(data_dir: Path, paths: list[str], timeout: float) -> bool:
             read_proc = _run_git(
                 ["read-tree", "HEAD"], cwd=data_dir, timeout=timeout, env=env
             )
-            if read_proc.returncode != 0:
-                raise SyncError(
-                    code="untrack_locks_commit_failed",
-                    message="Failed to prepare temporary git index.",
-                    git_stderr=read_proc.stderr,
-                )
+            _require_git_success(
+                read_proc,
+                code="untrack_locks_commit_failed",
+                message="Failed to prepare temporary git index.",
+            )
             remove_proc = _run_git(
                 ["update-index", "--force-remove", "--", *head_paths],
                 cwd=data_dir,
                 timeout=timeout,
                 env=env,
             )
-            if remove_proc.returncode != 0:
-                raise SyncError(
-                    code="untrack_locks_commit_failed",
-                    message="Failed to stage engram state file removals.",
-                    git_stderr=remove_proc.stderr,
-                )
+            _require_git_success(
+                remove_proc,
+                code="untrack_locks_commit_failed",
+                message="Failed to stage engram state file removals.",
+            )
             tree_proc = _run_git(["write-tree"], cwd=data_dir, timeout=timeout, env=env)
-            if tree_proc.returncode != 0:
-                raise SyncError(
-                    code="untrack_locks_commit_failed",
-                    message="Failed to write temporary git tree.",
-                    git_stderr=tree_proc.stderr,
-                )
+            _require_git_success(
+                tree_proc,
+                code="untrack_locks_commit_failed",
+                message="Failed to write temporary git tree.",
+            )
             commit_proc = _run_git(
                 [
                     "commit-tree",
@@ -307,12 +312,11 @@ def _commit_untrack(data_dir: Path, paths: list[str], timeout: float) -> bool:
                 cwd=data_dir,
                 timeout=timeout,
             )
-            if commit_proc.returncode != 0:
-                raise SyncError(
-                    code="untrack_locks_commit_failed",
-                    message="Failed to commit untrack of engram lock/state files.",
-                    git_stderr=commit_proc.stderr,
-                )
+            _require_git_success(
+                commit_proc,
+                code="untrack_locks_commit_failed",
+                message="Failed to commit untrack of engram lock/state files.",
+            )
             new_commit = commit_proc.stdout.strip()
 
     rm_proc = _run_git(
@@ -320,12 +324,11 @@ def _commit_untrack(data_dir: Path, paths: list[str], timeout: float) -> bool:
         cwd=data_dir,
         timeout=timeout,
     )
-    if rm_proc.returncode != 0:
-        raise SyncError(
-            code="untrack_locks_failed",
-            message="Failed to untrack engram lock/state files.",
-            git_stderr=rm_proc.stderr,
-        )
+    _require_git_success(
+        rm_proc,
+        code="untrack_locks_failed",
+        message="Failed to untrack engram lock/state files.",
+    )
 
     if new_commit:
         update_ref_proc = _run_git(
@@ -333,12 +336,11 @@ def _commit_untrack(data_dir: Path, paths: list[str], timeout: float) -> bool:
             cwd=data_dir,
             timeout=timeout,
         )
-        if update_ref_proc.returncode != 0:
-            raise SyncError(
-                code="untrack_locks_commit_failed",
-                message="Failed to update HEAD after untracking engram state files.",
-                git_stderr=update_ref_proc.stderr,
-            )
+        _require_git_success(
+            update_ref_proc,
+            code="untrack_locks_commit_failed",
+            message="Failed to update HEAD after untracking engram state files.",
+        )
         return True
     return False
 

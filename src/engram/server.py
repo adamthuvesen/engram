@@ -117,20 +117,22 @@ def _tool_result(
 
 
 logger = logging.getLogger(__name__)
+StoreGetter = Callable[[], AsyncFactStore]
 
 
-def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
-    """Create an Engram MCP server with an isolated, injectable store.
+def _store_getter(store: FactStore | AsyncFactStore | None) -> StoreGetter:
+    store_ref: FactStore | AsyncFactStore | None = store
 
-    ``store=None`` is lazy: the default ``AsyncFactStore`` is created on first
-    tool call so environment changes made before runtime still take effect.
+    def get_store() -> AsyncFactStore:
+        nonlocal store_ref
+        if store_ref is None:
+            store_ref = AsyncFactStore()
+        return async_store(store_ref)
 
-    When ``ENGRAM_SYNC_ENABLED`` is true, the server also runs a background
-    auto-sync task on a configurable interval and performs one final sync on
-    shutdown. The task lives in the MCP lifespan, so it starts when the
-    server starts and is cancelled on shutdown.
-    """
+    return get_store
 
+
+def _make_lifespan(get_store: StoreGetter):
     @asynccontextmanager
     async def lifespan(_app: FastMCP):
         settings = get_settings()
@@ -166,15 +168,28 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
                     get_store().data_dir, timeout=settings.sync_timeout
                 )
 
-    app = FastMCP("engram", instructions=INSTRUCTIONS, lifespan=lifespan)
-    store_ref: FactStore | AsyncFactStore | None = store
+    return lifespan
 
-    def get_store() -> AsyncFactStore:
-        nonlocal store_ref
-        if store_ref is None:
-            store_ref = AsyncFactStore()
-        return async_store(store_ref)
 
+def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
+    """Create an Engram MCP server with an isolated, injectable store."""
+    get_store = _store_getter(store)
+    app = FastMCP(
+        "engram",
+        instructions=INSTRUCTIONS,
+        lifespan=_make_lifespan(get_store),
+    )
+    _register_capture_tools(app, get_store)
+    _register_candidate_tools(app, get_store)
+    _register_recall_tools(app, get_store)
+    _register_fact_edit_tools(app, get_store)
+    _register_fact_correction_tools(app, get_store)
+    _register_maintenance_tools(app, get_store)
+    _register_reporting_tools(app, get_store)
+    return app
+
+
+def _register_capture_tools(app: FastMCP, get_store: StoreGetter) -> None:
     @app.tool()
     async def remember(
         content: str,
@@ -207,6 +222,8 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         )
         return _tool_result(result, format=format)
 
+
+def _register_candidate_tools(app: FastMCP, get_store: StoreGetter) -> None:
     @app.tool()
     async def list_candidates(
         status: str = "pending",
@@ -253,6 +270,8 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         )
         return _tool_result(result, format=format)
 
+
+def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
     @app.tool()
     async def recall(
         query: str,
@@ -332,6 +351,8 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         )
         return _tool_result(result, format=format)
 
+
+def _register_fact_edit_tools(app: FastMCP, get_store: StoreGetter) -> None:
     @app.tool()
     async def forget(
         fact_id: str,
@@ -380,6 +401,8 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         )
         return _tool_result(result, format=format)
 
+
+def _register_fact_correction_tools(app: FastMCP, get_store: StoreGetter) -> None:
     @app.tool()
     async def correct_memory(
         fact_id: str,
@@ -434,6 +457,8 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         result = await op_unmark_stale(fact_id, store=get_store())
         return _tool_result(result, format="json")
 
+
+def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
     @app.tool()
     async def import_memories(
         source: str = "claude_code",
@@ -514,6 +539,8 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         )
         return _tool_result(result, format="json")
 
+
+def _register_reporting_tools(app: FastMCP, get_store: StoreGetter) -> None:
     @app.tool()
     async def memory_stats(format: str = "text") -> ToolResult:
         """Show memory system statistics: fact counts, storage size, category breakdown."""
@@ -549,8 +576,6 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
         """
         result = await op_sync(timeout=timeout, store=get_store())
         return _tool_result(result, format=format)
-
-    return app
 
 
 mcp = create_mcp()
