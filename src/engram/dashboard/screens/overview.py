@@ -9,7 +9,6 @@ from textual.widgets import Label, OptionList, Sparkline, Static
 from textual.widgets.option_list import Option
 
 from engram.dashboard.data import DashboardData, format_bytes
-from engram.dashboard.widgets.stat_card import StatCard
 
 logger = logging.getLogger(__name__)
 
@@ -24,29 +23,24 @@ class OverviewScreen(VerticalScroll):
     def compose(self) -> ComposeResult:
         d = self._data
 
-        with Horizontal(id="stats-row"):
-            yield StatCard("Total", d.total, d.activity_30d, id="stat-total")
-            yield StatCard("Active", d.active_count, id="stat-active")
-            yield StatCard("Forgotten", d.forgotten_count, id="stat-forgotten")
-            yield StatCard("Expired", d.expired_count, id="stat-expired")
-            yield StatCard("Pending", d.pending_count, id="stat-candidates")
+        yield Static(self._stat_strip_text(), id="stat-strip")
 
         with Horizontal(id="distributions"):
             with Vertical(id="cat-panel", classes="dist-panel"):
-                yield Label("Categories [dim]↑↓ Enter[/]", classes="panel-title")
+                yield Label("categories [dim]↑↓ enter[/]", classes="panel-title")
                 yield OptionList(
                     *self._bar_options(d.by_category, "cat", "bar-category"),
                     id="cat-list",
                 )
             with Vertical(id="proj-panel", classes="dist-panel"):
-                yield Label("Projects [dim]↑↓ Enter[/]", classes="panel-title")
+                yield Label("projects [dim]↑↓ enter[/]", classes="panel-title")
                 yield OptionList(
                     *self._bar_options(d.by_project, "proj", "bar-project"),
                     id="proj-list",
                 )
 
         with Vertical(id="activity-panel"):
-            yield Label("Activity — last 30 days", classes="panel-title")
+            yield Label("activity [dim]· last 30 days[/]", classes="panel-title")
             spark_data = (
                 d.activity_30d if any(v > 0 for v in d.activity_30d) else [0, 0.1]
             )
@@ -62,15 +56,26 @@ class OverviewScreen(VerticalScroll):
                 classes="activity-stats",
             )
 
+    def _stat_strip_text(self) -> str:
+        d = self._data
+        sep = "   [dim]·[/]   "
+        return (
+            f"[dim]total[/] [b]{d.total:,}[/]{sep}"
+            f"[dim]active[/] [b $stat-active]{d.active_count:,}[/]{sep}"
+            f"[dim]forgotten[/] [b $stat-forgotten]{d.forgotten_count}[/]{sep}"
+            f"[dim]expired[/] [b $stat-expired]{d.expired_count}[/]{sep}"
+            f"[dim]pending[/] [b $stat-pending]{d.pending_count}[/]"
+        )
+
     def _get_theme_color(self, var_name: str) -> str:
         try:
             variables = self.app.get_css_variables()
-            return variables.get(var_name, "#d97757")
+            return variables.get(var_name, "#7c87f5")
         except Exception:
             logger.debug(
                 "Unable to read dashboard theme color %s", var_name, exc_info=True
             )
-            return "#d97757"
+            return "#7c87f5"
 
     def _bar_options(
         self, dist: dict[str, int], prefix: str, color_var: str
@@ -81,9 +86,9 @@ class OverviewScreen(VerticalScroll):
         max_val = max(dist.values()) or 1
         options = []
         for name, count in dist.items():
-            bar_len = max(1, int(24 * count / max_val))
+            bar_len = max(1, int(14 * count / max_val))
             bar = "▇" * bar_len
-            label = f"{name[:14]:<14}  [{color}]{bar}[/] {count}"
+            label = f"{name[:13]:<13} [{color}]{bar}[/] {count}"
             options.append(Option(label, id=f"{prefix}-{name}"))
         return options
 
@@ -96,12 +101,7 @@ class OverviewScreen(VerticalScroll):
             focused.highlighted is None or focused.highlighted == 0
         ):
             event.prevent_default()
-            try:
-                from textual.widgets import Tabs
-
-                self.app.query_one(Tabs).focus()
-            except Exception:
-                logger.debug("Unable to move focus from overview list", exc_info=True)
+            self.app.focus_nav()
             return
 
         if event.key in ("left", "right"):
@@ -144,11 +144,6 @@ class OverviewScreen(VerticalScroll):
     def refresh_data(self, data: DashboardData) -> None:
         self._data = data
         try:
-            self.query_one("#stat-total", StatCard).set_value(data.total)
-            self.query_one("#stat-active", StatCard).set_value(data.active_count)
-            self.query_one("#stat-forgotten", StatCard).set_value(data.forgotten_count)
-            self.query_one("#stat-expired", StatCard).set_value(data.expired_count)
-            self.query_one("#stat-candidates", StatCard).set_value(data.pending_count)
-            self.query_one("#stat-total", StatCard).update_spark(data.activity_30d)
+            self.query_one("#stat-strip", Static).update(self._stat_strip_text())
         except Exception:
-            logger.exception("Unable to refresh overview stat cards")
+            logger.exception("Unable to refresh overview stat strip")

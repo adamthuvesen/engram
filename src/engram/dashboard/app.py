@@ -1,17 +1,35 @@
 """Engram terminal dashboard — main app."""
 
+from collections.abc import Callable
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 
+from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.timer import Timer
-from textual.widgets import Footer, Header, Label, TabbedContent, TabPane
+from textual.widgets import (
+    Input,
+    Label,
+    OptionList,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
+)
+from textual.widgets.option_list import Option
 
 from engram.dashboard.constants import REFRESH_INTERVAL, UNDO_WINDOW_S
-from engram.dashboard.data import DashboardData, content_hash_for, load_dashboard_data
+from engram.dashboard.data import (
+    DashboardData,
+    content_hash_for,
+    format_bytes,
+    load_dashboard_data,
+)
 from engram.dashboard.screens.candidates import CandidatesScreen
 from engram.dashboard.screens.category import CategoryDetailScreen
 from engram.dashboard.screens.facts import FactsScreen
@@ -27,51 +45,101 @@ CSS_PATH = Path(__file__).parent / "styles" / "dashboard.tcss"
 logger = logging.getLogger(__name__)
 
 
-ANTHROPIC_DARK = Theme(
-    name="anthropic-dark",
-    primary="#d97757",
-    secondary="#6a9bcc",
-    accent="#d97757",
-    foreground="#f5f4ed",
-    background="#1a1816",
-    surface="#2a2520",
-    panel="#3d3630",
-    warning="#eda100",
-    error="#f7768e",
-    success="#788c5d",
+# Linear/Vercel-inspired palette: cool near-monochrome base, hairline borders,
+# a single indigo accent. Dark is the default; `t` toggles to light.
+ENGRAM_DARK = Theme(
+    name="engram-dark",
+    primary="#7c87f5",
+    secondary="#4cb782",
+    accent="#7c87f5",
+    foreground="#f7f8f8",
+    background="#08090a",
+    surface="#101113",
+    panel="#17181b",
+    warning="#e0a82e",
+    error="#e5484d",
+    success="#4cb782",
     dark=True,
     variables={
-        "stat-active": "#788c5d",
-        "stat-forgotten": "#f7768e",
-        "stat-expired": "#eda100",
-        "stat-pending": "#6a9bcc",
-        "bar-category": "#d97757",
-        "bar-project": "#788c5d",
+        "card-border": "#26282d",
+        "text-muted": "#8a8f98",
+        "stat-active": "#4cb782",
+        "stat-forgotten": "#e5484d",
+        "stat-expired": "#e0a82e",
+        "stat-pending": "#7c87f5",
+        "bar-category": "#7c87f5",
+        "bar-project": "#4cb782",
     },
 )
 
-ANTHROPIC_LIGHT = Theme(
-    name="anthropic-light",
-    primary="#c15f3c",
-    secondary="#4a7aaa",
-    accent="#c15f3c",
-    foreground="#141413",
-    background="#f5f4ed",
-    surface="#ffffff",
-    panel="#e8e6dc",
-    warning="#b88600",
-    error="#c15050",
-    success="#5a7040",
+ENGRAM_LIGHT = Theme(
+    name="engram-light",
+    primary="#5e6ad2",
+    secondary="#2f9e6b",
+    accent="#5e6ad2",
+    foreground="#0a0a0a",
+    background="#ffffff",
+    surface="#fafafa",
+    panel="#f1f1f2",
+    warning="#b7791f",
+    error="#d23f44",
+    success="#2f9e6b",
     dark=False,
     variables={
-        "stat-active": "#5a7040",
-        "stat-forgotten": "#c15050",
-        "stat-expired": "#b88600",
-        "stat-pending": "#4a7aaa",
-        "bar-category": "#c15f3c",
-        "bar-project": "#5a7040",
+        "card-border": "#e6e6e8",
+        "text-muted": "#6b7280",
+        "stat-active": "#2f9e6b",
+        "stat-forgotten": "#d23f44",
+        "stat-expired": "#b7791f",
+        "stat-pending": "#5e6ad2",
+        "bar-category": "#5e6ad2",
+        "bar-project": "#2f9e6b",
     },
 )
+
+
+@dataclass(frozen=True)
+class DashboardSection:
+    id: str
+    title: str
+    screen: type
+    focus: str | None = None
+    count: Callable[[DashboardData], int] | None = None
+
+
+SECTIONS = (
+    DashboardSection(
+        "overview", "overview", OverviewScreen, "#cat-list", lambda d: d.active_count
+    ),
+    DashboardSection("timeline", "timeline", TimelineScreen),
+    DashboardSection(
+        "facts", "facts", FactsScreen, "#facts-table", lambda d: d.active_count
+    ),
+    DashboardSection(
+        "candidates",
+        "candidates",
+        CandidatesScreen,
+        "#cand-table",
+        lambda d: d.pending_count,
+    ),
+    DashboardSection(
+        "projects",
+        "projects",
+        ProjectsScreen,
+        "#proj-overview-table",
+        lambda d: len(d.projects),
+    ),
+    DashboardSection(
+        "forgotten",
+        "forgotten",
+        ForgottenScreen,
+        "#forgotten-table",
+        lambda d: d.forgotten_count,
+    ),
+)
+SECTION_BY_ID = {section.id: section for section in SECTIONS}
+SECTION_INDEX = {section.id: index for index, section in enumerate(SECTIONS)}
+SECTION_IDS = frozenset(SECTION_BY_ID)
 
 
 class EngramDashboard(App):
@@ -82,12 +150,10 @@ class EngramDashboard(App):
     CSS_PATH = CSS_PATH
 
     BINDINGS = [
-        Binding("1", "show_tab('overview')", "Overview", show=False),
-        Binding("2", "show_tab('timeline')", "Timeline", show=False),
-        Binding("3", "show_tab('facts')", "Facts", show=False),
-        Binding("4", "show_tab('candidates')", "Candidates", show=False),
-        Binding("5", "show_tab('projects')", "Projects", show=False),
-        Binding("6", "show_tab('forgotten')", "Forgotten", show=False),
+        *[
+            Binding(str(index), f"show_tab('{section.id}')", section.title, show=False)
+            for index, section in enumerate(SECTIONS, start=1)
+        ],
         Binding("t", "toggle_theme", "Theme", show=False),
         Binding("question_mark", "show_help", "Help", show=False),
         Binding("q", "quit", "Quit", show=False),
@@ -98,57 +164,100 @@ class EngramDashboard(App):
 
     def __init__(self) -> None:
         super().__init__()
-        self.register_theme(ANTHROPIC_DARK)
-        self.register_theme(ANTHROPIC_LIGHT)
-        self.theme = "anthropic-dark"
+        self.register_theme(ENGRAM_DARK)
+        self.register_theme(ENGRAM_LIGHT)
+        self.theme = "engram-dark"
         self._store = FactStore()
         self._data: DashboardData = load_dashboard_data(self._store)
         self._last_hash: int = self._data.content_hash
-        self._undo_stack: list[tuple[str, float]] = []
+        self._undo_stack: list[str] = []
         self._undo_timer: Timer | None = None
         self._dirty_tabs: set[str] = set()
         self._pending_forget: list[str] = []
         self._pending_reject: list[str] = []
 
     def compose(self) -> ComposeResult:
-        yield Header()
         d = self._data
-        with TabbedContent(initial="overview", id="tabs"):
-            with TabPane(f"Overview ({d.active_count})", id="overview"):
-                yield OverviewScreen(d)
-            with TabPane("Timeline", id="timeline"):
-                yield TimelineScreen(d)
-            with TabPane(f"Facts ({d.active_count})", id="facts"):
-                yield FactsScreen(d)
-            with TabPane(f"Candidates ({d.pending_count})", id="candidates"):
-                yield CandidatesScreen(d)
-            with TabPane(f"Projects ({len(d.projects)})", id="projects"):
-                yield ProjectsScreen(d)
-            with TabPane(f"Forgotten ({d.forgotten_count})", id="forgotten"):
-                yield ForgottenScreen(d)
-        yield Label("? help  1-6 tabs  t theme  q quit", id="dynamic-footer")
-        yield Footer()
+        with Vertical(id="frame"):
+            yield Static(self._status_text(), id="status-bar")
+            with Horizontal(id="main"):
+                with Vertical(id="sidebar"):
+                    yield Static("sections", id="sidebar-title")
+                    yield OptionList(*self._nav_options(), id="nav")
+                with TabbedContent(initial=SECTIONS[0].id, id="tabs"):
+                    for section in SECTIONS:
+                        with TabPane(section.title, id=section.id):
+                            yield section.screen(d)
+            yield Label(FOOTER_HINTS["default"], id="dynamic-footer")
 
-    TAB_FOCUS = {
-        "overview": "#cat-list",
-        "timeline": None,
-        "facts": "#facts-table",
-        "candidates": "#cand-table",
-        "projects": "#proj-overview-table",
-        "forgotten": "#forgotten-table",
-    }
+    def _nav_options(self) -> list[Option]:
+        d = self._data
+        options = []
+        for i, section in enumerate(SECTIONS, start=1):
+            count = section.count(d) if section.count else None
+            suffix = f"  [dim]{count}[/]" if count is not None else ""
+            options.append(
+                Option(f"[dim]{i}[/]  {section.title}{suffix}", id=f"nav-{section.id}")
+            )
+        return options
+
+    def _status_text(self) -> str:
+        d = self._data
+        sep = "  [dim]·[/]  "
+        return (
+            f"[b]engram[/]  [$accent]memory[/]{sep}"
+            f"{d.active_count:,} facts{sep}"
+            f"{len(d.projects)} projects{sep}"
+            f"{d.pending_count} pending{sep}"
+            f"{d.forgotten_count} forgotten{sep}"
+            f"{format_bytes(d.storage_bytes)}"
+        )
+
+    def _set_screen_titles(self) -> None:
+        for section in SECTIONS:
+            try:
+                self.query_one(section.screen).border_title = section.title
+            except Exception:
+                logger.debug(
+                    "Unable to set border title for %s", section.id, exc_info=True
+                )
 
     def on_mount(self) -> None:
+        self._set_screen_titles()
         self.set_interval(REFRESH_INTERVAL, self._refresh_data)
-        self.set_timer(0.1, self._focus_tabs)
+        self.set_timer(0.1, self.focus_nav)
 
-    def _focus_tabs(self) -> None:
+    def focus_nav(self) -> None:
         try:
-            from textual.widgets import Tabs
-
-            self.query_one(Tabs).focus()
+            self.query_one("#nav", OptionList).focus()
         except Exception:
-            logger.debug("Unable to focus dashboard tabs", exc_info=True)
+            logger.debug("Unable to focus nav rail", exc_info=True)
+
+    def _focus_content(self) -> None:
+        active = self.query_one("#tabs", TabbedContent).active
+        self._focus_tab_widget(active)
+
+    @on(OptionList.OptionHighlighted, "#nav")
+    def on_nav_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        oid = event.option_id or ""
+        if oid.startswith("nav-"):
+            tabs = self.query_one("#tabs", TabbedContent)
+            sid = oid[4:]
+            if tabs.active != sid:
+                tabs.active = sid
+
+    @on(OptionList.OptionSelected, "#nav")
+    def on_nav_selected(self, event: OptionList.OptionSelected) -> None:
+        self._focus_content()
+
+    def _sync_nav_highlight(self, tab_id: str) -> None:
+        try:
+            nav = self.query_one("#nav", OptionList)
+            idx = SECTION_INDEX[tab_id]
+            if nav.highlighted != idx:
+                nav.highlighted = idx
+        except Exception:
+            logger.debug("Unable to sync nav highlight", exc_info=True)
 
     def on_tabbed_content_tab_activated(
         self, event: TabbedContent.TabActivated
@@ -157,7 +266,8 @@ class EngramDashboard(App):
         if tab_id in self._dirty_tabs:
             self._dirty_tabs.discard(tab_id)
             self._refresh_screen(tab_id)
-        self.set_timer(0.05, self._focus_tabs)
+        self._sync_nav_highlight(tab_id)
+        self.set_timer(0.05, self.focus_nav)
         self._update_footer_hint()
 
     def on_descendant_focus(self, event) -> None:
@@ -166,36 +276,31 @@ class EngramDashboard(App):
     def _update_footer_hint(self) -> None:
         try:
             footer = self.query_one("#dynamic-footer", Label)
-            focused = self.focused
-            if focused and focused.id and focused.id in FOOTER_HINTS:
-                footer.update(FOOTER_HINTS[focused.id])
-            elif focused:
-                from textual.widgets import Input, Select
-
-                if isinstance(focused, Input):
-                    footer.update(FOOTER_HINTS["search-input"])
-                elif isinstance(focused, Select):
-                    footer.update(FOOTER_HINTS["filter"])
-                else:
-                    footer.update(FOOTER_HINTS["default"])
-            else:
-                footer.update(FOOTER_HINTS["default"])
+            footer.update(FOOTER_HINTS[self._footer_hint_key()])
         except Exception:
             logger.debug("Unable to update dashboard footer hint", exc_info=True)
 
-    def on_key(self, event) -> None:
-        from textual.widgets import Tabs
+    def _footer_hint_key(self) -> str:
+        focused = self.focused
+        if focused and focused.id and focused.id in FOOTER_HINTS:
+            return focused.id
+        if isinstance(focused, Input):
+            return "search-input"
+        if isinstance(focused, Select):
+            return "filter"
+        return "default"
 
-        if isinstance(self.focused, Tabs) and event.key == "down":
+    def on_key(self, event) -> None:
+        nav = self.query_one("#nav", OptionList)
+        if self.focused is nav and event.key == "right":
             event.prevent_default()
-            active = self.query_one("#tabs", TabbedContent).active
-            self._focus_tab_widget(active)
+            self._focus_content()
 
     def _focus_tab_widget(self, tab_id: str) -> None:
-        selector = self.TAB_FOCUS.get(tab_id)
-        if selector:
+        section = SECTION_BY_ID.get(tab_id)
+        if section and section.focus:
             try:
-                self.query_one(selector).focus()
+                self.query_one(section.focus).focus()
             except Exception:
                 logger.debug(
                     "Unable to focus widget for dashboard tab %s", tab_id, exc_info=True
@@ -211,38 +316,23 @@ class EngramDashboard(App):
         self._apply_data_to_tabs()
 
     def _refresh_screen(self, tab_id: str) -> None:
-        screen_map = {
-            "overview": OverviewScreen,
-            "timeline": TimelineScreen,
-            "facts": FactsScreen,
-            "candidates": CandidatesScreen,
-            "projects": ProjectsScreen,
-            "forgotten": ForgottenScreen,
-        }
-        cls = screen_map.get(tab_id)
-        if cls:
+        section = SECTION_BY_ID.get(tab_id)
+        if section:
             try:
-                self.query_one(cls).refresh_data(self._data)
+                self.query_one(section.screen).refresh_data(self._data)
             except Exception:
                 logger.exception("Unable to refresh dashboard tab %s", tab_id)
 
-    def _update_tab_labels(self) -> None:
-        d = self._data
-        labels = {
-            "overview": f"Overview ({d.active_count})",
-            "facts": f"Facts ({d.active_count})",
-            "candidates": f"Candidates ({d.pending_count})",
-            "projects": f"Projects ({len(d.projects)})",
-            "forgotten": f"Forgotten ({d.forgotten_count})",
-        }
+    def _update_nav_labels(self) -> None:
         try:
-            tabs_widget = self.query_one("#tabs", TabbedContent)
-            for tab_id, label in labels.items():
-                tab = tabs_widget.get_tab(f"--content-tab-{tab_id}")
-                if tab:
-                    tab.label = label
+            nav = self.query_one("#nav", OptionList)
+            current = nav.highlighted
+            nav.clear_options()
+            nav.add_options(self._nav_options())
+            if current is not None:
+                nav.highlighted = current
         except Exception:
-            logger.exception("Unable to update dashboard tab labels")
+            logger.exception("Unable to update nav labels")
 
     def action_show_tab(self, tab_id: str) -> None:
         self.query_one("#tabs", TabbedContent).active = tab_id
@@ -251,10 +341,7 @@ class EngramDashboard(App):
         self.push_screen(HelpScreen())
 
     def action_toggle_theme(self) -> None:
-        if self.theme == "anthropic-dark":
-            self.theme = "anthropic-light"
-        else:
-            self.theme = "anthropic-dark"
+        self.theme = "engram-light" if self.theme == "engram-dark" else "engram-dark"
 
     def action_show_category(self, category: str) -> None:
         self.push_screen(CategoryDetailScreen(category, self._data))
@@ -286,13 +373,11 @@ class EngramDashboard(App):
             return
         fact_ids = self._pending_forget
         self._pending_forget = []
-        undo_entries: list[tuple[str, float]] = []
+        known_fact_ids = {fact.id for fact in self._data.all_facts}
+        undo_entries: list[str] = []
         for fid in fact_ids:
-            # Capture pre-forget confidence so Ctrl+Z can restore it.
-            for f in self._data.all_facts:
-                if f.id == fid:
-                    undo_entries.append((fid, f.confidence))
-                    break
+            if fid in known_fact_ids:
+                undo_entries.append(fid)
             self._store.forget(fid, reason="Forgotten via dashboard")
         self._undo_stack = undo_entries
         self._schedule_undo_expiry()
@@ -315,15 +400,20 @@ class EngramDashboard(App):
         if not self._undo_stack:
             self.notify("Nothing to undo", severity="information")
             return
-        count = len(self._undo_stack)
-        for fid, old_confidence in self._undo_stack:
-            self._store.update_fact(fid, confidence=old_confidence)
+        restored = 0
+        for fid in self._undo_stack:
+            if self._store.restore_fact(fid):
+                restored += 1
         self._undo_stack.clear()
         if self._undo_timer:
             self._undo_timer.stop()
         self._force_refresh()
+        if restored == 0:
+            self.notify("Nothing to undo", severity="information")
+            return
         self.notify(
-            f"Restored {count} fact{'s' if count > 1 else ''}", severity="information"
+            f"Restored {restored} fact{'s' if restored > 1 else ''}",
+            severity="information",
         )
 
     def action_approve_candidate(self, candidate_id: str) -> None:
@@ -382,18 +472,13 @@ class EngramDashboard(App):
 
     def _apply_data_to_tabs(self) -> None:
         active_tab = self.query_one("#tabs", TabbedContent).active
-        all_tabs = {
-            "overview",
-            "timeline",
-            "facts",
-            "candidates",
-            "projects",
-            "forgotten",
-        }
-        self._dirty_tabs |= all_tabs - {active_tab}
+        self._dirty_tabs |= SECTION_IDS - {active_tab}
         self._refresh_screen(active_tab)
-        self._update_tab_labels()
-        self.sub_title = f"memory dashboard — {self._data.active_count} facts"
+        self._update_nav_labels()
+        try:
+            self.query_one("#status-bar", Static).update(self._status_text())
+        except Exception:
+            logger.debug("Unable to update status bar", exc_info=True)
 
 
 class ConfirmScreen(ModalScreen[bool]):

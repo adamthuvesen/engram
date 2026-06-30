@@ -163,10 +163,24 @@ def format_timestamp(dt: datetime) -> str:
 def format_confidence(conf: float) -> str:
     pct = f"{conf:.0%}"
     if conf >= 0.8:
-        return f"[#788c5d]{pct}[/]"
+        return f"[$success]{pct}[/]"
     if conf >= 0.5:
-        return f"[#eda100]{pct}[/]"
-    return f"[#f7768e]{pct}[/]"
+        return f"[$warning]{pct}[/]"
+    return f"[$error]{pct}[/]"
+
+
+def shorten_project(project: str | None) -> str:
+    """Compact a project for table cells; full value stays in the detail pane.
+
+    Path-like projects (worktrees, abs paths) collapse to ``…/<last-segment>``
+    so the long home-dir prefix stops crowding out the content column. Plain
+    names (``hq``, ``llm-infer``) pass through unchanged.
+    """
+    if not project:
+        return NO_PROJECT_LABEL
+    if "/" in project:
+        return f"…/{project.rstrip('/').rsplit('/', 1)[-1]}"
+    return project
 
 
 def _daily_counts(facts: list[Fact], key) -> dict[str, int]:

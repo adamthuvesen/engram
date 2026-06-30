@@ -83,12 +83,12 @@ class TimelineScreen(Container):
 
         if self._is_dark():
             plt.theme("dark")
-            bar_color = (217, 119, 87)  # #d97757 — Anthropic coral
-            forgot_color = (120, 140, 93)  # #788c5d — Anthropic green (contrast)
+            bar_color = (124, 135, 245)  # #7c87f5 — indigo accent
+            forgot_color = (76, 183, 130)  # #4cb782 — green (contrast)
         else:
             plt.theme("clear")
-            bar_color = (193, 95, 60)  # #c15f3c — Anthropic terra cotta
-            forgot_color = (90, 112, 64)  # #5a7040 — Anthropic dark green
+            bar_color = (94, 106, 210)  # #5e6ad2 — indigo accent
+            forgot_color = (47, 158, 107)  # #2f9e6b — green (contrast)
 
         plt.title("Facts Created Over Time")
 

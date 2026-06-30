@@ -16,6 +16,12 @@ from engram.dashboard.data import (
     format_timestamp,
     load_dashboard_data,
 )
+from engram.dashboard.tables import (
+    filter_facts_by_text,
+    handle_table_key,
+    next_sort_state,
+    short_cell,
+)
 from engram.core.models import CandidateStatus, Fact, FactCategory, MemoryCandidate
 from engram.storage.store import FactStore
 
@@ -236,17 +242,67 @@ def test_format_timestamp_includes_utc():
 
 def test_format_confidence_green():
     result = format_confidence(0.9)
-    assert "#788c5d" in result
+    assert "$success" in result
 
 
 def test_format_confidence_yellow():
     result = format_confidence(0.6)
-    assert "#eda100" in result
+    assert "$warning" in result
 
 
 def test_format_confidence_red():
     result = format_confidence(0.3)
-    assert "#f7768e" in result
+    assert "$error" in result
+
+
+def test_short_cell_truncates_only_when_needed():
+    assert short_cell("short", 10) == "short"
+    assert short_cell("longer than ten", 10) == "longer tha..."
+
+
+def test_filter_facts_by_text_matches_fact_fields():
+    fact = _fact("Uses textual dashboard", tags=["terminal"], project="engram")
+    fact.id = "fact-filter-test"
+
+    assert filter_facts_by_text([fact], "textual") == [fact]
+    assert filter_facts_by_text([fact], "terminal") == [fact]
+    assert filter_facts_by_text([fact], "engram") == [fact]
+    assert filter_facts_by_text([fact], "fact-filter-test") == [fact]
+    assert filter_facts_by_text([fact], "engram", include_project=False) == []
+
+
+def test_next_sort_state_cycles_column_or_direction():
+    columns = ["created_at", "category"]
+
+    assert next_sort_state(columns, 0, True, reverse=False) == (1, True, "category")
+    assert next_sort_state(columns, 1, True, reverse=True) == (1, False, "category")
+
+
+def test_space_on_empty_table_is_handled_without_selection():
+    class Event:
+        key = "space"
+        prevented = False
+
+        def prevent_default(self):
+            self.prevented = True
+
+    event = Event()
+    table = DataTable()
+    selected_ids: set[str] = set()
+
+    handled = handle_table_key(
+        event,
+        focused=table,
+        table=table,
+        selected_ids=selected_ids,
+        visible_ids=[],
+        refresh_table=lambda: pytest.fail("empty table should not refresh"),
+        cycle_sort=lambda reverse: pytest.fail("space should not sort"),
+    )
+
+    assert handled is True
+    assert event.prevented is True
+    assert selected_ids == set()
 
 
 # ── Constants tests ──
@@ -335,6 +391,28 @@ async def test_forget_and_undo(store):
 
         assert app._data.active_count == 1
         assert app._data.forgotten_count == 0
+
+
+@pytest.mark.anyio
+async def test_ctrl_z_undo_restores_forgotten_fact(store):
+    store.append_facts([_fact("to undo", confidence=0.8)])
+    fact_id = load_dashboard_data(store).active_facts[0].id
+
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)) as pilot:
+        app._pending_forget = [fact_id]
+        app._on_forget_confirmed(True)
+        await pilot.pause()
+
+        assert app._data.active_count == 0
+        assert app._data.forgotten_count == 1
+
+        app.key_ctrl_z()
+        await pilot.pause()
+
+        assert app._data.active_count == 1
+        assert app._data.forgotten_count == 0
+        assert store.load_active_facts()[0].id == fact_id
 
 
 @pytest.mark.anyio
