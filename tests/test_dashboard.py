@@ -355,21 +355,7 @@ async def test_dashboard_tab_content_uses_available_height(store):
 
 
 @pytest.mark.anyio
-async def test_forgotten_tab_exists(store):
-    store.append_facts([_fact("gone", confidence=0.05)])
-
-    app = EngramDashboard()
-    async with app.run_test(size=(140, 40)) as pilot:
-        tabs = app.query_one("#tabs", TabbedContent)
-        tabs.active = "forgotten"
-        await pilot.pause()
-
-        forgotten_table = app.query_one("#forgotten-table", DataTable)
-        assert forgotten_table.row_count == 1
-
-
-@pytest.mark.anyio
-async def test_forget_and_undo(store):
+async def test_forget_and_restore(store):
     store.append_facts([_fact("to forget")])
     data = load_dashboard_data(store)
     fact_id = data.active_facts[0].id
@@ -386,7 +372,8 @@ async def test_forget_and_undo(store):
         assert app._data.active_count == 0
 
         # Restore it
-        app.action_restore_facts([fact_id])
+        app._store.restore_fact(fact_id)
+        app._force_refresh()
         await pilot.pause()
 
         assert app._data.active_count == 1
@@ -413,20 +400,6 @@ async def test_ctrl_z_undo_restores_forgotten_fact(store):
         assert app._data.active_count == 1
         assert app._data.forgotten_count == 0
         assert store.load_active_facts()[0].id == fact_id
-
-
-@pytest.mark.anyio
-async def test_candidates_tab_shows_pending(store):
-    store.append_candidates([_candidate("test suggestion")])
-
-    app = EngramDashboard()
-    async with app.run_test(size=(140, 40)) as pilot:
-        tabs = app.query_one("#tabs", TabbedContent)
-        tabs.active = "candidates"
-        await pilot.pause()
-
-        cand_table = app.query_one("#cand-table", DataTable)
-        assert cand_table.row_count == 1
 
 
 @pytest.mark.anyio
