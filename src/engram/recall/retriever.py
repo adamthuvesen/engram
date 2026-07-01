@@ -46,8 +46,8 @@ Facts that add useful background, connections between facts, or related preferen
 Time- and state-aware observations: current vs. outdated, supersessions or contradictions,
 timeline of relevant events, anything that looks stale or expired.
 
-Under every heading, produce a numbered list. For each item include the fact ID (copy it from the
-`id:` marker) and one short line of reasoning. If a section has nothing to report, still emit the
+Under every heading, produce a numbered list. For each item include the fact ID (copy it exactly,
+all 12 hex characters, from the `id:` marker) and one short line of reasoning. If a section has nothing to report, still emit the
 heading followed by a single line "(none)"."""
 
 SYNTHESIS_SYSTEM = """You are a memory synthesis agent. You receive findings from specialized
@@ -57,7 +57,8 @@ Your job is to produce a clear, concise answer to the original query by:
 1. Merging relevant findings from all agents
 2. Resolving any contradictions (prefer newer/higher-confidence facts)
 3. Flagging any uncertainty or stale information
-4. Citing fact IDs for traceability
+4. Citing fact IDs for traceability — copy each ID exactly (12 hex characters) from the
+   findings; never invent, merge, or truncate an ID. Omit a citation rather than guess one.
 
 Format your response as a direct answer, not as a list of findings. Write naturally,
 as if briefing someone. Keep it concise but complete.
@@ -79,7 +80,8 @@ find the most relevant facts and produce a clear, concise answer.
 1. Identify facts that directly answer the query
 2. Note any useful context or background
 3. Flag contradictions or stale information
-4. Cite fact IDs for traceability
+4. Cite fact IDs for traceability — copy each ID exactly (12 hex characters) from its
+   `id:` marker; never invent, merge, or truncate an ID. Omit a citation rather than guess one.
 
 Write naturally, as if briefing someone. Keep it concise but complete.
 
@@ -94,7 +96,9 @@ reason through the evidence from three perspectives before answering:
 - Temporal: current vs. stale information, supersessions, contradictions, and timelines
 
 Do the perspective work internally, then write only the final concise answer.
-Cite fact IDs for traceability. Prefer newer, non-expired facts when evidence conflicts.
+Cite fact IDs for traceability — copy each ID exactly (12 hex characters) from its `id:`
+marker; never invent, merge, or truncate an ID. Omit a citation rather than guess one.
+Prefer newer, non-expired facts when evidence conflicts.
 If the evidence is weak or contradictory, say so instead of guessing.
 
 At the very end of your answer, on a new line, add a quality rating in the format:
@@ -126,6 +130,20 @@ _MULTILENS_HEADING_RE = re.compile(
 # Fact-ID extraction from LLM responses. Fact IDs are 12-hex strings emitted in
 # `(id: <hex>)` form by ``format_facts_for_llm``.
 _CITED_ID_RE = re.compile(r"\b([0-9a-f]{12})\b")
+
+# ID-like hex runs in answer text. Runs shorter than 8 chars collide with
+# ordinary English words made of hex letters ("decade", "deadbeef" aside).
+_ID_LIKE_RE = re.compile(r"\b[0-9a-f]{8,}\b")
+
+# Tidy-up rules for citation groups left ragged after invalid IDs are removed,
+# e.g. "[facts: , ]", "([abc], , [def])", "[]". Applied to fixpoint.
+_CITATION_TIDY_RULES = [
+    (re.compile(r",\s*,"), ","),
+    (re.compile(r"(?<=[\[(])\s*,\s*"), ""),
+    (re.compile(r",\s*(?=[\])])"), ""),
+    (re.compile(r"\s*\[\s*(?:facts?:\s*)?\]"), ""),
+    (re.compile(r"\s*\(\s*(?:facts?:\s*)?\)"), ""),
+]
 
 
 def _tier_decision(
@@ -357,6 +375,26 @@ def _extract_cited_ids(text: str, candidate_ids: set[str]) -> list[str]:
             seen.append(fact_id)
             seen_set.add(fact_id)
     return seen
+
+
+def _scrub_invalid_citations(text: str, candidate_ids: set[str]) -> str:
+    """Remove ID-like hex runs the model invented (not in the prompt's fact set).
+
+    Provenance already filters citations through ``_extract_cited_ids``; this
+    keeps the answer text consistent with it instead of shipping fabricated or
+    mangled IDs (wrong length, merged digits) to the caller.
+    """
+    scrubbed = _ID_LIKE_RE.sub(
+        lambda m: m.group(0) if m.group(0) in candidate_ids else "", text
+    )
+    if scrubbed == text:
+        return text
+    while True:
+        before = scrubbed
+        for pattern, replacement in _CITATION_TIDY_RULES:
+            scrubbed = pattern.sub(replacement, scrubbed)
+        if scrubbed == before:
+            return scrubbed
 
 
 # ---------------------------------------------------------------------------
@@ -942,6 +980,7 @@ async def _single_agent_recall(
 
     candidate_ids = {f.id for f in facts}
     cited_ids = _extract_cited_ids(completion.text, candidate_ids)
+    answer = _scrub_invalid_citations(answer, candidate_ids)
 
     traces: list[LLMCallTrace] = []
     truncated_any = False
@@ -1051,6 +1090,7 @@ async def _multilens_recall(
     synth_elapsed = (time.monotonic() - t_synth) * 1000
     _accumulate(totals, synthesis_completion)
     answer, quality = _extract_quality(synthesis_completion.text)
+    answer = _scrub_invalid_citations(answer, candidate_ids)
 
     synthesis_cited = _extract_cited_ids(synthesis_completion.text, candidate_ids)
     # Synthesis is the final voice; prefer its citations, fall back to multilens.
@@ -1107,6 +1147,7 @@ async def _single_call_tier2_recall(
 
     candidate_ids = {f.id for f in facts}
     cited_ids = _extract_cited_ids(completion.text, candidate_ids)
+    answer = _scrub_invalid_citations(answer, candidate_ids)
 
     traces: list[LLMCallTrace] = []
     truncated_any = False
@@ -1136,6 +1177,7 @@ __all__ = [
     "complete",
     "_extract_quality",
     "_extract_cited_ids",
+    "_scrub_invalid_citations",
     "_format_direct",
     "_select_tier",
     "_select_tier_with_decision",
