@@ -12,6 +12,7 @@ from engram.recall.retriever import (
     _format_direct,
     _parse_multilens_sections,
     _resolve_tier2_mode,
+    _scrub_invalid_citations,
     _select_tier,
 )
 from engram.storage.store import AsyncFactStore, FactStore
@@ -155,6 +156,45 @@ def test_extract_quality_missing():
     clean, level = _extract_quality(text)
     assert level == ""
     assert clean == text
+
+
+# ---------------------------------------------------------------------------
+# Citation scrubbing — invented/mangled IDs never reach the answer
+# ---------------------------------------------------------------------------
+
+_VALID_IDS = {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
+
+
+def test_scrub_keeps_valid_citations():
+    text = "Use stg_* models [aaaaaaaaaaaa] and int__* [bbbbbbbbbbbb]."
+    assert _scrub_invalid_citations(text, _VALID_IDS) == text
+
+
+def test_scrub_removes_wrong_length_id():
+    # 15-hex run: a real ID with extra digits merged in by the model.
+    text = "Rename carefully ([aaaaaaaaaaaa], [179c6a107298f24])."
+    assert (
+        _scrub_invalid_citations(text, _VALID_IDS)
+        == "Rename carefully ([aaaaaaaaaaaa])."
+    )
+
+
+def test_scrub_removes_unknown_id_from_facts_group():
+    text = "Looker shuts down 2026-08-31 [facts: aaaaaaaaaaaa, cccccccccccc]."
+    assert (
+        _scrub_invalid_citations(text, _VALID_IDS)
+        == "Looker shuts down 2026-08-31 [facts: aaaaaaaaaaaa]."
+    )
+
+
+def test_scrub_drops_fully_invalid_citation_group():
+    text = "Prefer natural keys [facts: cccccccccccc, dddddddddddd]."
+    assert _scrub_invalid_citations(text, _VALID_IDS) == "Prefer natural keys."
+
+
+def test_scrub_leaves_plain_text_untouched():
+    text = "No citations here, just a decade of prose."
+    assert _scrub_invalid_citations(text, _VALID_IDS) is text
 
 
 # ---------------------------------------------------------------------------
