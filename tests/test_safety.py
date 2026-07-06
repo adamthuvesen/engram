@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from engram.core.models import Fact, FactCategory
+from engram.core.models import EventLogMeta, EventType, Fact, FactCategory, FactEvent
 from engram.storage.store import FactStore
 
 
@@ -162,9 +162,16 @@ def test_load_candidates_skips_corrupt_line():
 def test_append_facts_adds_newline_if_missing():
     """append_facts writes a leading newline if the file lacks a trailing one."""
     store = _make_store()
-    # Manually write a valid JSON line without a trailing newline
+    # Manually write a valid event log without a trailing newline.
     fact1 = Fact(id="f1", category=FactCategory.preference, content="Fact 1")
-    store.facts_path.write_text(fact1.model_dump_json())  # no trailing \n
+    event1 = FactEvent(
+        event_type=EventType.created,
+        fact_id=fact1.id,
+        payload=fact1.model_dump(),
+    )
+    store.facts_path.write_text(
+        EventLogMeta().model_dump_json() + "\n" + event1.model_dump_json()
+    )
 
     fact2 = Fact(id="f2", category=FactCategory.preference, content="Fact 2")
     store.append_facts([fact2])

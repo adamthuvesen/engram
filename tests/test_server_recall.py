@@ -213,13 +213,13 @@ def test_recall_warns_on_stale(monkeypatch):
             Fact(
                 id="staleaaaaaaa",
                 category=FactCategory.preference,
-                content="legacy preference value",
+                content="prior preference value",
                 stale=True,
             ),
             Fact(
                 id="livefactaaaa",
                 category=FactCategory.preference,
-                content="legacy preference current value",
+                content="prior preference current value",
             ),
         ]
     )
@@ -228,7 +228,7 @@ def test_recall_warns_on_stale(monkeypatch):
     # include_stale=False (the MCP recall tool already excludes stale, so the
     # stale fact won't appear in the prefilter and no stale warning fires —
     # which is correct for the active path). Verify recall still succeeds.
-    result = asyncio.run(_call("recall", query="legacy preference", format="json"))
+    result = asyncio.run(_call("recall", query="prior preference", format="json"))
     parsed = _structured(result)
     assert parsed["status"] == "ok"
     assert "staleaaaaaaa" not in parsed["data"]["cited_fact_ids"]

@@ -133,9 +133,8 @@ def test_cli_doctor_json_healthy(cli_env, capsys):
 
 def test_cli_doctor_json_with_corrupt_jsonl(cli_env, capsys):
     # Seed a healthy event-log file via the store, then append a corrupt line.
-    # (Writing arbitrary content to facts.jsonl pre-store-init would trigger
-    # the one-shot legacy-format migration which silently drops bad lines —
-    # the post-migration scenario is what doctor needs to surface.)
+    # This keeps the test focused on event-log corruption rather than a wholly
+    # invalid facts file.
     store = FactStore(data_dir=cli_env)
     store.append_facts(
         [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")]

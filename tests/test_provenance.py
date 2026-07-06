@@ -60,12 +60,12 @@ def _flat_tier2(store: FactStore, count: int = 15) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2.5: default text recall remains compatible
+# default text recall
 # ---------------------------------------------------------------------------
 
 
 def test_default_recall_returns_string_only():
-    """recall() must still return a plain string for legacy callers."""
+    """recall() returns a plain string unless callers request structured data."""
     store = _make_store()
     store.append_facts(
         [

@@ -1,4 +1,9 @@
-"""Tests for model improvements — category migration, FactBase inheritance."""
+"""Tests for model contracts."""
+
+import json
+
+import pytest
+from pydantic import ValidationError
 
 from engram.core.models import (
     CandidateStatus,
@@ -6,42 +11,13 @@ from engram.core.models import (
     FactCategory,
     MemoryCandidate,
     RecallRecord,
-    migrate_category,
 )
 
 
-def test_migrate_category_temporal_to_event():
-    assert migrate_category("temporal") == "event"
-
-
-def test_migrate_category_update_to_correction():
-    assert migrate_category("update") == "correction"
-
-
-def test_migrate_category_passthrough():
-    assert migrate_category("preference") == "preference"
-    assert migrate_category("decision") == "decision"
-
-
-def test_fact_loads_legacy_temporal_as_event():
-    """JSONL with category='temporal' should load as 'event'."""
-    import json
-
+def test_fact_loads_canonical_category_string():
     data = {
-        "category": "temporal",
-        "content": "Currently working on auth rewrite",
-        "id": "abc123",
-    }
-    fact = Fact.model_validate_json(json.dumps(data))
-    assert fact.category == FactCategory.event
-
-
-def test_fact_loads_legacy_update_as_correction():
-    import json
-
-    data = {
-        "category": "update",
-        "content": "Actually uses polars now",
+        "category": "correction",
+        "content": "Uses polars now",
         "id": "def456",
     }
     fact = Fact.model_validate_json(json.dumps(data))
@@ -70,49 +46,17 @@ def test_memory_candidate_from_fact_model_dump():
     assert candidate.status == CandidateStatus.pending
 
 
-def test_legacy_temporal_string_migrates_via_model_validator():
-    """Fact(category='temporal') should normalize to FactCategory.event via model_post_init."""
-    fact = Fact(category="temporal", content="x")
-    assert fact.category == FactCategory.event
+def test_removed_category_names_are_rejected():
+    with pytest.raises(ValidationError):
+        Fact(category="temporal", content="x")
+    with pytest.raises(ValidationError):
+        Fact(category="update", content="x")
 
 
-def test_legacy_update_string_migrates_via_model_validator():
-    """Fact(category='update') should normalize to FactCategory.correction."""
-    fact = Fact(category="update", content="x")
-    assert fact.category == FactCategory.correction
+def test_recall_record_usage_fields_default_to_none_when_omitted():
+    """Recall log entries can omit provider usage fields."""
 
-
-def test_legacy_temporal_not_in_enum():
-    """FactCategory.temporal should no longer exist."""
-    import pytest
-
-    with pytest.raises(AttributeError):
-        _ = FactCategory.temporal  # type: ignore[attr-defined]
-
-
-def test_legacy_update_not_in_enum():
-    """FactCategory.update should no longer exist."""
-    import pytest
-
-    with pytest.raises(AttributeError):
-        _ = FactCategory.update  # type: ignore[attr-defined]
-
-
-def test_model_copy_with_legacy_category_migrates():
-    """model_copy with a legacy category string migrates via model_post_init."""
-    fact = Fact(category=FactCategory.preference, content="test")
-    fact2 = fact.model_copy(update={"category": "temporal"})
-    assert fact2.category == FactCategory.event
-
-    fact3 = fact.model_copy(update={"category": "update"})
-    assert fact3.category == FactCategory.correction
-
-
-def test_recall_record_legacy_lines_parse_with_defaults():
-    """Old recall_log lines without token fields must parse with None defaults."""
-    import json
-
-    legacy = {
+    payload = {
         "id": "r1",
         "query": "who am i",
         "tier": 2,
@@ -121,7 +65,7 @@ def test_recall_record_legacy_lines_parse_with_defaults():
         "quality": "high",
         "timestamp": "2026-04-17T12:00:00+00:00",
     }
-    record = RecallRecord.model_validate_json(json.dumps(legacy))
+    record = RecallRecord.model_validate_json(json.dumps(payload))
     assert record.llm_calls is None
     assert record.input_tokens is None
     assert record.cached_tokens is None

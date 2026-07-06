@@ -9,6 +9,7 @@ All settings come from `ENGRAM_*` env vars (pydantic-settings, `env_prefix =
 | `ENGRAM_MAX_FACTS_PER_AGENT` | `200`                 | Facts fed to each search agent     |
 | `ENGRAM_RETRIEVAL_TIMEOUT`   | `15.0`                | Search agent timeout (seconds)     |
 | `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11`            | Tier-2 requires at least this many positive-scoring prefilter matches. `0` disables the small-corpus cap. |
+| `ENGRAM_TIER2_MODE`          | `single`              | Tier-2 strategy: `single` or `multilens` |
 | `ENGRAM_DATA_DIR`            | `~/.engram/data`      | Storage directory                  |
 | `ENGRAM_SYNC_ENABLED`        | `false`               | Run background auto-sync inside the MCP server lifespan. |
 | `ENGRAM_SYNC_INTERVAL`       | `300.0`               | Background auto-sync cadence (seconds). |

@@ -291,4 +291,4 @@ uv build                                   # build sdist + wheel
 
 Architecture notes and the storage/event-log model live in [AGENTS.md](AGENTS.md).
 
-Python 3.11+ · FastMCP 2.x · litellm · pydantic-settings · JSONL storage · MIT-licensed.
+Python 3.11+ · FastMCP 3.x · litellm · pydantic-settings · JSONL storage · MIT-licensed.

@@ -12,9 +12,6 @@ All data lives under `~/.engram/data/`:
 - `recall_log.jsonl` — recall quality / latency observability.
 - `transactions.jsonl` — prepared/committed markers for crash-safe candidate
   approval.
-- `facts.jsonl.pre-eventlog` — one-shot backup written the first time a legacy
-  (rewrite-format) store is migrated to the event log. Safe to delete after
-  you've verified the new file looks right.
 - `.engram-sync-state` — last successful sync timestamp + commit counts (only
   exists when `engram sync` has been run).
 - `.gitignore` / `.gitattributes` — managed by `engram sync` on first run.
@@ -28,6 +25,3 @@ Storage is an append-only event log. Mutations (`forget`, `edit_fact`,
 `mark_stale`, etc.) append typed `FactEvent` records rather than rewriting the
 file. The only paths that rewrite `facts.jsonl` are `purge`, `repair`, and
 `compact_event_log` (compaction inside `synthesize`).
-
-**Rollback**: stop Engram, replace `facts.jsonl` with
-`facts.jsonl.pre-eventlog`, downgrade the package, restart.

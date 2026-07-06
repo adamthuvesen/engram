@@ -314,6 +314,13 @@ def _validated_jsonl_records(
     return records, corrupt
 
 
+def _non_empty_line_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with path.open() as fh:
+        return sum(1 for line in fh if line.strip())
+
+
 def format_facts_for_llm(facts: list[Fact]) -> str:
     """Format facts as a numbered list for LLM context."""
     if not facts:
@@ -370,45 +377,6 @@ def _compacted_event_log(
         else:
             compacted.append(_compaction_created_event(fact_id, fact))
     return compacted, tombstones
-
-
-def _legacy_migration_events(facts: list[Fact]) -> tuple[list[FactEvent], int, int]:
-    events: list[FactEvent] = []
-    forgotten_count = 0
-    superseded_count = 0
-    for fact in facts:
-        events.append(
-            FactEvent(
-                event_type=EventType.created,
-                fact_id=fact.id,
-                timestamp=fact.created_at,
-                actor="migration",
-                payload=fact.model_dump(),
-            )
-        )
-        if fact.supersedes:
-            superseded_count += 1
-            events.append(
-                FactEvent(
-                    event_type=EventType.superseded,
-                    fact_id=fact.supersedes,
-                    timestamp=fact.updated_at,
-                    actor="migration",
-                    payload={"superseded_by": fact.id},
-                )
-            )
-        if fact.confidence < MIN_ACTIVE_CONFIDENCE:
-            forgotten_count += 1
-            events.append(
-                FactEvent(
-                    event_type=EventType.forgotten,
-                    fact_id=fact.id,
-                    timestamp=fact.updated_at,
-                    actor="migration",
-                    payload={"reason": "migrated_from_legacy_low_confidence"},
-                )
-            )
-    return events, forgotten_count, superseded_count
 
 
 def _unique_ids(ids: list[str]) -> list[str]:
@@ -485,7 +453,6 @@ class FactStore:
         # Cache: fact.id -> (updated_at_iso, unigrams, bigrams)
         self._tok_cache: dict[str, tuple[str, set[str], set[str]]] = {}
         self.recover_transactions()
-        self._migrate_to_event_log_if_needed()
 
     @property
     def facts_path(self) -> Path:
@@ -547,10 +514,9 @@ class FactStore:
     def load_facts(self) -> list[Fact]:
         """Load all facts from JSONL.
 
-        Returns the same per-``fact_id`` view regardless of on-disk format. For
-        event-log files, events are replayed into materialized facts; forgotten
-        or superseded facts surface as ``confidence == 0`` Facts to preserve the
-        existing "confidence-zero means inactive" contract used by callers.
+        Events are replayed into materialized facts; forgotten or superseded
+        facts surface as ``confidence == 0`` Facts to preserve the existing
+        "confidence-zero means inactive" contract used by callers.
 
         Corrupt lines are skipped with a warning.
         """
@@ -565,7 +531,12 @@ class FactStore:
                     fact = fact.model_copy(update={"confidence": 0.0})
                 out.append(fact)
             return out
-        return _load_jsonl_records(self.facts_path, Fact, "fact")
+        logger.warning(
+            "%s is not an event log; run `engram doctor --repair-jsonl` "
+            "or move the invalid file aside.",
+            self.facts_path,
+        )
+        return []
 
     def load_candidates(
         self,
@@ -719,72 +690,6 @@ class FactStore:
 
         return score, evidence_score
 
-    @property
-    def pre_eventlog_backup_path(self) -> Path:
-        return self.data_dir / "facts.jsonl.pre-eventlog"
-
-    def _migrate_to_event_log_if_needed(self) -> dict | None:
-        """One-shot migrate legacy ``facts.jsonl`` to event-log format.
-
-        Returns a summary dict when migration ran, ``None`` when not needed.
-        Idempotent: a file already in event-log format is left untouched.
-        """
-        with _locked_store(self.data_dir):
-            if not self.facts_path.exists():
-                return None
-            if self.facts_path.stat().st_size == 0:
-                return None
-            if self._is_event_log_format():
-                return None
-
-            facts: list[Fact] = []
-            with self.facts_path.open() as fh:
-                for lineno, line in enumerate(fh, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        facts.append(Fact.model_validate_json(line))
-                    except (ValueError, ValidationError) as exc:
-                        logger.warning(
-                            "Skipping corrupt fact at line %d during migration: %s",
-                            lineno,
-                            exc,
-                        )
-
-            # Backup original file before any writes.
-            import shutil
-
-            shutil.copy2(self.facts_path, self.pre_eventlog_backup_path)
-
-            now = datetime.now(timezone.utc)
-            events, forgotten_count, superseded_count = _legacy_migration_events(facts)
-            self._rewrite_event_log(EventLogMeta(migrated_at=now), events)
-
-            summary = {
-                "migrated_facts": len(facts),
-                "forgotten_events": forgotten_count,
-                "superseded_events": superseded_count,
-                "backup_path": str(self.pre_eventlog_backup_path),
-            }
-            try:
-                self.log_ingestion(
-                    IngestionRecord(
-                        source="event_log_migration",
-                        facts_updated=[fact.id for fact in facts],
-                        agent_model="migration",
-                    )
-                )
-            except Exception:
-                logger.warning("Failed to log migration to ingestion log")
-            logger.info(
-                "Migrated %d legacy facts to event-log format (%d forgotten, %d superseded)",
-                len(facts),
-                forgotten_count,
-                superseded_count,
-            )
-            return summary
-
     def _ensure_event_log_header(self) -> None:
         """Write the meta sentinel as the first line if the file is brand-new."""
         if self.facts_path.exists() and self.facts_path.stat().st_size > 0:
@@ -795,11 +700,7 @@ class FactStore:
             os.fsync(f.fileno())
 
     def append_events(self, events: list[FactEvent]) -> None:
-        """Append one or more typed events to the event log under the write lock.
-
-        Migrates the file to event-log format on demand if a legacy-format file
-        materialized between ``__init__`` and this call.
-        """
+        """Append one or more typed events to the event log under the write lock."""
         if not events:
             return
         with _locked_store(self.data_dir):
@@ -808,7 +709,10 @@ class FactStore:
                 and self.facts_path.stat().st_size > 0
                 and not self._is_event_log_format()
             ):
-                self._migrate_to_event_log_if_needed()
+                raise ValueError(
+                    f"{self.facts_path} is not an event log; run "
+                    "`engram doctor --repair-jsonl` or move the invalid file aside."
+                )
             with _locked_write(self.facts_path):
                 self._ensure_event_log_header()
                 self._ensure_trailing_newline(self.facts_path)
@@ -969,8 +873,8 @@ class FactStore:
                     fact_count,
                 )
 
-            # Candidates still use the legacy rewrite model — they are not on
-            # the event-log path.
+            # Candidates are separate review records, so they are rewritten
+            # in place rather than appended to the fact event log.
             candidates = self.load_candidates()
             cand_count = 0
             for i, candidate in enumerate(candidates):
@@ -1550,7 +1454,7 @@ class FactStore:
 
             sentinel.write_text(f"compaction started at {now.isoformat()}\n")
             try:
-                self._rewrite_event_log(EventLogMeta(migrated_at=now), compacted)
+                self._rewrite_event_log(EventLogMeta(created_at=now), compacted)
             finally:
                 sentinel.unlink(missing_ok=True)
 
@@ -1571,7 +1475,7 @@ class FactStore:
             }
 
     def purge(self) -> dict:
-        """Remove forgotten and expired facts from the JSONL file.
+        """Remove forgotten and expired facts from the event log.
 
         Returns counts of purged and retained facts.
         """
@@ -1589,7 +1493,13 @@ class FactStore:
                     kept.append(fact)
 
             if purged > 0:
-                self._rewrite(kept)
+                self._rewrite_event_log(
+                    EventLogMeta(created_at=now),
+                    [_compaction_created_event(fact.id, fact) for fact in kept],
+                )
+                kept_ids = {fact.id for fact in kept}
+                for stale_id in [key for key in self._tok_cache if key not in kept_ids]:
+                    del self._tok_cache[stale_id]
                 logger.info("Purged %d facts (%d retained)", purged, len(kept))
 
             return {"purged": purged, "retained": len(kept)}
@@ -1715,9 +1625,11 @@ class FactStore:
 
         For ``facts.jsonl`` in event-log format, validates each line as either
         the meta sentinel or a ``FactEvent``; corrupt lines are dropped via an
-        atomic rewrite that preserves the sentinel. For legacy ``facts.jsonl``
-        and for ``candidates.jsonl``, validates each line against the legacy
-        record class. Returns counts of valid and corrupt lines found.
+        atomic rewrite that preserves the sentinel. A non-event-log
+        ``facts.jsonl`` is invalid current data, so repair replaces it with an
+        empty event log and reports the dropped line count. Candidate records
+        are validated independently. Returns counts of valid and corrupt lines
+        found.
         """
         result: dict[str, int] = {}
 
@@ -1727,24 +1639,21 @@ class FactStore:
                 meta, events, corrupt = self._validated_event_log_records()
                 if corrupt > 0:
                     self._rewrite_event_log(meta or EventLogMeta(), events)
-                # Treat unique active fact_ids as the "valid" count to preserve
-                # the legacy semantic the caller checks.
                 materialized = materialize_events(events)
                 result["facts_valid"] = len(materialized)
                 result["facts_corrupt"] = corrupt
             else:
-                valid_facts, corrupt = _validated_jsonl_records(
-                    self.facts_path, Fact, "facts"
-                )
+                corrupt = _non_empty_line_count(self.facts_path)
                 if corrupt > 0:
-                    self._rewrite(valid_facts)
-                result["facts_valid"] = len(valid_facts)
+                    self._rewrite_event_log(EventLogMeta(), [])
+                    self._tok_cache.clear()
+                result["facts_valid"] = 0
                 result["facts_corrupt"] = corrupt
         else:
             result["facts_valid"] = 0
             result["facts_corrupt"] = 0
 
-        # candidates.jsonl — unchanged legacy semantics
+        # candidates.jsonl
         if self.candidates_path.exists():
             valid_candidates, corrupt = _validated_jsonl_records(
                 self.candidates_path, MemoryCandidate, "candidates"
@@ -1772,8 +1681,21 @@ class FactStore:
     def _rewrite(
         self, records: list[Fact | MemoryCandidate], path: Path | None = None
     ) -> None:
-        """Rewrite the entire JSONL file atomically with fsync and unique tmp path."""
+        """Rewrite a store JSONL file atomically with fsync and a unique temp path."""
         target_path = path or self.facts_path
+        if target_path == self.facts_path:
+            if any(not isinstance(record, Fact) for record in records):
+                raise TypeError("facts.jsonl can only be rewritten from Fact records")
+            facts = [record for record in records if isinstance(record, Fact)]
+            self._rewrite_event_log(
+                EventLogMeta(),
+                [_compaction_created_event(fact.id, fact) for fact in facts],
+            )
+            kept_ids = {fact.id for fact in facts}
+            for stale_id in [key for key in self._tok_cache if key not in kept_ids]:
+                del self._tok_cache[stale_id]
+            return
+
         parent = target_path.parent
         name = target_path.stem
         tmp_path: Path | None = None
@@ -1796,12 +1718,6 @@ class FactStore:
             finally:
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
-
-        # Evict cache entries for any facts removed by this rewrite
-        if path is None or path == self.facts_path:
-            kept_ids = {r.id for r in records if isinstance(r, Fact)}
-            for stale_id in [k for k in self._tok_cache if k not in kept_ids]:
-                del self._tok_cache[stale_id]
 
     def _get_cached_tokens(self, fact: Fact) -> tuple[set[str], set[str]]:
         """Return cached stemmed unigram/bigram sets, recomputing if stale."""
