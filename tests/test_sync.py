@@ -154,7 +154,6 @@ def test_sync_untracks_managed_ignore_patterns(tmp_path: Path):
     ignored_paths = [
         "store.lock",
         SYNC_STATE_FILENAME,
-        "facts.jsonl.pre-eventlog",
         COMPACTION_SENTINEL_FILENAME,
     ]
     for relative_path in ignored_paths:
@@ -168,7 +167,6 @@ def test_sync_untracks_managed_ignore_patterns(tmp_path: Path):
     assert result["status"] == "ok"
     assert _git("ls-files", *ignored_paths, cwd=clone) == ""
     assert (clone / "store.lock").read_text() == "local-only\n"
-    assert (clone / "facts.jsonl.pre-eventlog").read_text() == "local-only\n"
 
 
 def test_managed_setup_commits_only_managed_files(tmp_path: Path):

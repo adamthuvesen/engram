@@ -1,8 +1,8 @@
-# AGENTS.md — Engram
+# AGENTS.md - Engram
 
 Engram is structured, cross-project memory for coding agents, served over MCP.
-No embeddings, no vector DB — LLM-powered extraction and tiered retrieval over
-an append-only event log.
+It uses LLM-powered extraction and tiered retrieval over an append-only event
+log. There are no embeddings and no vector DB.
 
 User-level guidance (tone, principles, git etiquette) lives in
 `~/.claude/CLAUDE.md` and `~/dotfiles/agents/AGENTS.md` and is *not* duplicated
@@ -12,19 +12,19 @@ here. This file is for project-specific facts.
 
 ```
 src/engram/
-├── server.py       FastMCP entrypoint + tool definitions + auto-sync lifespan
+├── server.py       FastMCP entrypoint, tool definitions, auto-sync lifespan
 ├── cli.py          `engram` console-script command surface
 ├── operations.py   shared operation layer behind the MCP tools and CLI
 ├── core/           domain models, agent-facing contracts, config
 ├── storage/        append-only event-log store + AsyncFactStore + git sync
 ├── llm/            litellm wrapper
-├── extraction/     natural language → structured facts
+├── extraction/     natural language to structured facts
 ├── recall/         tiered retrieval + recall@k eval harness
 ├── maintenance/    synthesize / audit / doctor upkeep
 └── dashboard/      Textual TUI (`engram-dash`)
 
 tests/              pytest suite + eval datasets and runners
-docs/               Deeper subsystem docs — see Index
+docs/               Subsystem docs; start with the Index below
 ```
 
 Annotated module map and data flow: [docs/architecture.md](docs/architecture.md).
@@ -44,9 +44,9 @@ uv run --extra dev ruff format --check .     # format check (CI gate)
 ## Critical Conventions
 
 - **The event log is append-only.** Mutations (`forget`, `edit_fact`,
-  `mark_stale`, …) append typed `FactEvent` records; never rewrite
+  `mark_stale`, ...) append typed `FactEvent` records. Never rewrite
   `facts.jsonl`. The only methods that rewrite it are `purge`, `repair`, and
-  `compact_event_log` — see [src/engram/storage/store.py](src/engram/storage/store.py)
+  `compact_event_log`; see [src/engram/storage/store.py](src/engram/storage/store.py)
   and [docs/data.md](docs/data.md).
 - **Storage is sync; the MCP surface is async.** All tools are async and reach
   storage through the `AsyncFactStore` `asyncio.to_thread` facade
@@ -65,11 +65,11 @@ uv run --extra dev ruff format --check .     # format check (CI gate)
 
 Before editing a subsystem, read the matching doc:
 
-- **Architecture / data flow** → [docs/architecture.md](docs/architecture.md)
-- **MCP tool surface** → [docs/mcp-tools.md](docs/mcp-tools.md)
-- **Storage / event log / JSONL files** → [docs/data.md](docs/data.md)
-- **Cross-machine sync** → [docs/sync.md](docs/sync.md)
-- **Config / env vars** → [docs/config.md](docs/config.md)
+- **Architecture / data flow**: [docs/architecture.md](docs/architecture.md)
+- **MCP tool surface**: [docs/mcp-tools.md](docs/mcp-tools.md)
+- **Storage / event log / JSONL files**: [docs/data.md](docs/data.md)
+- **Cross-machine sync**: [docs/sync.md](docs/sync.md)
+- **Config / env vars**: [docs/config.md](docs/config.md)
 
 If a doc disagrees with code, fix the doc in the same change.
 

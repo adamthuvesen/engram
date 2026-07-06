@@ -788,12 +788,12 @@ def test_prefilter_cache_invalidated_on_fact_update():
 
 
 # ---------------------------------------------------------------------------
-# 6.3 Cache entries for removed facts are evicted on _rewrite
+# 6.3 Cache entries for purged facts are evicted
 # ---------------------------------------------------------------------------
 
 
 def test_prefilter_cache_evicted_on_purge():
-    """After a fact is purged (removed via _rewrite), its cache entry is gone."""
+    """After a fact is purged, its cache entry is gone."""
     store = _make_store()
     fact = _make_fact(content="Fact that will be purged", confidence=1.0)
     store.append_facts([fact])

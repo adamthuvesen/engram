@@ -48,6 +48,25 @@ def test_append_and_load():
     assert loaded[1].content == "User works on AI team"
 
 
+def test_fact_record_file_imports_to_event_log(tmp_path):
+    data_dir = tmp_path / "store"
+    data_dir.mkdir()
+    fact = Fact(
+        id="recordaaaaaa",
+        category=FactCategory.preference,
+        content="User prefers concise summaries",
+    )
+    (data_dir / "facts.jsonl").write_text(fact.model_dump_json() + "\n")
+
+    store = FactStore(data_dir=data_dir)
+
+    loaded = store.load_facts()
+    assert [item.id for item in loaded] == ["recordaaaaaa"]
+    assert loaded[0].content == "User prefers concise summaries"
+    first_line = json.loads(store.facts_path.read_text().splitlines()[0])
+    assert first_line["meta"] == "event-log-v1"
+
+
 def test_filter_by_category():
     store = _make_store()
     store.append_facts(

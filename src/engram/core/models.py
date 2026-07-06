@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 MIN_ACTIVE_CONFIDENCE = 0.1
 
@@ -46,18 +46,6 @@ class FactCategory(str, Enum):
     project = "project"
     workflow = "workflow"
     correction = "correction"
-
-
-# Migration map: legacy category value → canonical category
-_CATEGORY_MIGRATION: dict[str, str] = {
-    "temporal": "event",
-    "update": "correction",
-}
-
-
-def migrate_category(raw: str) -> str:
-    """Map legacy category names to their canonical equivalents."""
-    return _CATEGORY_MIGRATION.get(raw, raw)
 
 
 class EvidenceKind(str, Enum):
@@ -110,28 +98,26 @@ class FactBase(BaseModel):
     stale: bool = False
     stale_reason: str = ""
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_category(cls, data: object) -> object:
-        if isinstance(data, dict) and "category" in data:
-            raw = data["category"]
-            if isinstance(raw, str):
-                data["category"] = migrate_category(raw)
-        return data
-
-    def model_copy(self, *, update: dict | None = None, **kwargs):  # type: ignore[override]
-        """Override to migrate legacy category values passed via update."""
-        if update and "category" in update:
-            raw = update["category"]
-            if isinstance(raw, str) and not isinstance(raw, FactCategory):
-                update = {**update, "category": FactCategory(migrate_category(raw))}
-        return super().model_copy(update=update, **kwargs)
-
 
 class Fact(FactBase):
     """Atomic unit of knowledge in the memory store."""
 
     pass
+
+
+_STORED_CATEGORY_NAMES: dict[str, str] = {
+    "temporal": FactCategory.event.value,
+    "update": FactCategory.correction.value,
+}
+
+
+def fact_from_stored_data(data: dict[str, Any]) -> Fact:
+    """Load a Fact from persisted data written by any supported store version."""
+    if isinstance(data.get("category"), str):
+        category = data["category"]
+        if category in _STORED_CATEGORY_NAMES:
+            data = {**data, "category": _STORED_CATEGORY_NAMES[category]}
+    return Fact.model_validate(data)
 
 
 class MemoryCandidate(FactBase):
@@ -241,7 +227,10 @@ class EventLogMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     meta: str = EVENT_LOG_META_VERSION
-    migrated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        validation_alias=AliasChoices("created_at", "migrated_at"),
+    )
 
 
 def _event_sort_key(event: FactEvent) -> tuple[datetime, str]:
@@ -258,7 +247,7 @@ def _ensure_single_fact_id(events: list[FactEvent]) -> None:
 
 
 def _fact_with_event_timestamp(fact: Fact, event: FactEvent, **updates) -> Fact:
-    return Fact.model_validate(
+    return fact_from_stored_data(
         {**fact.model_dump(), **updates, "updated_at": event.timestamp}
     )
 
@@ -325,9 +314,9 @@ def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
     for event in ordered:
         if event.event_type is EventType.created:
             # Allow re-creation only as a no-op idempotent restore (e.g. during
-            # migration replay); the first created wins.
+            # compaction replay); the first created wins.
             if fact is None:
-                fact = Fact(**event.payload)
+                fact = fact_from_stored_data(event.payload)
             continue
 
         if fact is None:

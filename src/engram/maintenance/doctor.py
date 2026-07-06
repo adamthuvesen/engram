@@ -104,65 +104,89 @@ def _check_jsonl_integrity(
 ) -> int:
     """Return the count of valid records; emit issues for corrupt lines.
 
-    For ``facts.jsonl`` in event-log format, validates each non-empty line
-    against the ``FactEvent`` schema (with the first line allowed to be the
-    ``EventLogMeta`` sentinel).
+    For ``facts.jsonl``, validates each non-empty line against the current
+    event-log shape: the first line must be the ``EventLogMeta`` sentinel and
+    the remaining lines must be ``FactEvent`` records.
     """
     if not path.exists():
         return 0
 
-    is_event_log = False
     if label == "facts":
+        first_lineno = 0
         with path.open() as fh:
-            for line in fh:
+            for lineno, line in enumerate(fh, 1):
                 line = line.strip()
                 if not line:
                     continue
+                first_lineno = lineno
                 try:
                     payload = EventLogMeta.model_validate_json(line)
-                    is_event_log = payload.meta == EVENT_LOG_META_VERSION
                 except (ValueError, ValidationError):
-                    is_event_log = False
+                    _append_jsonl_issue(path, label, [lineno], issues)
+                    return 0
+                if payload.meta != EVENT_LOG_META_VERSION:
+                    _append_jsonl_issue(path, label, [lineno], issues)
+                    return 0
                 break
+        if first_lineno == 0:
+            return 0
+
+        valid = 0
+        corrupt: list[int] = []
+        first_data_line = True
+        with path.open() as fh:
+            for lineno, line in enumerate(fh, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                if first_data_line:
+                    first_data_line = False
+                    continue
+                try:
+                    FactEvent.model_validate_json(line)
+                    valid += 1
+                except (ValueError, ValidationError):
+                    corrupt.append(lineno)
+        if corrupt:
+            _append_jsonl_issue(path, label, corrupt, issues)
+        return valid
 
     valid = 0
     corrupt: list[int] = []
-    first_data_line = True
     with path.open() as fh:
         for lineno, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
                 continue
-            if is_event_log and first_data_line:
-                first_data_line = False
-                try:
-                    EventLogMeta.model_validate_json(line)
-                    continue
-                except (ValueError, ValidationError):
-                    pass
             try:
-                if is_event_log:
-                    FactEvent.model_validate_json(line)
-                else:
-                    model_cls.model_validate_json(line)
+                model_cls.model_validate_json(line)
                 valid += 1
             except (ValueError, ValidationError):
                 corrupt.append(lineno)
     if corrupt:
-        issues.append(
-            DoctorIssue(
-                code=f"{label}_jsonl_corrupt",
-                severity="error",
-                category="storage",
-                message=(
-                    f"{len(corrupt)} corrupt line(s) in {path.name}: "
-                    f"{corrupt[:5]}{'…' if len(corrupt) > 5 else ''}"
-                ),
-                repair="Run `engram doctor --repair-jsonl` to drop corrupt lines.",
-                repairable=True,
-            )
-        )
+        _append_jsonl_issue(path, label, corrupt, issues)
     return valid
+
+
+def _append_jsonl_issue(
+    path: Path,
+    label: str,
+    corrupt: list[int],
+    issues: list[DoctorIssue],
+) -> None:
+    issues.append(
+        DoctorIssue(
+            code=f"{label}_jsonl_corrupt",
+            severity="error",
+            category="storage",
+            message=(
+                f"{len(corrupt)} corrupt line(s) in {path.name}: "
+                f"{corrupt[:5]}{'…' if len(corrupt) > 5 else ''}"
+            ),
+            repair="Run `engram doctor --repair-jsonl` to drop corrupt lines.",
+            repairable=True,
+        )
+    )
 
 
 def _check_transactions(store: FactStore, issues: list[DoctorIssue]) -> None:

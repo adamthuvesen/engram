@@ -122,7 +122,7 @@ FACTS = [
         ["llm"],
     ),
     _fact(
-        "Engram uses FastMCP 2.x for the MCP server",
+        "Engram uses FastMCP 3.x for the MCP server",
         FactCategory.project,
         "engram",
         ["mcp"],

@@ -48,14 +48,12 @@ GITATTRIBUTES_LINES = [
 ]
 
 # Files engram writes inside the data dir that should NEVER be tracked by
-# git: inter-process lock sidecars, per-machine sync state, and the
-# migration backup file.
+# git: inter-process lock sidecars and per-machine sync state.
 GITIGNORE_MARKER = "# engram-sync: managed ignores"
 GITIGNORE_PATTERNS = [
     "*.lock",
     ".engram-sync-state",
     ".engram-compaction-in-progress",
-    "facts.jsonl.pre-eventlog",
 ]
 GITIGNORE_LINES = [GITIGNORE_MARKER, *GITIGNORE_PATTERNS]
 

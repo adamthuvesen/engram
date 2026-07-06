@@ -1,5 +1,8 @@
 # Sync across machines
 
+Engram syncs `~/.engram/data` through a private git repo. The data stays in your
+repo. Engram does not need a hosted service.
+
 ```bash
 # One-time setup on machine A
 cd ~/.engram/data
@@ -13,9 +16,9 @@ engram sync       # pulls A's state; subsequent syncs are pull + push
 ```
 
 The first sync auto-commits a managed `.gitignore` and `.gitattributes`.
-After that, regular usage is just `engram sync` whenever you want to push or
-pull. Set `ENGRAM_SYNC_ENABLED=true` to have the MCP server run sync
-automatically on `ENGRAM_SYNC_INTERVAL` (default 300s) and once on shutdown.
+After that, run `engram sync` whenever you want to push or pull. Set
+`ENGRAM_SYNC_ENABLED=true` to have the MCP server run sync automatically on
+`ENGRAM_SYNC_INTERVAL` (default 300s) and once on shutdown.
 
 Sync requires `git` on PATH. The first run of `engram sync` writes managed
 `.gitignore` and `.gitattributes` to the data dir; subsequent runs are

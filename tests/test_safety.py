@@ -1,9 +1,10 @@
 """Tests for file safety, repair, and edit operations."""
 
+import json
 import tempfile
 from pathlib import Path
 
-from engram.core.models import Fact, FactCategory
+from engram.core.models import EventLogMeta, EventType, Fact, FactCategory, FactEvent
 from engram.storage.store import FactStore
 
 
@@ -32,6 +33,37 @@ def test_repair_recovers_from_corrupt_lines():
     facts = store.load_facts()
     assert len(facts) == 1
     assert facts[0].id == "good1"
+
+
+def test_repair_imports_valid_fact_records_and_drops_corrupt_lines(tmp_path):
+    data_dir = tmp_path / "store"
+    data_dir.mkdir()
+    current_fact = Fact(
+        id="goodrecordaa",
+        category=FactCategory.preference,
+        content="Valid record fact",
+    )
+    stored_fact = {
+        "id": "storedoldcat",
+        "category": "temporal",
+        "content": "Release completed",
+    }
+    (data_dir / "facts.jsonl").write_text(
+        current_fact.model_dump_json()
+        + "\n"
+        + json.dumps(stored_fact)
+        + "\n"
+        + "not json\n"
+    )
+    store = FactStore(data_dir=data_dir)
+
+    result = store.repair()
+
+    assert result["facts_valid"] == 2
+    assert result["facts_corrupt"] == 1
+    facts = {fact.id: fact for fact in store.load_facts()}
+    assert facts["goodrecordaa"].content == "Valid record fact"
+    assert facts["storedoldcat"].category == FactCategory.event
 
 
 def test_repair_no_corruption():
@@ -162,9 +194,16 @@ def test_load_candidates_skips_corrupt_line():
 def test_append_facts_adds_newline_if_missing():
     """append_facts writes a leading newline if the file lacks a trailing one."""
     store = _make_store()
-    # Manually write a valid JSON line without a trailing newline
+    # Manually write a valid event log without a trailing newline.
     fact1 = Fact(id="f1", category=FactCategory.preference, content="Fact 1")
-    store.facts_path.write_text(fact1.model_dump_json())  # no trailing \n
+    event1 = FactEvent(
+        event_type=EventType.created,
+        fact_id=fact1.id,
+        payload=fact1.model_dump(),
+    )
+    store.facts_path.write_text(
+        EventLogMeta().model_dump_json() + "\n" + event1.model_dump_json()
+    )
 
     fact2 = Fact(id="f2", category=FactCategory.preference, content="Fact 2")
     store.append_facts([fact2])

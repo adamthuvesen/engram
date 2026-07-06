@@ -26,7 +26,7 @@
 
     {"id": "eng-storage", "category": "project", "project": "engram", "content": "Engram persists memories as an append-only JSONL event log on disk", "tags": ["storage", "jsonl"]},
     {"id": "eng-llm", "category": "project", "project": "engram", "content": "Engram uses litellm for model-agnostic LLM calls", "tags": ["llm"]},
-    {"id": "eng-mcp", "category": "project", "project": "engram", "content": "Engram exposes its tools through a FastMCP 2.x server", "tags": ["mcp"]},
+    {"id": "eng-mcp", "category": "project", "project": "engram", "content": "Engram exposes its tools through a FastMCP 3.x server", "tags": ["mcp"]},
     {"id": "eng-dash", "category": "project", "project": "engram", "content": "Engram ships a terminal dashboard built with Textual", "tags": ["dashboard", "tui"]},
     {"id": "eng-retrieval", "category": "project", "project": "engram", "content": "Engram's retriever fans out across parallel search agents", "tags": ["retrieval"]},
     {"id": "eng-extract", "category": "project", "project": "engram", "content": "Engram extracts facts using structured LLM output", "tags": ["extraction"]},
