@@ -3,18 +3,26 @@
 Engram is structured, cross-project memory for coding agents. It runs as an MCP
 server or a CLI.
 
-The LLM is the retrieval engine. There are no embeddings and no vector database.
-You store facts in natural language, and an LLM extracts structured records on
-disk. Recall starts with deterministic prefilters and escalates to LLM search and
-synthesis only when the query needs it. Every fact keeps its source,
-supersession chain, and confidence. Storage is a plain append-only JSONL event
-log you can read with `cat`.
+Recall uses a score-distribution router over the prefilter results. A sharp
+match returns directly with no LLM call. A focused cluster goes to one LLM call.
+A broad or flat result set goes to the tier-2 path, which is one call by default
+or two in multi-lens mode. There are no embeddings and no vector database.
+
+Facts start as natural language, then an LLM extracts structured records onto
+disk. Every fact keeps its source, supersession chain, and confidence. The store
+is event-sourced: a plain append-only JSONL event log you can read with `cat`.
+
+| Tier | When it runs | LLM calls |
+| --- | --- | ---: |
+| 0 | Few strong matches, or no relevant matches | 0 |
+| 1 | Focused matches with a clear top cluster | 1 |
+| 2 | Many matches or a flat score distribution | 1 by default, 2 with `ENGRAM_TIER2_MODE=multilens` |
 
 ## How it works
 
 1. **Store**: natural language in, structured facts out, appended to a JSONL event log.
 2. **Review** (optional): queue suggestions as candidates before they become recallable.
-3. **Recall**: deterministic prefilter, tiered retrieval, then synthesis when needed.
+3. **Recall**: prefilter, route by score distribution, then synthesize only when needed.
 
 ## No-key demo
 
