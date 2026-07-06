@@ -1,20 +1,20 @@
 # Data
 
-All data lives under `~/.engram/data/`:
+All data lives under `~/.engram/data/` by default:
 
-- `facts.jsonl` — append-only event log. First line is the
+- `facts.jsonl`: append-only event log. The first line is the
   `{"meta":"event-log-v1",...}` sentinel; subsequent lines are typed
   `FactEvent` records (`created`, `edited`, `forgotten`, `restored`, `stale`,
-  `unstale`, `superseded`). Current state per `fact_id` is materialized by
-  replaying events in order.
-- `candidates.jsonl` — suggested memories pending review.
-- `ingestion_log.jsonl` — audit trail.
-- `recall_log.jsonl` — recall quality / latency observability.
-- `transactions.jsonl` — prepared/committed markers for crash-safe candidate
+  `unstale`, `superseded`). Current state per `fact_id` comes from replaying
+  events in order.
+- `candidates.jsonl`: suggested memories pending review.
+- `ingestion_log.jsonl`: audit trail.
+- `recall_log.jsonl`: recall quality and latency history.
+- `transactions.jsonl`: prepared/committed markers for crash-safe candidate
   approval.
-- `.engram-sync-state` — last successful sync timestamp + commit counts (only
+- `.engram-sync-state`: last successful sync timestamp and commit counts (only
   exists when `engram sync` has been run).
-- `.gitignore` / `.gitattributes` — managed by `engram sync` on first run.
+- `.gitignore` / `.gitattributes`: managed by `engram sync` on first run.
   The gitignore excludes lock and per-machine state files; gitattributes
   configures `merge=union` for the event-log files so parallel appends from
   two machines auto-merge.

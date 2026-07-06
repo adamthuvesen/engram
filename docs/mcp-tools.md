@@ -1,7 +1,7 @@
 # MCP Tools
 
 The MCP tool names below are a stable public surface. Renaming or removing one
-is a breaking change for every agent wired to Engram — treat them like an API.
+is a breaking change for every agent wired to Engram. Treat them like an API.
 
 | Tool                                       | Purpose                                               |
 | ------------------------------------------ | ----------------------------------------------------- |
@@ -24,8 +24,8 @@ is a breaking change for every agent wired to Engram — treat them like an API.
 | `doctor`                                   | Read-only health diagnostics (with opt-in `repair`)   |
 | `sync`                                     | Git-backed pull + push of the data directory          |
 
-`recall_stats` summarises LLM usage pulled from the recall log: total LLM
+`recall_stats` summarizes LLM usage pulled from the recall log: total LLM
 calls, input tokens, cached (prefix-hit) input tokens, and the resulting cache
-hit ratio. Providers that don't report usage leave those fields blank — the
+hit ratio. Providers that don't report usage leave those fields blank. The
 stats view renders `-` for any column with no data. Recall logs keep
 `selector_version="v2"` for continuity with existing `recall_stats` output.

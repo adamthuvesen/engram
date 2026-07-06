@@ -1,19 +1,20 @@
 # Engram
 
-Structured, cross-project memory for coding agents. Runs as an MCP server or a CLI.
+Engram is structured, cross-project memory for coding agents. It runs as an MCP
+server or a CLI.
 
-The LLM is the retrieval engine — no embeddings, no vector database. You store
-facts in natural language; an LLM extracts and categorizes them into structured
-records on disk. Recall starts with deterministic prefilters and only escalates to
-LLM search and synthesis when a query actually needs it. The point is recall you can
-audit: every fact keeps its source, supersession chain, and confidence, and storage
-is a plain append-only JSONL event log you can read with `cat`.
+The LLM is the retrieval engine. There are no embeddings and no vector database.
+You store facts in natural language, and an LLM extracts structured records on
+disk. Recall starts with deterministic prefilters and escalates to LLM search and
+synthesis only when the query needs it. Every fact keeps its source,
+supersession chain, and confidence. Storage is a plain append-only JSONL event
+log you can read with `cat`.
 
 ## How it works
 
-1. **Store** — natural language in; the LLM extracts structured facts; appended to a JSONL event log.
-2. **Review** (optional) — queue suggestions as candidates for human approval before they become recallable.
-3. **Recall** — deterministic prefilter → tiered retrieval → synthesis, escalating only as far as the query needs.
+1. **Store**: natural language in, structured facts out, appended to a JSONL event log.
+2. **Review** (optional): queue suggestions as candidates before they become recallable.
+3. **Recall**: deterministic prefilter, tiered retrieval, then synthesis when needed.
 
 ## No-key demo
 
@@ -48,15 +49,16 @@ What this covers:
 - Recall behavior: runs the committed facts through `recall_with_provenance`.
 - Eval behavior: exits non-zero if recall floors or the no-match case regress.
 - Dashboard behavior: `uv run engram-dash` opens a terminal UI over local JSONL
-  data. It does not call an LLM.
+  data and does not call an LLM.
 
 ## Recall, measured
 
 A deterministic keyword prefilter handles easy queries for free. The LLM tier
 runs only when a query needs it. The no-key eval measures that prefilter on **83
-answerable labeled queries plus 8 no-match queries over a 57-fact corpus** ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
+answerable labeled queries plus 8 no-match queries over a 57-fact corpus**
+([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
 
-**43% of queries resolve at tier-0 with zero LLM calls** — and on the rest the
+**43% of queries resolve at tier-0 with zero LLM calls.** For the rest, the
 prefilter still keeps the right memory in the deterministic candidate pool:
 
 | Deterministic prefilter (no LLM, no embeddings) | value |
@@ -66,15 +68,15 @@ prefilter still keeps the right memory in the deterministic candidate pool:
 | candidate recall (answer kept in the pool)      | 98%   |
 | MRR                                             | 0.92  |
 
-This is the deterministic prefilter *floor*, **not** end-to-end retrieval
-accuracy. The aggregate already includes the harder queries the keyword pass
-can't resolve on its own; those escalate to the LLM tier — the actual retrieval
-engine — which this number deliberately does not measure.
+This is the deterministic prefilter *floor*. It does not measure end-to-end
+retrieval accuracy. The aggregate includes harder queries the keyword pass can't
+resolve on its own. Those queries escalate to the LLM retrieval engine, which
+this number deliberately leaves out.
 
 The queries are labeled to source facts. The `kind` field shows the mix of
 literal, paraphrased, synonym, semantic, and cross-project queries.
 
-Reproduce — deterministic, no API key:
+Reproduce the deterministic no-key run:
 
 ```bash
 uv run python tests/run_evals.py
@@ -114,9 +116,9 @@ uv run engram --help       # any args → CLI; this lists the subcommands
 uv run engram-dash         # terminal dashboard for browsing memory
 ```
 
-Bare `engram` (no arguments) launches the MCP stdio server. Anything else is treated
-as a CLI invocation, so a typo surfaces as an argparse error instead of silently
-starting a long-running server.
+Bare `engram` (no arguments) launches the MCP stdio server. Anything else is
+treated as a CLI invocation, so a typo surfaces as an argparse error instead of
+silently starting a long-running server.
 
 No-key paths:
 
@@ -143,7 +145,7 @@ paths need whatever credentials your configured model expects, such as
 ### As an MCP server
 
 Point your MCP client at the `engram` entrypoint. Since bare `engram` starts the
-server, the command is just `uv run` in the repo:
+server, the command is `uv run` in the repo:
 
 ```json
 {
@@ -158,8 +160,8 @@ server, the command is just `uv run` in the repo:
 
 ### As a CLI
 
-Every MCP tool has a hyphenated CLI subcommand; bare `engram` starts the server,
-`engram --help` lists them. Every subcommand accepts `--json`.
+Every MCP tool has a hyphenated CLI subcommand. Bare `engram` starts the server,
+and `engram --help` lists the subcommands. Every subcommand accepts `--json`.
 
 ```bash
 engram recall "what does alex prefer for editors?" --json --with-provenance
@@ -197,28 +199,29 @@ also exit 2.
 | `sync` | Git-backed pull + push of the data directory |
 | `import_memories` | Bootstrap from `~/.claude/projects/*/memory/` |
 
-Default tool responses are concise text. MCP tools also expose the same envelope as
-`structuredContent`, so agent clients don't have to parse JSON out of text; pass
-`format="json"` (or `--json` in the CLI) when you want the envelope inline:
+Default tool responses are concise text. MCP tools also expose the same envelope
+as `structuredContent`, so agent clients don't have to parse JSON out of text.
+Pass `format="json"` (or `--json` in the CLI) when you want the envelope inline:
 
 ```
 recall(query, format="json", with_provenance=True) →
   {status, data: {answer, tier, source_fact_ids, cited_fact_ids, provenance, usage}, warnings, errors, meta}
 ```
 
-`recall` / `recall_trace` cap synthesis with `max_sources` (default 25; `limit` is an
-MCP-only alias). Maintenance tools always return JSON with a stable `status` and
-error codes (`validation_error`, `not_found`, `provider_error`, `storage_error`,
-`conflict`). Lists carry default safety caps; truncation is reported in
-`meta.truncated`. Stable warning codes live in `engram.core.interfaces`.
+`recall` / `recall_trace` cap synthesis with `max_sources` (default 25; `limit`
+is an MCP-only alias). Maintenance tools always return JSON with a stable
+`status` and error codes (`validation_error`, `not_found`, `provider_error`,
+`storage_error`, `conflict`). Lists carry default safety caps, and truncation is
+reported in `meta.truncated`. Stable warning codes live in
+`engram.core.interfaces`.
 
 ## Memory audit suggestions
 
 `audit-memories` is the no-key, read-only compaction review loop. It scans active
 facts for near-duplicate groups, stale time-bound memories, and contradictory
 preference/update claims, then emits suggested review actions such as
-`merge-memories`, `mark-stale`, or manual contradiction review. It never applies
-those actions itself.
+`merge-memories`, `mark-stale`, or manual contradiction review. It does not
+apply those actions itself.
 
 Reproduce the measured fixture:
 
@@ -227,8 +230,8 @@ uv run python tests/run_memory_audit_evals.py
 ```
 
 The committed fixture is fictional Acme/Alex-style memory data with labels for
-duplicate, stale, and contradiction issue groups. The gate compares against the
-current no-key audit floor (exact duplicate checks) and requires at least a 50
+duplicate, stale, and contradiction issue groups. The eval compares against the
+current no-key audit floor (exact duplicate checks). It requires at least a 50
 percentage point recall gain, at least 80% precision, and reviewer burden no
 higher than 1.5x the expected issue count.
 
@@ -241,7 +244,7 @@ All settings are `ENGRAM_*` env vars (pydantic-settings). Key knobs:
 | `ENGRAM_LLM_MODEL` | `openai/gpt-5.4-mini` | LLM for extraction and search |
 | `ENGRAM_MAX_FACTS_PER_AGENT` | `200` | Facts fed to each search agent |
 | `ENGRAM_RETRIEVAL_TIMEOUT` | `15.0` | Search agent timeout (seconds) |
-| `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11` | Min prefilter matches before tier-2 (`0` disables the small-corpus cap) |
+| `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11` | Minimum prefilter matches before tier-2 (`0` disables the small-corpus cap) |
 | `ENGRAM_TIER2_MODE` | `single` | Tier-2 strategy: `single` or `multilens` |
 | `ENGRAM_DATA_DIR` | `~/.engram/data` | Storage directory |
 | `ENGRAM_SYNC_ENABLED` | `false` | Run background auto-sync inside the MCP server lifespan |
@@ -252,15 +255,15 @@ All settings are `ENGRAM_*` env vars (pydantic-settings). Key knobs:
 
 Everything lives under `~/.engram/data/` (override with `ENGRAM_DATA_DIR`):
 
-- `facts.jsonl` — append-only fact event log; current state is materialized by replaying events
-- `candidates.jsonl` — suggested memories pending review
-- `ingestion_log.jsonl` / `recall_log.jsonl` — audit and recall-quality history
-- `transactions.jsonl` — prepared/committed journal for crash-safe writes
+- `facts.jsonl`: append-only fact event log. Current state comes from replaying events.
+- `candidates.jsonl`: suggested memories pending review.
+- `ingestion_log.jsonl` / `recall_log.jsonl`: audit and recall-quality history.
+- `transactions.jsonl`: prepared/committed journal for crash-safe writes.
 
 ## Sync across machines
 
-Engram syncs its data directory between machines through a private git repo — no
-hosted service.
+Engram syncs its data directory between machines through a private git repo. It
+does not need a hosted service.
 
 ```bash
 # Machine A, one-time
@@ -274,11 +277,12 @@ git clone git@github.com:you/your-engram-data.git ~/.engram/data
 engram sync          # pulls A's state; later syncs are pull + push
 ```
 
-The first sync auto-commits a managed `.gitignore` (lock and per-machine state stay
-local) and `.gitattributes` (`merge=union` on the event-log files, so parallel
-appends from two machines auto-merge). Set `ENGRAM_SYNC_ENABLED=true` to have the MCP
-server sync on `ENGRAM_SYNC_INTERVAL` and once on shutdown. `engram doctor` reports
-sync state under `counts.sync` — all local, no network calls.
+The first sync auto-commits a managed `.gitignore` (lock and per-machine state
+stay local) and `.gitattributes` (`merge=union` on the event-log files, so
+parallel appends from two machines auto-merge). Set `ENGRAM_SYNC_ENABLED=true`
+to have the MCP server sync on `ENGRAM_SYNC_INTERVAL` and once on shutdown.
+`engram doctor` reports sync state under `counts.sync`. That check is local and
+makes no network calls.
 
 ## Development
 
@@ -289,6 +293,7 @@ uv run --extra dev ruff check .            # lint
 uv build                                   # build sdist + wheel
 ```
 
-Architecture notes and the storage/event-log model live in [AGENTS.md](AGENTS.md).
+Architecture notes live in [docs/architecture.md](docs/architecture.md). The
+storage and event-log model lives in [docs/data.md](docs/data.md).
 
 Python 3.11+ · FastMCP 3.x · litellm · pydantic-settings · JSONL storage · MIT-licensed.
