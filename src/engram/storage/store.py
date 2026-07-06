@@ -2,6 +2,7 @@
 
 import asyncio
 import fcntl
+import json
 import logging
 import os
 import re
@@ -34,6 +35,7 @@ from engram.core.models import (
     RecallRecord,
     StoreTransaction,
     TransactionStatus,
+    fact_from_stored_data,
     materialize_events,
 )
 
@@ -314,11 +316,25 @@ def _validated_jsonl_records(
     return records, corrupt
 
 
-def _non_empty_line_count(path: Path) -> int:
+def _load_fact_records(path: Path) -> tuple[list[Fact], int, int]:
     if not path.exists():
-        return 0
+        return [], 0, 0
+
+    facts: list[Fact] = []
+    corrupt = 0
+    total = 0
     with path.open() as fh:
-        return sum(1 for line in fh if line.strip())
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            total += 1
+            try:
+                facts.append(fact_from_stored_data(json.loads(line)))
+            except Exception:
+                corrupt += 1
+                logger.warning("Corrupt fact record dropped: %s", line[:80])
+    return facts, corrupt, total
 
 
 def format_facts_for_llm(facts: list[Fact]) -> str:
@@ -377,6 +393,41 @@ def _compacted_event_log(
         else:
             compacted.append(_compaction_created_event(fact_id, fact))
     return compacted, tombstones
+
+
+def _fact_record_import_events(facts: list[Fact]) -> list[FactEvent]:
+    events: list[FactEvent] = []
+    for fact in facts:
+        events.append(
+            FactEvent(
+                event_type=EventType.created,
+                fact_id=fact.id,
+                timestamp=fact.created_at,
+                actor="record_import",
+                payload=fact.model_dump(),
+            )
+        )
+        if fact.supersedes:
+            events.append(
+                FactEvent(
+                    event_type=EventType.superseded,
+                    fact_id=fact.supersedes,
+                    timestamp=fact.updated_at,
+                    actor="record_import",
+                    payload={"superseded_by": fact.id},
+                )
+            )
+        if fact.confidence < MIN_ACTIVE_CONFIDENCE:
+            events.append(
+                FactEvent(
+                    event_type=EventType.forgotten,
+                    fact_id=fact.id,
+                    timestamp=fact.updated_at,
+                    actor="record_import",
+                    payload={"reason": "imported_low_confidence"},
+                )
+            )
+    return events
 
 
 def _unique_ids(ids: list[str]) -> list[str]:
@@ -453,6 +504,7 @@ class FactStore:
         # Cache: fact.id -> (updated_at_iso, unigrams, bigrams)
         self._tok_cache: dict[str, tuple[str, set[str], set[str]]] = {}
         self.recover_transactions()
+        self._ensure_event_log_format()
 
     @property
     def facts_path(self) -> Path:
@@ -511,6 +563,34 @@ class FactStore:
                     logger.warning("Skipping corrupt event at line %d: %s", lineno, exc)
         return events
 
+    def _ensure_event_log_format(self) -> bool:
+        """Convert valid fact-record files to the event-log shape."""
+        with _locked_store(self.data_dir):
+            if not self.facts_path.exists() or self.facts_path.stat().st_size == 0:
+                return True
+            if self._is_event_log_format():
+                return True
+
+            facts, corrupt, total = _load_fact_records(self.facts_path)
+            if corrupt or not facts:
+                logger.warning(
+                    "%s is not an event log and cannot be imported automatically "
+                    "(valid=%d, corrupt=%d, total=%d).",
+                    self.facts_path,
+                    len(facts),
+                    corrupt,
+                    total,
+                )
+                return False
+
+            now = datetime.now(timezone.utc)
+            self._rewrite_event_log(
+                EventLogMeta(created_at=now),
+                _fact_record_import_events(facts),
+            )
+            logger.info("Imported %d fact record(s) into event-log format", len(facts))
+            return True
+
     def load_facts(self) -> list[Fact]:
         """Load all facts from JSONL.
 
@@ -522,7 +602,7 @@ class FactStore:
         """
         if not self.facts_path.exists():
             return []
-        if self._is_event_log_format():
+        if self._is_event_log_format() or self._ensure_event_log_format():
             events = self._load_all_events()
             materialized = materialize_events(events)
             out: list[Fact] = []
@@ -709,10 +789,11 @@ class FactStore:
                 and self.facts_path.stat().st_size > 0
                 and not self._is_event_log_format()
             ):
-                raise ValueError(
-                    f"{self.facts_path} is not an event log; run "
-                    "`engram doctor --repair-jsonl` or move the invalid file aside."
-                )
+                if not self._ensure_event_log_format():
+                    raise ValueError(
+                        f"{self.facts_path} is not an event log; run "
+                        "`engram doctor --repair-jsonl` or move the invalid file aside."
+                    )
             with _locked_write(self.facts_path):
                 self._ensure_event_log_header()
                 self._ensure_trailing_newline(self.facts_path)
@@ -1643,11 +1724,14 @@ class FactStore:
                 result["facts_valid"] = len(materialized)
                 result["facts_corrupt"] = corrupt
             else:
-                corrupt = _non_empty_line_count(self.facts_path)
-                if corrupt > 0:
-                    self._rewrite_event_log(EventLogMeta(), [])
+                valid_facts, corrupt, total = _load_fact_records(self.facts_path)
+                if valid_facts or corrupt:
+                    self._rewrite_event_log(
+                        EventLogMeta(),
+                        _fact_record_import_events(valid_facts),
+                    )
                     self._tok_cache.clear()
-                result["facts_valid"] = 0
+                result["facts_valid"] = len(valid_facts)
                 result["facts_corrupt"] = corrupt
         else:
             result["facts_valid"] = 0

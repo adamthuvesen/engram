@@ -1,5 +1,6 @@
 """Tests for file safety, repair, and edit operations."""
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -32,6 +33,37 @@ def test_repair_recovers_from_corrupt_lines():
     facts = store.load_facts()
     assert len(facts) == 1
     assert facts[0].id == "good1"
+
+
+def test_repair_imports_valid_fact_records_and_drops_corrupt_lines(tmp_path):
+    data_dir = tmp_path / "store"
+    data_dir.mkdir()
+    current_fact = Fact(
+        id="goodrecordaa",
+        category=FactCategory.preference,
+        content="Valid record fact",
+    )
+    stored_fact = {
+        "id": "storedoldcat",
+        "category": "temporal",
+        "content": "Release completed",
+    }
+    (data_dir / "facts.jsonl").write_text(
+        current_fact.model_dump_json()
+        + "\n"
+        + json.dumps(stored_fact)
+        + "\n"
+        + "not json\n"
+    )
+    store = FactStore(data_dir=data_dir)
+
+    result = store.repair()
+
+    assert result["facts_valid"] == 2
+    assert result["facts_corrupt"] == 1
+    facts = {fact.id: fact for fact in store.load_facts()}
+    assert facts["goodrecordaa"].content == "Valid record fact"
+    assert facts["storedoldcat"].category == FactCategory.event
 
 
 def test_repair_no_corruption():

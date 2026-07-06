@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 MIN_ACTIVE_CONFIDENCE = 0.1
 
@@ -103,6 +103,21 @@ class Fact(FactBase):
     """Atomic unit of knowledge in the memory store."""
 
     pass
+
+
+_STORED_CATEGORY_NAMES: dict[str, str] = {
+    "temporal": FactCategory.event.value,
+    "update": FactCategory.correction.value,
+}
+
+
+def fact_from_stored_data(data: dict[str, Any]) -> Fact:
+    """Load a Fact from persisted data written by any supported store version."""
+    if isinstance(data.get("category"), str):
+        category = data["category"]
+        if category in _STORED_CATEGORY_NAMES:
+            data = {**data, "category": _STORED_CATEGORY_NAMES[category]}
+    return Fact.model_validate(data)
 
 
 class MemoryCandidate(FactBase):
@@ -212,7 +227,10 @@ class EventLogMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     meta: str = EVENT_LOG_META_VERSION
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        validation_alias=AliasChoices("created_at", "migrated_at"),
+    )
 
 
 def _event_sort_key(event: FactEvent) -> tuple[datetime, str]:
@@ -229,7 +247,7 @@ def _ensure_single_fact_id(events: list[FactEvent]) -> None:
 
 
 def _fact_with_event_timestamp(fact: Fact, event: FactEvent, **updates) -> Fact:
-    return Fact.model_validate(
+    return fact_from_stored_data(
         {**fact.model_dump(), **updates, "updated_at": event.timestamp}
     )
 
@@ -298,7 +316,7 @@ def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
             # Allow re-creation only as a no-op idempotent restore (e.g. during
             # compaction replay); the first created wins.
             if fact is None:
-                fact = Fact(**event.payload)
+                fact = fact_from_stored_data(event.payload)
             continue
 
         if fact is None:

@@ -69,6 +69,24 @@ def test_replay_create_only_returns_active_fact():
     assert is_active is True
 
 
+def test_replay_create_imports_stored_category_name():
+    event = FactEvent(
+        event_type=EventType.created,
+        fact_id="fact_a",
+        payload={
+            "id": "fact_a",
+            "category": "temporal",
+            "content": "Release completed",
+        },
+    )
+
+    result, is_active = replay_fact([event])
+
+    assert result is not None
+    assert result.category == FactCategory.event
+    assert is_active is True
+
+
 def test_replay_empty_event_list_returns_none():
     result, is_active = replay_fact([])
     assert result is None
@@ -113,6 +131,25 @@ def test_replay_create_then_edit_applies_update():
     assert result.content == "v2"
     assert is_active is True
     assert result.updated_at == _at(1)
+
+
+def test_replay_edit_imports_stored_category_name():
+    fact = _make_fact(content="v1")
+    events = [
+        _created_event(fact, ts=_at(0)),
+        FactEvent(
+            event_type=EventType.edited,
+            fact_id="fact_a",
+            timestamp=_at(1),
+            payload={"category": "update"},
+        ),
+    ]
+
+    result, is_active = replay_fact(events)
+
+    assert result is not None
+    assert result.category == FactCategory.correction
+    assert is_active is True
 
 
 def test_replay_edit_only_touches_editable_fields():
@@ -380,6 +417,17 @@ def test_event_log_meta_default_version():
     meta = EventLogMeta()
     assert meta.meta == EVENT_LOG_META_VERSION
     assert meta.meta == "event-log-v1"
+
+
+def test_event_log_meta_accepts_existing_header_timestamp():
+    meta = EventLogMeta.model_validate(
+        {
+            "meta": EVENT_LOG_META_VERSION,
+            "migrated_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+
+    assert meta.created_at == _at(0)
 
 
 # --- compaction --------------------------------------------------------------
