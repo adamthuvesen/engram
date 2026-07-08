@@ -1,5 +1,7 @@
 # Engram
 
+![License](https://img.shields.io/github/license/adamthuvesen/engram) ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+
 Engram is structured, cross-project memory for coding agents. It runs as an MCP
 server or a CLI.
 
