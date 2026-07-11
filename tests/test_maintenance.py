@@ -113,38 +113,6 @@ def test_correct_fact_append_failure_leaves_original_active(monkeypatch):
     assert active[0].content == "prefers vim"
 
 
-def test_correct_fact_log_failure_keeps_single_active_replacement(monkeypatch):
-    """If ``log_ingestion`` fails after events are appended, the state still
-    reflects a single active replacement (new fact active, old superseded).
-    """
-    store = _make_store()
-    store.append_facts(
-        [
-            Fact(
-                id="oldaaaaaaaaa",
-                category=FactCategory.preference,
-                content="prefers vim",
-            )
-        ]
-    )
-
-    def fail_log(record):
-        raise OSError("audit failed")
-
-    monkeypatch.setattr(store, "log_ingestion", fail_log)
-
-    with pytest.raises(OSError, match="audit failed"):
-        store.correct_fact("oldaaaaaaaaa", "prefers neovim")
-
-    active = store.load_active_facts()
-    assert len(active) == 1
-    assert active[0].id != "oldaaaaaaaaa"
-    assert active[0].content == "prefers neovim"
-    old = next(f for f in store.load_facts() if f.id == "oldaaaaaaaaa")
-    # Superseded facts surface as confidence==0 in the materialized view.
-    assert old.confidence == 0.0
-
-
 # ---------------------------------------------------------------------------
 # merge_facts
 # ---------------------------------------------------------------------------
@@ -244,34 +212,6 @@ def test_merge_facts_append_failure_leaves_sources_active(monkeypatch):
 
     active_ids = {fact.id for fact in store.load_active_facts()}
     assert active_ids == {"srcaaaaaaaaa", "srcbbbbbbbbb"}
-
-
-def test_merge_facts_log_failure_keeps_single_active_replacement(monkeypatch):
-    """When ``log_ingestion`` fails after events are appended, the merged
-    state still resolves to exactly one active record."""
-    store = _make_store()
-    store.append_facts(
-        [
-            Fact(id="srcaaaaaaaaa", category=FactCategory.preference, content="a"),
-            Fact(id="srcbbbbbbbbb", category=FactCategory.preference, content="b"),
-        ]
-    )
-
-    def fail_log(record):
-        raise OSError("audit failed")
-
-    monkeypatch.setattr(store, "log_ingestion", fail_log)
-
-    with pytest.raises(OSError, match="audit failed"):
-        store.merge_facts(["srcaaaaaaaaa", "srcbbbbbbbbb"], "merged")
-
-    active = store.load_active_facts()
-    assert len(active) == 1
-    assert active[0].content == "merged"
-    inactive = {fact.id: fact for fact in store.load_facts() if fact.id != active[0].id}
-    # Superseded sources surface as confidence==0 in the materialized view.
-    assert inactive["srcaaaaaaaaa"].confidence == 0.0
-    assert inactive["srcbbbbbbbbb"].confidence == 0.0
 
 
 # ---------------------------------------------------------------------------

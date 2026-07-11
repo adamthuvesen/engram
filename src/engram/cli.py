@@ -39,7 +39,6 @@ from engram.operations import (
     rename_project as op_rename_project,
     suggest_memories as op_suggest_memories,
     sync as op_sync,
-    synthesize as op_synthesize,
     unmark_stale as op_unmark_stale,
 )
 from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
@@ -67,7 +66,6 @@ CANONICAL_COMMANDS = frozenset(
         "import-memories",
         "purge",
         "rename-project",
-        "synthesize",
         "audit-memories",
         "doctor",
         "memory-stats",
@@ -248,10 +246,6 @@ async def cmd_rename_project(args: argparse.Namespace) -> OperationResult:
     return await op_rename_project(args.old_project, args.new_project)
 
 
-async def cmd_synthesize(args: argparse.Namespace) -> OperationResult:
-    return await op_synthesize(project=args.project, dry_run=not args.apply)
-
-
 async def cmd_audit_memories(args: argparse.Namespace) -> OperationResult:
     return await op_audit_memories(project=args.project)
 
@@ -306,7 +300,6 @@ HANDLERS: dict[str, CommandHandler] = {
     "import-memories": cmd_import_memories,
     "purge": cmd_purge,
     "rename-project": cmd_rename_project,
-    "synthesize": cmd_synthesize,
     "audit-memories": cmd_audit_memories,
     "doctor": cmd_doctor,
     "memory-stats": cmd_memory_stats,
@@ -468,11 +461,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_rename.add_argument("old_project")
     p_rename.add_argument("new_project")
     _add_json_flag(p_rename)
-
-    p_synthesize = sub.add_parser("synthesize", help="Consolidate facts")
-    p_synthesize.add_argument("--project", default=None)
-    p_synthesize.add_argument("--apply", action="store_true")
-    _add_json_flag(p_synthesize)
 
     p_audit = sub.add_parser(
         "audit-memories",

@@ -127,17 +127,6 @@ class MemoryCandidate(FactBase):
     review_note: str = ""
 
 
-class IngestionRecord(BaseModel):
-    """Audit trail for fact extraction."""
-
-    id: str = Field(default_factory=lambda: uuid4().hex[:12])
-    source: str
-    facts_created: list[str] = Field(default_factory=list)
-    facts_updated: list[str] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    agent_model: str = ""
-
-
 class RecallRecord(BaseModel):
     """Log entry for a recall query (quality observability)."""
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from engram.core.config import get_settings
 from engram.recall.evals import (
     EvalBudget,
     EvalFactSpec,
@@ -118,8 +117,6 @@ def test_eval_fails_on_tier_budget_exceeded(monkeypatch):
 
 
 def test_eval_fails_on_llm_call_budget(monkeypatch):
-    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
-    get_settings.cache_clear()
     fixture = EvalFixture(
         name="llm_budget",
         query="retrieval",
@@ -131,25 +128,14 @@ def test_eval_fails_on_llm_call_budget(monkeypatch):
             )
             for i in range(15)
         ],
-        budget=EvalBudget(max_llm_calls=1),
-        mocked_responses=[
-            (
-                "## DIRECT\n(none)\n## CONTEXTUAL\n(none)\n## TEMPORAL\n(none)\n",
-                100,
-                0,
-            ),
-            ("ok\n[quality: low]", 100, 0),
-        ],
+        budget=EvalBudget(max_llm_calls=0),
+        mocked_responses=[("ok\n[quality: low]", 100, 0)],
     )
-    try:
-        result = run_fixture_sync(fixture)
-    finally:
-        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
-        get_settings.cache_clear()
+    result = run_fixture_sync(fixture)
     assert result.passed is False
     call_check = next(c for c in result.checks if c.name == "max_llm_calls")
     assert call_check.passed is False
-    assert call_check.actual == 2
+    assert call_check.actual == 1
 
 
 # ---------------------------------------------------------------------------

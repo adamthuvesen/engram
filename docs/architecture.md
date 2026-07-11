@@ -8,7 +8,7 @@ server.py                FastMCP entrypoint, tool definitions, auto-sync lifespa
 cli.py                   `engram` console-script command surface
 operations.py            shared operation layer behind the MCP tools and CLI
 core/                    domain models + agent-facing contracts + config
-  models.py              Fact, FactEvent, MemoryCandidate, IngestionRecord,
+  models.py              Fact, FactEvent, MemoryCandidate,
                          RecallRecord, StoreTransaction
   config.py              pydantic-settings (env prefix: ENGRAM_)
   interfaces.py          Envelope / error / warning codes (stable JSON contract)
@@ -23,10 +23,9 @@ extraction/              natural language to facts
   observer.py            fact extraction & suggestion queueing (structured output)
   importer.py            bootstrap from Claude Code memory files
 recall/                  retrieval
-  retriever.py           tiered: deterministic fast paths, then multi-lens synthesis
+  retriever.py           tiered: deterministic fast paths, then one broad LLM call
   evals.py               recall@k harness used by tests/run_evals.py
 maintenance/             memory upkeep
-  synthesizer.py         batch LLM consolidation (keep/remove/rewrite/merge)
   memory_audit.py        no-key duplicate / stale / contradiction review
   doctor.py              read-only health diagnostics (with opt-in repair)
 dashboard/               Textual TUI (`engram-dash`)
@@ -37,7 +36,7 @@ dashboard/               Textual TUI (`engram-dash`)
 Natural language enters `extraction.observer`, which extracts structured facts.
 `storage.store` persists those facts as JSONL through `AsyncFactStore`.
 `recall.retriever` runs deterministic fast paths first and escalates to
-multi-lens search plus synthesis for complex queries.
+a single broad LLM call for complex queries.
 
 ## Dev notes
 

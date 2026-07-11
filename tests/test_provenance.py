@@ -103,28 +103,17 @@ def test_default_recall_no_provenance_in_text():
 
 
 # ---------------------------------------------------------------------------
-# 2.6: tier-2 with provenance still makes exactly 2 LLM calls
+# 2.6: tier-2 with provenance makes exactly 1 LLM call
 # ---------------------------------------------------------------------------
 
 
-def test_tier2_with_provenance_makes_exactly_two_calls(monkeypatch):
-    from engram.core.config import get_settings
-
+def test_tier2_with_provenance_makes_exactly_one_call(monkeypatch):
     store = _make_store()
     _flat_tier2(store)
-    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
-    get_settings.cache_clear()
 
     calls = _patch_complete(
         monkeypatch,
         [
-            (
-                "## DIRECT\n1. retrieval note (id: f00aaaaaaaaa)\n\n"
-                "## CONTEXTUAL\n(none)\n\n"
-                "## TEMPORAL\n(none)\n",
-                1000,
-                0,
-            ),
             (
                 "The retrieval notes are logged. (id: f00aaaaaaaaa)\n[quality: high]",
                 1200,
@@ -133,59 +122,40 @@ def test_tier2_with_provenance_makes_exactly_two_calls(monkeypatch):
         ],
     )
 
-    try:
-        answer, quality, provenance, trace = asyncio.run(
-            recall_with_provenance("retrieval", store=store)
-        )
-    finally:
-        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
-        get_settings.cache_clear()
+    answer, quality, provenance, trace = asyncio.run(
+        recall_with_provenance("retrieval", store=store)
+    )
 
-    assert calls["n"] == 2
+    assert calls["n"] == 1
     assert isinstance(provenance, RecallProvenance)
     assert provenance.tier == 2
-    assert provenance.usage.llm_calls == 2
-    assert provenance.usage.input_tokens == 2200
+    assert provenance.usage.llm_calls == 1
+    assert provenance.usage.input_tokens == 1200
     assert provenance.usage.cached_tokens == 800
     assert quality == "high"
     assert "f00aaaaaaaaa" in provenance.cited_fact_ids
     assert trace is None  # default
 
 
-def test_tier2_with_trace_still_two_calls(monkeypatch):
-    from engram.core.config import get_settings
-
+def test_tier2_with_trace_single_call(monkeypatch):
     store = _make_store()
     _flat_tier2(store)
-    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
-    get_settings.cache_clear()
 
     calls = _patch_complete(
         monkeypatch,
-        [
-            (
-                "## DIRECT\n(none)\n\n## CONTEXTUAL\n(none)\n\n## TEMPORAL\n(none)\n",
-                500,
-                0,
-            ),
-            ("nothing matches\n[quality: none]", 600, 100),
-        ],
+        [("nothing matches\n[quality: none]", 600, 100)],
     )
 
-    try:
-        _, _, provenance, trace = asyncio.run(
-            recall_with_provenance("retrieval", store=store, with_trace=True)
-        )
-    finally:
-        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
-        get_settings.cache_clear()
+    _, _, provenance, trace = asyncio.run(
+        recall_with_provenance("retrieval", store=store, with_trace=True)
+    )
 
-    assert calls["n"] == 2
+    assert calls["n"] == 1
     assert isinstance(trace, RecallTrace)
-    assert len(trace.calls) == 2
+    assert len(trace.calls) == 1
     names = [c.name for c in trace.calls]
-    assert names == ["multilens_search", "synthesis"]
-    assert provenance.usage.llm_calls == 2
+    assert names == ["tier2_single"]
+    assert provenance.usage.llm_calls == 1
 
 
 # ---------------------------------------------------------------------------

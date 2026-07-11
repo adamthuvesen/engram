@@ -2,7 +2,6 @@
 
 import asyncio
 import fcntl
-import json
 import logging
 import os
 import re
@@ -29,13 +28,11 @@ from engram.core.models import (
     Fact,
     FactCategory,
     FactEvent,
-    IngestionRecord,
     MIN_ACTIVE_CONFIDENCE,
     MemoryCandidate,
     RecallRecord,
     StoreTransaction,
     TransactionStatus,
-    fact_from_stored_data,
     materialize_events,
 )
 
@@ -273,11 +270,13 @@ def _store_lock_depths() -> dict[Path, int]:
 
 def _load_jsonl_records(
     path: Path, model: type[ModelT], corrupt_label: str
-) -> list[ModelT]:
+) -> tuple[list[ModelT], int]:
+    """Parse a JSONL file into ``model`` records, returning ``(records, corrupt)``."""
     if not path.exists():
-        return []
+        return [], 0
 
     records: list[ModelT] = []
+    corrupt = 0
     with path.open() as fh:
         for lineno, line in enumerate(fh, 1):
             line = line.strip()
@@ -285,56 +284,15 @@ def _load_jsonl_records(
                 continue
             try:
                 records.append(model.model_validate_json(line))
-            except (ValueError, ValidationError) as exc:
+            except (ValueError, ValidationError):
+                corrupt += 1
                 logger.warning(
                     "Skipping corrupt %s at line %d: %s",
                     corrupt_label,
                     lineno,
-                    exc,
+                    line[:80],
                 )
-    return records
-
-
-def _validated_jsonl_records(
-    path: Path, model: type[ModelT], corrupt_label: str
-) -> tuple[list[ModelT], int]:
-    if not path.exists():
-        return [], 0
-
-    records: list[ModelT] = []
-    corrupt = 0
-    with path.open() as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(model.model_validate_json(line))
-            except Exception:
-                corrupt += 1
-                logger.warning("Corrupt %s line dropped: %s", corrupt_label, line[:80])
     return records, corrupt
-
-
-def _load_fact_records(path: Path) -> tuple[list[Fact], int, int]:
-    if not path.exists():
-        return [], 0, 0
-
-    facts: list[Fact] = []
-    corrupt = 0
-    total = 0
-    with path.open() as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            total += 1
-            try:
-                facts.append(fact_from_stored_data(json.loads(line)))
-            except Exception:
-                corrupt += 1
-                logger.warning("Corrupt fact record dropped: %s", line[:80])
-    return facts, corrupt, total
 
 
 def format_facts_for_llm(facts: list[Fact]) -> str:
@@ -393,41 +351,6 @@ def _compacted_event_log(
         else:
             compacted.append(_compaction_created_event(fact_id, fact))
     return compacted, tombstones
-
-
-def _fact_record_import_events(facts: list[Fact]) -> list[FactEvent]:
-    events: list[FactEvent] = []
-    for fact in facts:
-        events.append(
-            FactEvent(
-                event_type=EventType.created,
-                fact_id=fact.id,
-                timestamp=fact.created_at,
-                actor="record_import",
-                payload=fact.model_dump(),
-            )
-        )
-        if fact.supersedes:
-            events.append(
-                FactEvent(
-                    event_type=EventType.superseded,
-                    fact_id=fact.supersedes,
-                    timestamp=fact.updated_at,
-                    actor="record_import",
-                    payload={"superseded_by": fact.id},
-                )
-            )
-        if fact.confidence < MIN_ACTIVE_CONFIDENCE:
-            events.append(
-                FactEvent(
-                    event_type=EventType.forgotten,
-                    fact_id=fact.id,
-                    timestamp=fact.updated_at,
-                    actor="record_import",
-                    payload={"reason": "imported_low_confidence"},
-                )
-            )
-    return events
 
 
 def _unique_ids(ids: list[str]) -> list[str]:
@@ -504,15 +427,10 @@ class FactStore:
         # Cache: fact.id -> (updated_at_iso, unigrams, bigrams)
         self._tok_cache: dict[str, tuple[str, set[str], set[str]]] = {}
         self.recover_transactions()
-        self._ensure_event_log_format()
 
     @property
     def facts_path(self) -> Path:
         return self.data_dir / "facts.jsonl"
-
-    @property
-    def ingestion_log_path(self) -> Path:
-        return self.data_dir / "ingestion_log.jsonl"
 
     @property
     def candidates_path(self) -> Path:
@@ -542,54 +460,8 @@ class FactStore:
         """Read every ``FactEvent`` from ``facts.jsonl``, skipping the meta line."""
         if not self.facts_path.exists():
             return []
-        events: list[FactEvent] = []
-        first_data_line = True
-        with self.facts_path.open() as fh:
-            for lineno, line in enumerate(fh, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                if first_data_line:
-                    first_data_line = False
-                    try:
-                        EventLogMeta.model_validate_json(line)
-                        continue
-                    except (ValueError, ValidationError):
-                        # Not a meta line — fall through and try to parse as event.
-                        pass
-                try:
-                    events.append(FactEvent.model_validate_json(line))
-                except (ValueError, ValidationError) as exc:
-                    logger.warning("Skipping corrupt event at line %d: %s", lineno, exc)
+        _, events, _ = self._validated_event_log_records()
         return events
-
-    def _ensure_event_log_format(self) -> bool:
-        """Convert valid fact-record files to the event-log shape."""
-        with _locked_store(self.data_dir):
-            if not self.facts_path.exists() or self.facts_path.stat().st_size == 0:
-                return True
-            if self._is_event_log_format():
-                return True
-
-            facts, corrupt, total = _load_fact_records(self.facts_path)
-            if corrupt or not facts:
-                logger.warning(
-                    "%s is not an event log and cannot be imported automatically "
-                    "(valid=%d, corrupt=%d, total=%d).",
-                    self.facts_path,
-                    len(facts),
-                    corrupt,
-                    total,
-                )
-                return False
-
-            now = datetime.now(timezone.utc)
-            self._rewrite_event_log(
-                EventLogMeta(created_at=now),
-                _fact_record_import_events(facts),
-            )
-            logger.info("Imported %d fact record(s) into event-log format", len(facts))
-            return True
 
     def load_facts(self) -> list[Fact]:
         """Load all facts from JSONL.
@@ -602,21 +474,21 @@ class FactStore:
         """
         if not self.facts_path.exists():
             return []
-        if self._is_event_log_format() or self._ensure_event_log_format():
-            events = self._load_all_events()
-            materialized = materialize_events(events)
-            out: list[Fact] = []
-            for fact, is_active in materialized.values():
-                if not is_active and fact.confidence > 0.0:
-                    fact = fact.model_copy(update={"confidence": 0.0})
-                out.append(fact)
-            return out
-        logger.warning(
-            "%s is not an event log; run `engram doctor --repair-jsonl` "
-            "or move the invalid file aside.",
-            self.facts_path,
-        )
-        return []
+        if not self._is_event_log_format():
+            logger.warning(
+                "%s is not an event log; run `engram doctor --repair-jsonl` "
+                "or move the invalid file aside.",
+                self.facts_path,
+            )
+            return []
+        events = self._load_all_events()
+        materialized = materialize_events(events)
+        out: list[Fact] = []
+        for fact, is_active in materialized.values():
+            if not is_active and fact.confidence > 0.0:
+                fact = fact.model_copy(update={"confidence": 0.0})
+            out.append(fact)
+        return out
 
     def load_candidates(
         self,
@@ -626,9 +498,10 @@ class FactStore:
     ) -> list[MemoryCandidate]:
         """Load memory candidates filtered by status and project."""
         candidates = []
-        for candidate in _load_jsonl_records(
+        loaded, _ = _load_jsonl_records(
             self.candidates_path, MemoryCandidate, "candidate"
-        ):
+        )
+        for candidate in loaded:
             if status and candidate.status != status:
                 continue
             if project and candidate.project and candidate.project != project:
@@ -789,11 +662,10 @@ class FactStore:
                 and self.facts_path.stat().st_size > 0
                 and not self._is_event_log_format()
             ):
-                if not self._ensure_event_log_format():
-                    raise ValueError(
-                        f"{self.facts_path} is not an event log; run "
-                        "`engram doctor --repair-jsonl` or move the invalid file aside."
-                    )
+                raise ValueError(
+                    f"{self.facts_path} is not an event log; run "
+                    "`engram doctor --repair-jsonl` or move the invalid file aside."
+                )
             with _locked_write(self.facts_path):
                 self._ensure_event_log_header()
                 self._ensure_trailing_newline(self.facts_path)
@@ -1156,14 +1028,6 @@ class FactStore:
             )
             self._tok_cache.pop(fact_id, None)
 
-        self.log_ingestion(
-            IngestionRecord(
-                source="correct_fact",
-                facts_created=[new_fact.id],
-                facts_updated=[fact_id],
-                agent_model="manual_correction",
-            )
-        )
         logger.info("Corrected fact %s -> %s: %s", fact_id, new_fact.id, reason)
         return new_fact
 
@@ -1285,14 +1149,6 @@ class FactStore:
             for src in sources:
                 self._tok_cache.pop(src.id, None)
 
-        self.log_ingestion(
-            IngestionRecord(
-                source="merge_facts",
-                facts_created=[new_fact.id],
-                facts_updated=list(unique_ids),
-                agent_model="manual_merge",
-            )
-        )
         logger.info("Merged %d facts -> %s: %s", len(unique_ids), new_fact.id, reason)
         return new_fact, unique_ids
 
@@ -1308,13 +1164,6 @@ class FactStore:
                 fact_id,
                 now,
                 {"reason": reason} if reason else {},
-            )
-            self.log_ingestion(
-                IngestionRecord(
-                    source="mark_stale",
-                    facts_updated=[fact_id],
-                    agent_model="manual_stale",
-                )
             )
             logger.info("Marked fact %s stale: %s", fact_id, reason)
             return existing.model_copy(
@@ -1468,9 +1317,10 @@ class FactStore:
                 os.fsync(f.fileno())
 
     def _load_transactions(self) -> list[StoreTransaction]:
-        return _load_jsonl_records(
+        records, _ = _load_jsonl_records(
             self.transaction_log_path, StoreTransaction, "transaction"
         )
+        return records
 
     def _pending_transactions(self) -> list[StoreTransaction]:
         prepared: dict[str, StoreTransaction] = {}
@@ -1485,12 +1335,6 @@ class FactStore:
             for transaction_id, transaction in prepared.items()
             if transaction_id not in committed_ids
         ]
-
-    def log_ingestion(self, record: IngestionRecord) -> None:
-        """Append an ingestion record to the audit log."""
-        with _locked_write(self.ingestion_log_path):
-            with self.ingestion_log_path.open("a") as f:
-                f.write(record.model_dump_json() + "\n")
 
     def compact_event_log(self, *, keep_tombstones: bool = True) -> dict[str, int]:
         """Collapse the event log to a minimal representation.
@@ -1644,7 +1488,9 @@ class FactStore:
 
     def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
         """Load recent recall log entries."""
-        records = _load_jsonl_records(self.recall_log_path, RecallRecord, "recall log")
+        records, _ = _load_jsonl_records(
+            self.recall_log_path, RecallRecord, "recall log"
+        )
         records.sort(key=lambda r: r.timestamp, reverse=True)
         return records[:limit] if limit is not None else records
 
@@ -1656,7 +1502,7 @@ class FactStore:
         corrupt = 0
         first_data_line = True
         with self.facts_path.open() as fh:
-            for line in fh:
+            for lineno, line in enumerate(fh, 1):
                 line = line.strip()
                 if not line:
                     continue
@@ -1669,9 +1515,11 @@ class FactStore:
                         pass
                 try:
                     events.append(FactEvent.model_validate_json(line))
-                except Exception:
+                except (ValueError, ValidationError):
                     corrupt += 1
-                    logger.warning("Corrupt facts line dropped: %s", line[:80])
+                    logger.warning(
+                        "Skipping corrupt event at line %d: %s", lineno, line[:80]
+                    )
         return meta, events, corrupt
 
     def _rewrite_event_log(
@@ -1724,22 +1572,21 @@ class FactStore:
                 result["facts_valid"] = len(materialized)
                 result["facts_corrupt"] = corrupt
             else:
-                valid_facts, corrupt, total = _load_fact_records(self.facts_path)
-                if valid_facts or corrupt:
-                    self._rewrite_event_log(
-                        EventLogMeta(),
-                        _fact_record_import_events(valid_facts),
-                    )
-                    self._tok_cache.clear()
-                result["facts_valid"] = len(valid_facts)
-                result["facts_corrupt"] = corrupt
+                # Not an event log — invalid current data. Reset to an empty
+                # event log and report every line as dropped.
+                with self.facts_path.open() as fh:
+                    dropped = sum(1 for line in fh if line.strip())
+                self._rewrite_event_log(EventLogMeta(), [])
+                self._tok_cache.clear()
+                result["facts_valid"] = 0
+                result["facts_corrupt"] = dropped
         else:
             result["facts_valid"] = 0
             result["facts_corrupt"] = 0
 
         # candidates.jsonl
         if self.candidates_path.exists():
-            valid_candidates, corrupt = _validated_jsonl_records(
+            valid_candidates, corrupt = _load_jsonl_records(
                 self.candidates_path, MemoryCandidate, "candidates"
             )
             if corrupt > 0:
@@ -1854,10 +1701,6 @@ class AsyncFactStore:
         return self.sync_store.facts_path
 
     @property
-    def ingestion_log_path(self) -> Path:
-        return self.sync_store.ingestion_log_path
-
-    @property
     def candidates_path(self) -> Path:
         return self.sync_store.candidates_path
 
@@ -1932,11 +1775,6 @@ class AsyncFactStore:
     async def batch_update_facts(self, updates: dict[str, dict]) -> list[Fact]:
         return await self._run(self.sync_store.batch_update_facts, updates)
 
-    async def batch_update_candidates(
-        self, updates: dict[str, dict]
-    ) -> list[MemoryCandidate]:
-        return await self._run(self.sync_store.batch_update_candidates, updates)
-
     async def forget(self, fact_id: str, reason: str = "") -> Fact | None:
         return await self._run(self.sync_store.forget, fact_id, reason)
 
@@ -1974,12 +1812,6 @@ class AsyncFactStore:
     ) -> list[MemoryCandidate]:
         return await self._run(self.sync_store.reject_candidates, candidate_ids, reason)
 
-    async def recover_transactions(self) -> int:
-        return await self._run(self.sync_store.recover_transactions)
-
-    async def log_ingestion(self, record: IngestionRecord) -> None:
-        await self._run(self.sync_store.log_ingestion, record)
-
     async def purge(self) -> dict:
         return await self._run(self.sync_store.purge)
 
@@ -1994,13 +1826,3 @@ class AsyncFactStore:
 
     async def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
         return await self._run(self.sync_store.load_recall_log, limit)
-
-    async def repair(self) -> dict:
-        return await self._run(self.sync_store.repair)
-
-    async def compact_event_log(
-        self, *, keep_tombstones: bool = True
-    ) -> dict[str, int]:
-        return await self._run(
-            self.sync_store.compact_event_log, keep_tombstones=keep_tombstones
-        )

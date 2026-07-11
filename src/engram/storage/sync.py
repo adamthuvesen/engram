@@ -41,7 +41,6 @@ GITATTRIBUTES_MARKER = "# engram-sync: managed merge attributes"
 GITATTRIBUTES_LINES = [
     GITATTRIBUTES_MARKER,
     "facts.jsonl merge=union",
-    "ingestion_log.jsonl merge=union",
     "recall_log.jsonl merge=union",
     "transactions.jsonl merge=union",
     "candidates.jsonl merge=union",

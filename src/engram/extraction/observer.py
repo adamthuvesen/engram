@@ -6,13 +6,11 @@ from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from engram.core.config import get_settings
 from engram.llm import complete_model
 from engram.core.models import (
     CandidateStatus,
     EvidenceKind,
     Fact,
-    IngestionRecord,
     MemoryCandidate,
 )
 from engram.storage.store import (
@@ -94,15 +92,6 @@ async def extract_facts(
 
     if candidates:
         await _append_facts(store, candidates)
-        await _log_ingestion(
-            store,
-            IngestionRecord(
-                source=source,
-                facts_created=[f.id for f in candidates if not f.supersedes],
-                facts_updated=[f.id for f in candidates if f.supersedes],
-                agent_model=get_settings().llm_model,
-            ),
-        )
 
     logger.info("Extracted %d facts from input", len(candidates))
     return candidates
@@ -371,16 +360,6 @@ async def _update_fact(
     if isinstance(store, AsyncFactStore):
         return await store.update_fact(fact_id, **updates)
     return store.update_fact(fact_id, **updates)
-
-
-async def _log_ingestion(
-    store: FactStore | AsyncFactStore,
-    record: IngestionRecord,
-) -> None:
-    if isinstance(store, AsyncFactStore):
-        await store.log_ingestion(record)
-    else:
-        store.log_ingestion(record)
 
 
 def _format_fact_for_dedup(fact: Fact) -> str:

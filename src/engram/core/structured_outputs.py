@@ -57,23 +57,3 @@ class DedupResponse(StructuredOutput):
             and isinstance(item.get("new_idx"), int)
             and isinstance(item.get("existing_id"), str)
         ]
-
-
-class SynthesisAction(StructuredOutput):
-    """One maintenance decision for a stored fact."""
-
-    fact_id: str
-    action: str = "keep"
-    reason: str | None = None
-    new_content: str | None = None
-    new_tags: list[str] | None = None
-    merge_with: list[str] = Field(default_factory=list)
-    merged_content: str | None = None
-    merged_tags: list[str] | None = None
-    merge_target: str | None = None
-
-
-class SynthesisResponse(StructuredOutput):
-    """Response shape for fact-store synthesis."""
-
-    actions: list[SynthesisAction] = Field(default_factory=list)

@@ -1,1 +1,1 @@
-"""Memory maintenance: synthesis, audit, and store diagnostics."""
+"""Memory maintenance: audit and store diagnostics."""

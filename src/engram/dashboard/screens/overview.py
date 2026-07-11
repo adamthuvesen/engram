@@ -124,23 +124,6 @@ class OverviewScreen(VerticalScroll):
         if event.option.id and event.option.id.startswith("proj-"):
             self.app.action_show_project(event.option.id[5:])
 
-    def on_theme_changed(self) -> None:
-        try:
-            cat_list = self.query_one("#cat-list", OptionList)
-            cat_list.clear_options()
-            cat_list.add_options(
-                self._bar_options(self._data.by_category, "cat", "bar-category")
-            )
-            proj_list = self.query_one("#proj-list", OptionList)
-            proj_list.clear_options()
-            proj_list.add_options(
-                self._bar_options(self._data.by_project, "proj", "bar-project")
-            )
-        except Exception:
-            logger.exception(
-                "Unable to redraw overview distributions after theme change"
-            )
-
     def refresh_data(self, data: DashboardData) -> None:
         self._data = data
         try:

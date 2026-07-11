@@ -7,11 +7,8 @@ from pathlib import Path
 from engram.llm import Completion
 from engram.core.models import Fact, FactCategory
 from engram.recall.retriever import (
-    _build_prefix,
     _extract_quality,
     _format_direct,
-    _parse_multilens_sections,
-    _resolve_tier2_mode,
     _scrub_invalid_citations,
     _select_tier,
 )
@@ -228,12 +225,6 @@ def test_recall_tier0_logs_to_store():
     assert records[0].quality == "high"
 
 
-def test_resolve_tier2_mode_valid():
-    assert _resolve_tier2_mode("multilens") == "multilens"
-    assert _resolve_tier2_mode("single") == "single"
-    assert _resolve_tier2_mode("nonsense") == "single"
-
-
 def test_select_tier_caps_small_corpus_to_tier_1():
     """The small-corpus cap demotes would-be-tier-2 queries below threshold."""
     # Flat distribution over 8 facts would be tier 2 without the cap.
@@ -345,165 +336,25 @@ def _patch_complete(monkeypatch, responses):
     return calls
 
 
-def test_build_prefix_is_deterministic():
-    assert _build_prefix("ABC") == "STORED FACTS:\nABC\n\n"
-
-
-def test_parse_multilens_all_sections():
-    text = """## DIRECT
-1. foo [id:a1]
-
-## CONTEXTUAL
-1. bar [id:b2]
-
-## TEMPORAL
-1. baz [id:c3]
-"""
-    parsed = _parse_multilens_sections(text)
-    assert "foo" in parsed["direct"]
-    assert "bar" in parsed["contextual"]
-    assert "baz" in parsed["temporal"]
-
-
-def test_parse_multilens_missing_section():
-    text = "## DIRECT\n1. only this\n"
-    parsed = _parse_multilens_sections(text)
-    assert "only this" in parsed["direct"]
-    assert parsed["contextual"] == ""
-    assert parsed["temporal"] == ""
-
-
-def test_parse_multilens_malformed_treated_as_direct():
-    text = "no headings at all, just prose"
-    parsed = _parse_multilens_sections(text)
-    assert parsed["direct"] == text
-    assert parsed["contextual"] == ""
-
-
-def test_recall_tier2_multilens_makes_two_llm_calls(monkeypatch):
-    from engram.core.config import get_settings
-
-    store = _make_store()
-    _flat_tier2_facts(store)
-    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
-    get_settings.cache_clear()
-
-    multilens_response = (
-        "## DIRECT\n1. f00 is about retrieval (id:f00)\n\n"
-        "## CONTEXTUAL\n(none)\n\n"
-        "## TEMPORAL\n(none)\n"
-    )
-    synthesis_response = "The retrieval notes are logged.\n[quality: high]"
-    calls = _patch_complete(
-        monkeypatch,
-        [
-            (multilens_response, 1000, 0),
-            (synthesis_response, 1200, 900),
-        ],
-    )
-
-    from engram.recall.retriever import recall
-
-    try:
-        asyncio.run(recall("retrieval", store=store))
-    finally:
-        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
-        get_settings.cache_clear()
-
-    assert calls["n"] == 2
-    records = store.load_recall_log()
-    assert len(records) == 1
-    assert records[0].tier == 2
-    assert records[0].llm_calls == 2
-    assert records[0].input_tokens == 2200
-    assert records[0].cached_tokens == 900
-    assert records[0].quality == "high"
-
-
-def test_recall_tier2_with_async_store_makes_two_llm_calls(monkeypatch):
-    from engram.core.config import get_settings
-
+def test_recall_tier2_with_async_store_makes_one_llm_call(monkeypatch):
     store = _make_store()
     _flat_tier2_facts(store)
     async_store = AsyncFactStore(store)
-    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
-    get_settings.cache_clear()
 
     calls = _patch_complete(
         monkeypatch,
-        [
-            (
-                "## DIRECT\n1. ok (id:f00)\n## CONTEXTUAL\n(none)\n## TEMPORAL\n(none)\n",
-                100,
-                0,
-            ),
-            ("done\n[quality: low]", 100, 0),
-        ],
+        [("done (id:f00)\n[quality: low]", 100, 0)],
     )
 
     from engram.recall.retriever import recall
 
-    try:
-        asyncio.run(recall("retrieval", store=async_store))
-    finally:
-        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
-        get_settings.cache_clear()
+    asyncio.run(recall("retrieval", store=async_store))
 
-    assert calls["n"] == 2
+    assert calls["n"] == 1
     records = store.load_recall_log()
     assert records[0].tier == 2
-    assert records[0].llm_calls == 2
+    assert records[0].llm_calls == 1
     assert records[0].quality == "low"
-
-
-def test_recall_tier2_multilens_uses_stable_prefix(monkeypatch):
-    """Both calls in tier-2 multilens must pass the same cache_prefix."""
-    from engram.core.config import get_settings
-
-    store = _make_store()
-    _flat_tier2_facts(store)
-    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
-    get_settings.cache_clear()
-
-    captured: list[dict] = []
-
-    async def fake(
-        prompt,
-        system="",
-        model=None,
-        temperature=None,
-        response_format=None,
-        cache_prefix=None,
-    ):
-        captured.append(
-            {"prompt": prompt, "cache_prefix": cache_prefix, "system": system}
-        )
-        if len(captured) == 1:
-            return Completion(
-                text="## DIRECT\n1. x (id:f00)\n## CONTEXTUAL\n(none)\n## TEMPORAL\n(none)\n",
-                input_tokens=100,
-                cached_tokens=0,
-            )
-        return Completion(
-            text="done\n[quality: high]", input_tokens=100, cached_tokens=50
-        )
-
-    monkeypatch.setattr("engram.recall.retriever.complete_with_usage", fake)
-
-    from engram.recall.retriever import recall
-
-    try:
-        asyncio.run(recall("retrieval", store=store))
-    finally:
-        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
-        get_settings.cache_clear()
-
-    assert len(captured) == 2
-    assert captured[0]["cache_prefix"] is not None
-    assert captured[0]["cache_prefix"] == captured[1]["cache_prefix"]
-    # The cache_prefix must actually be a prefix of each call's prompt.
-    assert captured[0]["prompt"].startswith(captured[0]["cache_prefix"])
-    assert captured[1]["prompt"].startswith(captured[1]["cache_prefix"])
 
 
 def test_recall_tier2_default_single_mode_makes_one_llm_call(monkeypatch):

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     # Storage
     data_dir: Path = Path.home() / ".engram" / "data"
 
-    # LLM for observer/search agents
+    # LLM for extraction and recall
     llm_model: str = "openai/gpt-5.4-mini"
     llm_temperature: float = 0.0
 
@@ -26,12 +26,6 @@ class Settings(BaseSettings):
     # Tier-2 requires at least this many strictly-positive-scored prefilter
     # matches. Set to 0 to disable the small-corpus cap.
     tier2_min_prefilter_count: int = 11
-    # Tier-2 execution strategy: "single" (one call) or "multilens" (two calls).
-    tier2_mode: str = "single"
-
-    # Synthesis
-    synthesis_batch_size: int = 25
-    synthesis_timeout: float = 30.0
 
     # Claude Code integration
     claude_projects_dir: Path = Path.home() / ".claude" / "projects"
@@ -50,14 +44,6 @@ class Settings(BaseSettings):
         env_prefix="ENGRAM_",
         case_sensitive=False,
     )
-
-    @property
-    def facts_path(self) -> Path:
-        return self.data_dir / "facts.jsonl"
-
-    @property
-    def ingestion_log_path(self) -> Path:
-        return self.data_dir / "ingestion_log.jsonl"
 
 
 @lru_cache(maxsize=1)

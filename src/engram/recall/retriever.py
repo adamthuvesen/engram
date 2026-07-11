@@ -7,7 +7,7 @@ import time
 
 from engram.core.config import get_settings
 from engram.core.interfaces import EnvelopeWarning, WarningCode
-from engram.llm import Completion, complete, complete_with_usage
+from engram.llm import Completion, complete_with_usage
 from engram.core.models import Fact, RecallRecord
 from engram.core.provenance import (
     DEFAULT_MAX_PREFILTER_MATCHES,
@@ -30,49 +30,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Search system prompts
 # ---------------------------------------------------------------------------
-
-MULTI_LENS_SYSTEM = """You are a multi-lens memory search agent. You receive a query and a list of
-stored facts. Reason about the facts from three distinct perspectives and return your findings
-in one response with three clearly-labelled sections. Use these exact section headings, in this
-order, each on its own line:
-
-## DIRECT
-Facts that directly answer the query. Be precise — only include facts that are clearly relevant.
-
-## CONTEXTUAL
-Facts that add useful background, connections between facts, or related preferences/patterns.
-
-## TEMPORAL
-Time- and state-aware observations: current vs. outdated, supersessions or contradictions,
-timeline of relevant events, anything that looks stale or expired.
-
-Under every heading, produce a numbered list. For each item include the fact ID (copy it exactly,
-all 12 hex characters, from the `id:` marker) and one short line of reasoning. If a section has nothing to report, still emit the
-heading followed by a single line "(none)"."""
-
-SYNTHESIS_SYSTEM = """You are a memory synthesis agent. You receive findings from specialized
-search agents who searched a personal knowledge base.
-
-Your job is to produce a clear, concise answer to the original query by:
-1. Merging relevant findings from all agents
-2. Resolving any contradictions (prefer newer/higher-confidence facts)
-3. Flagging any uncertainty or stale information
-4. Citing fact IDs for traceability — copy each ID exactly (12 hex characters) from the
-   findings; never invent, merge, or truncate an ID. Omit a citation rather than guess one.
-
-Format your response as a direct answer, not as a list of findings. Write naturally,
-as if briefing someone. Keep it concise but complete.
-
-Always prefer newer, non-expired facts when evidence conflicts.
-Include source references when they are available.
-If the evidence is weak or contradictory, say so instead of guessing.
-
-At the very end of your answer, on a new line, add a quality rating in the format:
-[quality: high|medium|low|none]
-- high: strong, unambiguous evidence directly answers the query
-- medium: partial evidence or some inference required
-- low: weak or conflicting evidence
-- none: no relevant evidence found"""
 
 SINGLE_AGENT_SYSTEM = """You are a memory search and synthesis agent. Given a query and stored facts,
 find the most relevant facts and produce a clear, concise answer.
@@ -121,11 +78,6 @@ TIER_1_MIN_TOP_SCORE = 8
 TIER_1_MIN_GAP = 1.5  # top score must be ≥1.5x the 5th score
 
 SELECTOR_VERSION = "v2"
-
-# Multi-lens response heading parser.
-_MULTILENS_HEADING_RE = re.compile(
-    r"^\s*##\s+(DIRECT|CONTEXTUAL|TEMPORAL)\s*$", re.MULTILINE
-)
 
 # Fact-ID extraction from LLM responses. Fact IDs are 12-hex strings emitted in
 # `(id: <hex>)` form by ``format_facts_for_llm``.
@@ -247,8 +199,8 @@ def _select_tier(
     the top results stand out from the pack) to decide:
 
     Tier 0: Few matches with a clear standout → direct return, no LLM.
-    Tier 1: Focused matches with concentrated signal → single-agent.
-    Tier 2: Many matches or flat distribution → multi-lens search and synthesis.
+    Tier 1: Focused matches with concentrated signal → one LLM call.
+    Tier 2: Many matches or flat distribution → one broad LLM call.
 
     Zero relevant matches → Tier 0 (direct).
 
@@ -260,14 +212,6 @@ def _select_tier(
     return _select_tier_with_decision(
         scored_facts, min_prefilter_for_tier2=min_prefilter_for_tier2
     ).tier
-
-
-def _resolve_tier2_mode(raw: str) -> str:
-    """Map the tier-2 mode setting to a supported value."""
-    if raw in ("multilens", "single"):
-        return raw
-    logger.warning("Unknown ENGRAM_TIER2_MODE=%r; falling back to 'single'", raw)
-    return "single"
 
 
 def _format_direct(scored_facts: list[tuple[int, Fact]], query: str) -> str:
@@ -298,65 +242,6 @@ def _extract_quality(text: str) -> tuple[str, str]:
         if tag in text:
             return text.replace(tag, "").strip(), level
     return text.strip(), ""
-
-
-def _build_prefix(facts_text: str) -> str:
-    """Build the stable, cacheable prompt prefix shared across tier-2 LLM calls.
-
-    Layout matters: the prefix MUST come first in the final prompt, before any
-    query-specific or perspective-specific text. OpenAI's implicit prompt cache
-    and Anthropic's `cache_control` both benefit from a long, byte-identical
-    leading run of tokens.
-    """
-    return f"STORED FACTS:\n{facts_text}\n\n"
-
-
-def _multilens_search_prompt(prefix: str, query: str) -> str:
-    return (
-        prefix + f"QUERY: {query}\n\n"
-        "INSTRUCTIONS: Apply the three perspectives described in the system prompt "
-        "and return one response with the `## DIRECT`, `## CONTEXTUAL`, and `## TEMPORAL` sections."
-    )
-
-
-def _multilens_synthesis_prompt(
-    prefix: str,
-    query: str,
-    sections: dict[str, str],
-) -> str:
-    return (
-        prefix
-        + f"ORIGINAL QUERY: {query}\n\n"
-        + "MULTI-LENS FINDINGS:\n"
-        + f"## DIRECT\n{sections['direct'] or '(none)'}\n\n"
-        + f"## CONTEXTUAL\n{sections['contextual'] or '(none)'}\n\n"
-        + f"## TEMPORAL\n{sections['temporal'] or '(none)'}\n\n"
-        + "Synthesize these findings into a clear, concise answer."
-    )
-
-
-def _parse_multilens_sections(text: str) -> dict[str, str]:
-    """Split a multi-lens response into direct/contextual/temporal sections.
-
-    Missing sections return empty strings. Malformed responses (no headings)
-    put everything in `direct` so the synthesis step still has something to
-    chew on.
-    """
-    sections = {"DIRECT": "", "CONTEXTUAL": "", "TEMPORAL": ""}
-    matches = list(_MULTILENS_HEADING_RE.finditer(text))
-    if not matches:
-        logger.debug(
-            "multilens response missing expected headings; using raw body as DIRECT"
-        )
-        sections["DIRECT"] = text.strip()
-        return {k.lower(): v for k, v in sections.items()}
-
-    for i, match in enumerate(matches):
-        heading = match.group(1)
-        start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        sections[heading] = text[start:end].strip()
-    return {k.lower(): v for k, v in sections.items()}
 
 
 def _extract_cited_ids(text: str, candidate_ids: set[str]) -> list[str]:
@@ -595,23 +480,6 @@ def _completion_trace(
     )
 
 
-def _failed_call_trace(
-    *,
-    name: str,
-    system: str,
-    prompt: str,
-    error: Exception,
-    excerpt_chars: int,
-) -> LLMCallTrace:
-    return LLMCallTrace(
-        name=name,
-        system_excerpt=excerpt(system, excerpt_chars)[0],
-        prompt_excerpt=excerpt(prompt, excerpt_chars)[0],
-        output_excerpt="",
-        error=str(error),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Public recall entry points
 # ---------------------------------------------------------------------------
@@ -645,11 +513,10 @@ async def recall_with_provenance(
 ) -> tuple[str, str, RecallProvenance, RecallTrace | None]:
     """Tiered recall returning answer plus structured provenance.
 
-    Returns ``(answer, quality, provenance, trace_or_none)``. The default
-    tier-2 path still issues exactly two LLM calls (multi-lens search +
-    synthesis); provenance is assembled from those calls' outputs and from
-    the deterministic prefilter, so enabling provenance does not add model
-    work.
+    Returns ``(answer, quality, provenance, trace_or_none)``. Tiers 1 and 2
+    each issue one LLM call; provenance is assembled from that call's output
+    and from the deterministic prefilter, so enabling provenance does not add
+    model work.
 
     ``with_trace=True`` populates the ``RecallTrace`` with bounded prompt
     and output excerpts. ``verbose_trace=True`` widens the per-field char
@@ -785,24 +652,24 @@ async def _run_recall_tier(
         return answer, quality, usage_totals, cited_ids, [], False
 
     if tier == 1:
-        return await _single_agent_recall(
+        return await _single_call_recall(
             scored_facts,
             query,
             settings,
+            system=SINGLE_AGENT_SYSTEM,
+            trace_name="single_agent",
             with_trace=with_trace,
             excerpt_chars=excerpt_chars,
             output_chars=output_chars,
         )
 
-    tier2_runner = (
-        _single_call_tier2_recall
-        if _resolve_tier2_mode(settings.tier2_mode) == "single"
-        else _multilens_recall
-    )
-    return await tier2_runner(
+    return await _single_call_recall(
         scored_facts,
         query,
         settings,
+        system=TIER2_SINGLE_SYSTEM,
+        trace_name="tier2_single",
+        prompt_suffix="\n\nAnswer the query using the stored facts.",
         with_trace=with_trace,
         excerpt_chars=excerpt_chars,
         output_chars=output_chars,
@@ -943,25 +810,27 @@ def _accumulate(totals: dict[str, int | None], completion: Completion) -> None:
         ) + completion.cached_tokens
 
 
-async def _single_agent_recall(
+async def _single_call_recall(
     scored_facts: list[tuple[int, Fact]],
     query: str,
     settings,
     *,
+    system: str,
+    trace_name: str,
+    prompt_suffix: str = "",
     with_trace: bool = False,
     excerpt_chars: int = DEFAULT_PROMPT_EXCERPT_CHARS,
     output_chars: int = DEFAULT_OUTPUT_EXCERPT_CHARS,
 ) -> tuple[str, str, dict[str, int | None], list[str], list[LLMCallTrace], bool]:
-    """Tier 1: Single agent synthesis.
+    """One LLM call over the prefiltered facts. Handles tier 1 and tier 2.
 
-    Note: this path intentionally does NOT yet adopt the stable-prefix layout.
-    Since tier-1 only makes one LLM call per recall, there's no intra-query
-    cache to win from. Cross-query prompt caching on an unchanged corpus is a
-    later win, out of scope for this change.
+    ``system`` and ``prompt_suffix`` differ per tier; ``trace_name`` labels the
+    call in the trace. Since recall makes one call, there's no prompt prefix to
+    cache across calls.
     """
     facts = [f for _, f in scored_facts]
     facts_text = format_facts_for_llm(facts)
-    prompt = f"QUERY: {query}\n\nSTORED FACTS:\n{facts_text}"
+    prompt = f"QUERY: {query}\n\nSTORED FACTS:\n{facts_text}{prompt_suffix}"
 
     totals: dict[str, int | None] = {
         "llm_calls": 0,
@@ -971,7 +840,7 @@ async def _single_agent_recall(
     }
     t_call = time.monotonic()
     completion = await asyncio.wait_for(
-        complete_with_usage(prompt=prompt, system=SINGLE_AGENT_SYSTEM),
+        complete_with_usage(prompt=prompt, system=system),
         timeout=settings.retrieval_timeout,
     )
     elapsed_ms = (time.monotonic() - t_call) * 1000
@@ -985,206 +854,27 @@ async def _single_agent_recall(
     traces: list[LLMCallTrace] = []
     truncated_any = False
     if with_trace:
-        prompt_excerpt, prompt_truncated = excerpt(prompt, excerpt_chars)
-        output_excerpt, output_truncated = excerpt(completion.text, output_chars)
-        traces.append(
-            LLMCallTrace(
-                name="single_agent",
-                system_excerpt=excerpt(SINGLE_AGENT_SYSTEM, excerpt_chars)[0],
-                prompt_excerpt=prompt_excerpt,
-                output_excerpt=output_excerpt,
-                elapsed_ms=elapsed_ms,
-                input_tokens=completion.input_tokens,
-                cached_tokens=completion.cached_tokens,
-            )
-        )
-        truncated_any = prompt_truncated or output_truncated
-    return answer, quality, totals, cited_ids, traces, truncated_any
-
-
-async def _multilens_recall(
-    scored_facts: list[tuple[int, Fact]],
-    query: str,
-    settings,
-    *,
-    with_trace: bool = False,
-    excerpt_chars: int = DEFAULT_PROMPT_EXCERPT_CHARS,
-    output_chars: int = DEFAULT_OUTPUT_EXCERPT_CHARS,
-) -> tuple[str, str, dict[str, int | None], list[str], list[LLMCallTrace], bool]:
-    """Tier 2 (default): multi-lens search + synthesis, two LLM calls total.
-
-    Both calls share a byte-identical prefix (the formatted fact dump) so that
-    OpenAI's implicit prefix cache and Anthropic's `cache_control` marker can
-    skip re-processing the bulky part on the second call.
-    """
-    facts = [f for _, f in scored_facts]
-    facts_text = format_facts_for_llm(facts)
-    prefix = _build_prefix(facts_text)
-
-    totals: dict[str, int | None] = {
-        "llm_calls": 0,
-        "input_tokens": None,
-        "cached_tokens": None,
-        "output_tokens": None,
-    }
-
-    search_prompt = _multilens_search_prompt(prefix, query)
-
-    traces: list[LLMCallTrace] = []
-    truncated_any = False
-    candidate_ids = {f.id for f in facts}
-
-    try:
-        t_search = time.monotonic()
-        search_completion = await asyncio.wait_for(
-            complete_with_usage(
-                prompt=search_prompt,
-                system=MULTI_LENS_SYSTEM,
-                cache_prefix=prefix,
-            ),
-            timeout=settings.retrieval_timeout,
-        )
-        search_elapsed = (time.monotonic() - t_search) * 1000
-    except Exception as exc:
-        logger.warning("multi-lens search call failed: %s", exc)
-        if with_trace:
-            traces.append(
-                _failed_call_trace(
-                    name="multilens_search",
-                    system=MULTI_LENS_SYSTEM,
-                    prompt=search_prompt,
-                    error=exc,
-                    excerpt_chars=excerpt_chars,
-                )
-            )
-        raise
-
-    _accumulate(totals, search_completion)
-    sections = _parse_multilens_sections(search_completion.text)
-    multilens_cited = _extract_cited_ids(search_completion.text, candidate_ids)
-
-    if with_trace:
-        trace, truncated = _completion_trace(
-            name="multilens_search",
-            system=MULTI_LENS_SYSTEM,
-            prompt=search_prompt,
-            completion=search_completion,
-            elapsed_ms=search_elapsed,
+        trace, truncated_any = _completion_trace(
+            name=trace_name,
+            system=system,
+            prompt=prompt,
+            completion=completion,
+            elapsed_ms=elapsed_ms,
             excerpt_chars=excerpt_chars,
             output_chars=output_chars,
         )
         traces.append(trace)
-        truncated_any = truncated_any or truncated
-
-    synthesis_prompt = _multilens_synthesis_prompt(prefix, query, sections)
-
-    t_synth = time.monotonic()
-    synthesis_completion = await asyncio.wait_for(
-        complete_with_usage(
-            prompt=synthesis_prompt,
-            system=SYNTHESIS_SYSTEM,
-            cache_prefix=prefix,
-        ),
-        timeout=settings.retrieval_timeout,
-    )
-    synth_elapsed = (time.monotonic() - t_synth) * 1000
-    _accumulate(totals, synthesis_completion)
-    answer, quality = _extract_quality(synthesis_completion.text)
-    answer = _scrub_invalid_citations(answer, candidate_ids)
-
-    synthesis_cited = _extract_cited_ids(synthesis_completion.text, candidate_ids)
-    # Synthesis is the final voice; prefer its citations, fall back to multilens.
-    cited_ids = synthesis_cited or multilens_cited
-
-    if with_trace:
-        trace, truncated = _completion_trace(
-            name="synthesis",
-            system=SYNTHESIS_SYSTEM,
-            prompt=synthesis_prompt,
-            completion=synthesis_completion,
-            elapsed_ms=synth_elapsed,
-            excerpt_chars=excerpt_chars,
-            output_chars=output_chars,
-        )
-        traces.append(trace)
-        truncated_any = truncated_any or truncated
-
     return answer, quality, totals, cited_ids, traces, truncated_any
 
 
-async def _single_call_tier2_recall(
-    scored_facts: list[tuple[int, Fact]],
-    query: str,
-    settings,
-    *,
-    with_trace: bool = False,
-    excerpt_chars: int = DEFAULT_PROMPT_EXCERPT_CHARS,
-    output_chars: int = DEFAULT_OUTPUT_EXCERPT_CHARS,
-) -> tuple[str, str, dict[str, int | None], list[str], list[LLMCallTrace], bool]:
-    """Tier 2: single-call broad recall."""
-    facts = [f for _, f in scored_facts]
-    facts_text = format_facts_for_llm(facts)
-    prompt = (
-        f"QUERY: {query}\n\n"
-        f"STORED FACTS:\n{facts_text}\n\n"
-        "Answer the query using the stored facts."
-    )
-
-    totals: dict[str, int | None] = {
-        "llm_calls": 0,
-        "input_tokens": None,
-        "cached_tokens": None,
-        "output_tokens": None,
-    }
-    t_call = time.monotonic()
-    completion = await asyncio.wait_for(
-        complete_with_usage(prompt=prompt, system=TIER2_SINGLE_SYSTEM),
-        timeout=settings.retrieval_timeout,
-    )
-    elapsed_ms = (time.monotonic() - t_call) * 1000
-    _accumulate(totals, completion)
-    answer, quality = _extract_quality(completion.text)
-
-    candidate_ids = {f.id for f in facts}
-    cited_ids = _extract_cited_ids(completion.text, candidate_ids)
-    answer = _scrub_invalid_citations(answer, candidate_ids)
-
-    traces: list[LLMCallTrace] = []
-    truncated_any = False
-    if with_trace:
-        prompt_excerpt, prompt_truncated = excerpt(prompt, excerpt_chars)
-        output_excerpt, output_truncated = excerpt(completion.text, output_chars)
-        traces.append(
-            LLMCallTrace(
-                name="tier2_single",
-                system_excerpt=excerpt(TIER2_SINGLE_SYSTEM, excerpt_chars)[0],
-                prompt_excerpt=prompt_excerpt,
-                output_excerpt=output_excerpt,
-                elapsed_ms=elapsed_ms,
-                input_tokens=completion.input_tokens,
-                cached_tokens=completion.cached_tokens,
-            )
-        )
-        truncated_any = prompt_truncated or output_truncated
-
-    return answer, quality, totals, cited_ids, traces, truncated_any
-
-
-# Re-export `complete` at module level for external importers/mocks.
 __all__ = [
     "recall",
     "recall_with_provenance",
-    "complete",
     "_extract_quality",
     "_extract_cited_ids",
     "_scrub_invalid_citations",
     "_format_direct",
     "_select_tier",
     "_select_tier_with_decision",
-    "_build_prefix",
-    "_parse_multilens_sections",
-    "_resolve_tier2_mode",
-    "MULTI_LENS_SYSTEM",
-    "SYNTHESIS_SYSTEM",
     "TIER2_SINGLE_SYSTEM",
 ]

@@ -8,7 +8,6 @@ All data lives under `~/.engram/data/` by default:
   `unstale`, `superseded`). Current state per `fact_id` comes from replaying
   events in order.
 - `candidates.jsonl`: suggested memories pending review.
-- `ingestion_log.jsonl`: audit trail.
 - `recall_log.jsonl`: recall quality and latency history.
 - `transactions.jsonl`: prepared/committed markers for crash-safe candidate
   approval.
@@ -24,4 +23,4 @@ All data lives under `~/.engram/data/` by default:
 Storage is an append-only event log. Mutations (`forget`, `edit_fact`,
 `mark_stale`, etc.) append typed `FactEvent` records rather than rewriting the
 file. The only paths that rewrite `facts.jsonl` are `purge`, `repair`, and
-`compact_event_log` (compaction inside `synthesize`).
+`compact_event_log`.

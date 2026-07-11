@@ -20,7 +20,7 @@ src/engram/
 ├── llm/            litellm wrapper
 ├── extraction/     natural language to structured facts
 ├── recall/         tiered retrieval + recall@k eval harness
-├── maintenance/    synthesize / audit / doctor upkeep
+├── maintenance/    audit / doctor upkeep
 └── dashboard/      Textual TUI (`engram-dash`)
 
 tests/              pytest suite + eval datasets and runners
