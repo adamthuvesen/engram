@@ -476,8 +476,8 @@ class FactStore:
             return []
         if not self._is_event_log_format():
             logger.warning(
-                "%s is not an event log; run `engram doctor --repair-jsonl` "
-                "or move the invalid file aside.",
+                "%s is missing a valid event-log sentinel; restore it from "
+                "backup or move the invalid file aside.",
                 self.facts_path,
             )
             return []
@@ -663,8 +663,8 @@ class FactStore:
                 and not self._is_event_log_format()
             ):
                 raise ValueError(
-                    f"{self.facts_path} is not an event log; run "
-                    "`engram doctor --repair-jsonl` or move the invalid file aside."
+                    f"{self.facts_path} is missing a valid event-log sentinel; "
+                    "restore it from backup or move the invalid file aside."
                 )
             with _locked_write(self.facts_path):
                 self._ensure_event_log_header()
@@ -1553,12 +1553,11 @@ class FactStore:
         """Recover from truncated/corrupt JSONL lines.
 
         For ``facts.jsonl`` in event-log format, validates each line as either
-        the meta sentinel or a ``FactEvent``; corrupt lines are dropped via an
-        atomic rewrite that preserves the sentinel. A non-event-log
-        ``facts.jsonl`` is invalid current data, so repair replaces it with an
-        empty event log and reports the dropped line count. Candidate records
-        are validated independently. Returns counts of valid and corrupt lines
-        found.
+        the meta sentinel or a ``FactEvent``; corrupt event lines are dropped
+        via an atomic rewrite that preserves the sentinel. Files without a
+        valid event-log sentinel are refused because their format cannot be
+        inferred safely. Candidate records are validated independently.
+        Returns counts of valid and corrupt lines found.
         """
         result: dict[str, int] = {}
 
@@ -1572,14 +1571,11 @@ class FactStore:
                 result["facts_valid"] = len(materialized)
                 result["facts_corrupt"] = corrupt
             else:
-                # Not an event log — invalid current data. Reset to an empty
-                # event log and report every line as dropped.
-                with self.facts_path.open() as fh:
-                    dropped = sum(1 for line in fh if line.strip())
-                self._rewrite_event_log(EventLogMeta(), [])
-                self._tok_cache.clear()
-                result["facts_valid"] = 0
-                result["facts_corrupt"] = dropped
+                raise ValueError(
+                    f"Refusing to repair {self.facts_path}: file is missing a "
+                    "valid event-log sentinel. Restore it from backup or move "
+                    "the invalid file aside."
+                )
         else:
             result["facts_valid"] = 0
             result["facts_corrupt"] = 0

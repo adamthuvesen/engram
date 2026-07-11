@@ -23,4 +23,7 @@ All data lives under `~/.engram/data/` by default:
 Storage is an append-only event log. Mutations (`forget`, `edit_fact`,
 `mark_stale`, etc.) append typed `FactEvent` records rather than rewriting the
 file. The only paths that rewrite `facts.jsonl` are `purge`, `repair`, and
-`compact_event_log`.
+`compact_event_log`. Repair drops corrupt event records only when the file
+starts with a valid event-log sentinel. If that sentinel is missing or invalid,
+repair refuses to change the file; restore it from backup or inspect and move it
+aside before starting a new store.
