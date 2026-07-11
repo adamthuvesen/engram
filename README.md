@@ -297,6 +297,7 @@ makes no network calls.
 uv run pre-commit install                  # git hooks: ruff check + format
 uv run --extra dev pytest tests/ -v        # tests
 uv run --extra dev ruff check .            # lint
+uv run --extra dev mypy                    # type check
 uv build                                   # build sdist + wheel
 ```
 

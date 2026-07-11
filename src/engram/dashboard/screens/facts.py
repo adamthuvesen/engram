@@ -1,8 +1,11 @@
 """Fact browser screen — filterable, sortable table with detail pane."""
 
+from typing import TYPE_CHECKING, cast
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
+from textual.timer import Timer
 from textual.widgets import DataTable, Input, Select
 
 from engram.dashboard.constants import NO_PROJECT_LABEL
@@ -19,6 +22,9 @@ from engram.dashboard.tables import (
 )
 from engram.dashboard.widgets.fact_detail import FactDetail
 from engram.core.models import Fact, FactCategory
+
+if TYPE_CHECKING:
+    from engram.dashboard.app import EngramDashboard
 
 
 class FactsScreen(Container):
@@ -37,7 +43,7 @@ class FactsScreen(Container):
         self._selected_ids: set[str] = set()
         self._sort_index: int = 0
         self._sort_reverse: bool = True
-        self._search_timer = None
+        self._search_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         cat_options = [(c.value, c.value) for c in FactCategory]
@@ -226,7 +232,8 @@ class FactsScreen(Container):
             return
         targets = self._get_action_targets()
         if targets:
-            self.app.action_forget_facts(targets)
+            app = cast("EngramDashboard", self.app)
+            app.action_forget_facts(targets)
             self._selected_ids -= set(targets)
 
     def refresh_data(self, data: DashboardData) -> None:

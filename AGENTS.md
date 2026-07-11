@@ -39,6 +39,7 @@ uv run fastmcp dev src/engram/server.py      # dev mode (inspector)
 uv run --extra dev pytest tests/ -q          # run tests
 uv run --extra dev ruff check .              # lint (CI gate)
 uv run --extra dev ruff format --check .     # format check (CI gate)
+uv run --extra dev mypy                      # type check (CI gate)
 ```
 
 ## Critical Conventions

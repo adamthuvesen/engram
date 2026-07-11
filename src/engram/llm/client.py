@@ -30,7 +30,7 @@ class Completion:
 def _get_litellm():
     """Import litellm lazily so tests can patch the wrapper without the dependency."""
     litellm = importlib.import_module("litellm")
-    litellm.suppress_debug_info = True
+    setattr(litellm, "suppress_debug_info", True)
     return litellm
 
 

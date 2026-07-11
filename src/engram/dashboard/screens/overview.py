@@ -1,6 +1,7 @@
 """Overview screen — stats, category/project bars, activity sparkline."""
 
 import logging
+from typing import TYPE_CHECKING, cast
 
 from textual import on
 from textual.app import ComposeResult
@@ -9,6 +10,9 @@ from textual.widgets import Label, OptionList, Sparkline, Static
 from textual.widgets.option_list import Option
 
 from engram.dashboard.data import DashboardData, format_bytes
+
+if TYPE_CHECKING:
+    from engram.dashboard.app import EngramDashboard
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +105,8 @@ class OverviewScreen(VerticalScroll):
             focused.highlighted is None or focused.highlighted == 0
         ):
             event.prevent_default()
-            self.app.focus_nav()
+            app = cast("EngramDashboard", self.app)
+            app.focus_nav()
             return
 
         if event.key in ("left", "right"):
@@ -117,12 +122,14 @@ class OverviewScreen(VerticalScroll):
     @on(OptionList.OptionSelected, "#cat-list")
     def on_category_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option.id and event.option.id.startswith("cat-"):
-            self.app.action_show_category(event.option.id[4:])
+            app = cast("EngramDashboard", self.app)
+            app.action_show_category(event.option.id[4:])
 
     @on(OptionList.OptionSelected, "#proj-list")
     def on_project_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option.id and event.option.id.startswith("proj-"):
-            self.app.action_show_project(event.option.id[5:])
+            app = cast("EngramDashboard", self.app)
+            app.action_show_project(event.option.id[5:])
 
     def refresh_data(self, data: DashboardData) -> None:
         self._data = data

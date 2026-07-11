@@ -99,7 +99,7 @@ def _check_data_dir(store: FactStore, issues: list[DoctorIssue]) -> None:
 def _check_jsonl_integrity(
     path: Path,
     label: str,
-    model_cls: type,
+    model_cls: type[BaseModel],
     issues: list[DoctorIssue],
 ) -> int:
     """Return the count of valid records; emit issues for corrupt lines.
@@ -139,7 +139,7 @@ def _check_jsonl_integrity(
             return 0
 
         valid = 0
-        corrupt: list[int] = []
+        event_corrupt: list[int] = []
         first_data_line = True
         with path.open() as fh:
             for lineno, line in enumerate(fh, 1):
@@ -153,9 +153,9 @@ def _check_jsonl_integrity(
                     FactEvent.model_validate_json(line)
                     valid += 1
                 except (ValueError, ValidationError):
-                    corrupt.append(lineno)
-        if corrupt:
-            _append_jsonl_issue(path, label, corrupt, issues)
+                    event_corrupt.append(lineno)
+        if event_corrupt:
+            _append_jsonl_issue(path, label, event_corrupt, issues)
         return valid
 
     valid = 0
@@ -438,7 +438,7 @@ def _circular_supersession_issue(edges: dict[str, str]) -> DoctorIssue | None:
     cycles: list[str] = []
     for start in edges:
         seen: set[str] = set()
-        node = start
+        node: str | None = start
         while node and node not in seen:
             seen.add(node)
             node = edges.get(node)

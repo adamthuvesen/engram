@@ -24,7 +24,7 @@ from engram.maintenance.memory_audit import (
 )
 from engram.core.models import (
     CandidateStatus,
-    Fact,
+    FactBase,
     FactCategory,
     MemoryCandidate,
     RecallRecord,
@@ -138,7 +138,7 @@ def invalid_positive_int_result(parameter: str) -> OperationResult:
     return validation_result(message, details={"parameter": parameter})
 
 
-def fact_payload(fact: Fact) -> dict:
+def fact_payload(fact: FactBase) -> dict:
     return {
         "id": fact.id,
         "category": fact.category.value,

@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from collections.abc import Awaitable, Callable
-from typing import Sequence
+from collections.abc import Callable, Coroutine
+from typing import Any, Sequence
 
 from engram.core.config import configure_logging
 from engram.core.interfaces import Envelope, storage_error, validation_error
@@ -43,7 +43,7 @@ from engram.operations import (
 )
 from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
 
-CommandHandler = Callable[[argparse.Namespace], Awaitable[OperationResult]]
+CommandHandler = Callable[[argparse.Namespace], Coroutine[Any, Any, OperationResult]]
 
 
 CANONICAL_COMMANDS = frozenset(
