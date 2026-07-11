@@ -12,7 +12,6 @@ dependencies = [
     "pyyaml>=6.0.0",
     "textual>=1.0.0",
     "textual-plotext>=1.0.0",
-    "plotext>=5.3.0",
 ]
 
 [project.scripts]

@@ -1,6 +1,5 @@
 """Tests for file safety, repair, and edit operations."""
 
-import json
 import tempfile
 from pathlib import Path
 
@@ -35,7 +34,9 @@ def test_repair_recovers_from_corrupt_lines():
     assert facts[0].id == "good1"
 
 
-def test_repair_imports_valid_fact_records_and_drops_corrupt_lines(tmp_path):
+def test_repair_resets_non_event_log_file(tmp_path):
+    """A non-event-log facts.jsonl is invalid data: repair drops every line
+    and resets the file to an empty event log."""
     data_dir = tmp_path / "store"
     data_dir.mkdir()
     current_fact = Fact(
@@ -43,27 +44,17 @@ def test_repair_imports_valid_fact_records_and_drops_corrupt_lines(tmp_path):
         category=FactCategory.preference,
         content="Valid record fact",
     )
-    stored_fact = {
-        "id": "storedoldcat",
-        "category": "temporal",
-        "content": "Release completed",
-    }
     (data_dir / "facts.jsonl").write_text(
-        current_fact.model_dump_json()
-        + "\n"
-        + json.dumps(stored_fact)
-        + "\n"
-        + "not json\n"
+        current_fact.model_dump_json() + "\n" + "not json\n"
     )
     store = FactStore(data_dir=data_dir)
 
     result = store.repair()
 
-    assert result["facts_valid"] == 2
-    assert result["facts_corrupt"] == 1
-    facts = {fact.id: fact for fact in store.load_facts()}
-    assert facts["goodrecordaa"].content == "Valid record fact"
-    assert facts["storedoldcat"].category == FactCategory.event
+    assert result["facts_valid"] == 0
+    assert result["facts_corrupt"] == 2
+    assert store.load_facts() == []
+    assert store._is_event_log_format()
 
 
 def test_repair_no_corruption():

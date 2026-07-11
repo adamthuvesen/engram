@@ -9,7 +9,7 @@ is a breaking change for every agent wired to Engram. Treat them like an API.
 | `suggest_memories`                         | Propose candidates for human review                   |
 | `list_candidates`                          | Browse pending/reviewed suggestions                   |
 | `approve_candidates` / `reject_candidates` | Promote or dismiss candidates                         |
-| `recall`                                   | Tiered multi-lens search (`max_sources`; MCP `limit` alias) |
+| `recall`                                   | Tiered search (`max_sources`; MCP `limit` alias) |
 | `recall_context`                           | Recall as answer or compact prompt block              |
 | `recall_trace`                             | Recall + bounded prompt/output excerpts for debugging (`limit` alias) |
 | `recall_stats`                             | Per-recall LLM usage and cache-hit summary            |
@@ -19,7 +19,7 @@ is a breaking change for every agent wired to Engram. Treat them like an API.
 | `inspect`                                  | Browse stored facts                                   |
 | `import_memories`                          | Bootstrap from `~/.claude/projects/*/memory/`         |
 | `memory_stats`                             | Counts, storage size, category breakdown              |
-| `synthesize`                               | Batch dedupe / merge / rewrite / prune                |
+| `audit_memories`                           | Read-only duplicate / stale / contradiction suggestions |
 | `purge` / `rename_project`                 | Permanently drop forgotten/expired or rename a scope  |
 | `doctor`                                   | Read-only health diagnostics (with opt-in `repair`)   |
 | `sync`                                     | Git-backed pull + push of the data directory          |

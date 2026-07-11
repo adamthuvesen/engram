@@ -48,7 +48,9 @@ def test_append_and_load():
     assert loaded[1].content == "User works on AI team"
 
 
-def test_fact_record_file_imports_to_event_log(tmp_path):
+def test_non_event_log_file_loads_empty(tmp_path):
+    """A plain fact-record file (no event-log sentinel) is invalid data:
+    load_facts returns empty rather than auto-migrating."""
     data_dir = tmp_path / "store"
     data_dir.mkdir()
     fact = Fact(
@@ -59,12 +61,7 @@ def test_fact_record_file_imports_to_event_log(tmp_path):
     (data_dir / "facts.jsonl").write_text(fact.model_dump_json() + "\n")
 
     store = FactStore(data_dir=data_dir)
-
-    loaded = store.load_facts()
-    assert [item.id for item in loaded] == ["recordaaaaaa"]
-    assert loaded[0].content == "User prefers concise summaries"
-    first_line = json.loads(store.facts_path.read_text().splitlines()[0])
-    assert first_line["meta"] == "event-log-v1"
+    assert store.load_facts() == []
 
 
 def test_filter_by_category():

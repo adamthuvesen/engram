@@ -37,7 +37,6 @@ from engram.operations import (
     rename_project as op_rename_project,
     suggest_memories as op_suggest_memories,
     sync as op_sync,
-    synthesize as op_synthesize,
     unmark_stale as op_unmark_stale,
 )
 from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
@@ -48,7 +47,7 @@ INSTRUCTIONS = """Engram — structured, cross-project memory for coding agents.
 A cross-project, structured memory system that uses LLM-powered retrieval
 instead of vector search. Facts are extracted, categorized, and stored as
 structured knowledge. Tiered retrieval uses deterministic fast paths first,
-then a multi-lens search-and-synthesis path for complex queries.
+then a single LLM call over the prefiltered facts for complex queries.
 
 Tools:
 - remember: Store new memories (extracts structured facts from natural language)
@@ -66,7 +65,6 @@ Tools:
 - recall_stats: View recall quality and performance statistics
 - purge: Permanently remove forgotten and expired facts
 - rename_project: Bulk-rename facts and candidates
-- synthesize: Consolidate and clean up memory
 - audit_memories: Suggest duplicate, stale, and contradictory memory cleanup
 """
 
@@ -484,20 +482,6 @@ def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
         result = await op_rename_project(
             old_project,
             new_project,
-            store=get_store(),
-        )
-        return _tool_result(result, format=format)
-
-    @app.tool()
-    async def synthesize(
-        project: str | None = None,
-        dry_run: bool = True,
-        format: str = "text",
-    ) -> ToolResult:
-        """Consolidate and clean up stored memories using LLM analysis."""
-        result = await op_synthesize(
-            project=project,
-            dry_run=dry_run,
             store=get_store(),
         )
         return _tool_result(result, format=format)

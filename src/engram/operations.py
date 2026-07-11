@@ -26,7 +26,6 @@ from engram.core.models import (
     CandidateStatus,
     Fact,
     FactCategory,
-    IngestionRecord,
     MemoryCandidate,
     RecallRecord,
 )
@@ -45,10 +44,6 @@ from engram.storage.sync import (
     DEFAULT_GIT_TIMEOUT_SECONDS,
     SyncError,
     sync as _sync,
-)
-from engram.maintenance.synthesizer import (
-    format_synthesis_result,
-    synthesize as _synthesize,
 )
 
 EXIT_OK = 0
@@ -623,13 +618,6 @@ async def edit_fact(
             ids=[fact_id],
         )
 
-    await store_obj.log_ingestion(
-        IngestionRecord(
-            source="edit",
-            facts_updated=[fact_id],
-            agent_model="manual_edit",
-        )
-    )
     return OperationResult(
         envelope=Envelope.success(data={"fact": fact_payload(fact)}),
         text=f"Updated: [{fact.category.value}] {fact.content} (id: {fact.id})",
@@ -889,32 +877,6 @@ async def rename_project(
             }
         ),
         text=text,
-    )
-
-
-async def synthesize(
-    *,
-    project: str | None = None,
-    dry_run: bool = True,
-    store: FactStore | AsyncFactStore | None = None,
-) -> OperationResult:
-    result = await _synthesize(
-        project=project, dry_run=dry_run, store=async_store(store)
-    )
-    data = {
-        "total_analyzed": result.total_analyzed,
-        "kept": result.kept,
-        "removed": result.removed,
-        "rewritten": result.rewritten,
-        "merged_groups": result.merged_groups,
-        "merged_sources": result.merged_sources,
-        "errors": result.errors,
-        "details": result.details,
-        "dry_run": dry_run,
-    }
-    return OperationResult(
-        envelope=Envelope.success(data=data),
-        text=format_synthesis_result(result, dry_run=dry_run),
     )
 
 
@@ -1285,6 +1247,5 @@ __all__ = [
     "rename_project",
     "suggest_memories",
     "sync",
-    "synthesize",
     "unmark_stale",
 ]

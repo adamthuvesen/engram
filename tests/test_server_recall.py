@@ -235,11 +235,7 @@ def test_recall_warns_on_stale(monkeypatch):
 
 
 def test_recall_trace_success(monkeypatch):
-    from engram.core.config import get_settings
-
     store = _setup_store(monkeypatch)
-    monkeypatch.setenv("ENGRAM_TIER2_MODE", "multilens")
-    get_settings.cache_clear()
     # Seed enough facts for tier-2 to fire.
     store.append_facts(
         [
@@ -254,28 +250,16 @@ def test_recall_trace_success(monkeypatch):
     )
     _patch_complete(
         monkeypatch,
-        [
-            (
-                "## DIRECT\n1. (id: f00aaaaaaaaa)\n## CONTEXTUAL\n(none)\n## TEMPORAL\n(none)\n",
-                100,
-                0,
-            ),
-            ("traced (id: f00aaaaaaaaa)\n[quality: medium]", 200, 100),
-        ],
+        [("traced (id: f00aaaaaaaaa)\n[quality: medium]", 200, 100)],
     )
 
-    try:
-        result = asyncio.run(_call("recall_trace", query="trace"))
-    finally:
-        monkeypatch.delenv("ENGRAM_TIER2_MODE", raising=False)
-        get_settings.cache_clear()
+    result = asyncio.run(_call("recall_trace", query="trace"))
     parsed = _structured(result)
     assert parsed["status"] == "ok"
     trace = parsed["data"]["trace"]
     assert trace is not None
-    assert len(trace["calls"]) == 2
-    assert trace["calls"][0]["name"] == "multilens_search"
-    assert trace["calls"][1]["name"] == "synthesis"
+    assert len(trace["calls"]) == 1
+    assert trace["calls"][0]["name"] == "tier2_single"
 
 
 def test_recall_trace_provider_failure(monkeypatch):

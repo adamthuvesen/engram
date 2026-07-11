@@ -7,8 +7,8 @@ server or a CLI.
 
 Recall uses a score-distribution router over the prefilter results. A sharp
 match returns directly with no LLM call. A focused cluster goes to one LLM call.
-A broad or flat result set goes to the tier-2 path, which is one call by default
-or two in multi-lens mode. There are no embeddings and no vector database.
+A broad or flat result set goes to the tier-2 path, which is one broad LLM call.
+There are no embeddings and no vector database.
 
 Facts start as natural language, then an LLM extracts structured records onto
 disk. Every fact keeps its source, supersession chain, and confidence. The store
@@ -18,13 +18,13 @@ is event-sourced: a plain append-only JSONL event log you can read with `cat`.
 | --- | --- | ---: |
 | 0 | Few strong matches, or no relevant matches | 0 |
 | 1 | Focused matches with a clear top cluster | 1 |
-| 2 | Many matches or a flat score distribution | 1 by default, 2 with `ENGRAM_TIER2_MODE=multilens` |
+| 2 | Many matches or a flat score distribution | 1 |
 
 ## How it works
 
 1. **Store**: natural language in, structured facts out, appended to a JSONL event log.
 2. **Review** (optional): queue suggestions as candidates before they become recallable.
-3. **Recall**: prefilter, route by score distribution, then synthesize only when needed.
+3. **Recall**: prefilter, route by score distribution, then call the LLM only when needed.
 
 ## No-key demo
 
@@ -142,7 +142,7 @@ No-key paths:
 
 Runtime paths that can call the LLM:
 
-- `remember`, `suggest-memories`, and `synthesize`
+- `remember` and `suggest-memories`
 - `recall`, `recall-context`, and `recall-trace` when a query escalates past
   tier-0
 - `doctor --check-provider`
@@ -185,10 +185,9 @@ engram sync --json                                                 # git-backed 
 ```
 
 Short aliases stay available: `trace`, `correct`, `merge`, `stale`, `unstale`.
-`approve-candidates ID... --edit id="new content"` edits before approving;
-`synthesize` is a dry run unless you pass `--apply`. Operation failures use stable
-exit codes (1 validation, 2 not-found, 3 runtime, 4 doctor); argparse usage errors
-also exit 2.
+`approve-candidates ID... --edit id="new content"` edits before approving.
+Operation failures use stable exit codes (1 validation, 2 not-found, 3 runtime,
+4 doctor); argparse usage errors also exit 2.
 
 ## Tools
 
@@ -203,7 +202,6 @@ also exit 2.
 | `correct_memory` / `merge_memories` | Supersede or consolidate facts (audit preserved) |
 | `mark_stale` / `unmark_stale` / `forget` | Toggle recall eligibility or soft-delete |
 | `inspect` / `memory_stats` / `recall_stats` | Browse and inspect |
-| `synthesize` | Batch dedupe / merge / rewrite / prune |
 | `audit_memories` | Read-only duplicate / stale / contradiction suggestions |
 | `doctor` | Health check (read-only; opt-in `repair`) |
 | `sync` | Git-backed pull + push of the data directory |
@@ -252,10 +250,9 @@ All settings are `ENGRAM_*` env vars (pydantic-settings). Key knobs:
 | Env var | Default | Description |
 | --- | --- | --- |
 | `ENGRAM_LLM_MODEL` | `openai/gpt-5.4-mini` | LLM for extraction and search |
-| `ENGRAM_MAX_FACTS_PER_AGENT` | `200` | Facts fed to each search agent |
-| `ENGRAM_RETRIEVAL_TIMEOUT` | `15.0` | Search agent timeout (seconds) |
+| `ENGRAM_MAX_FACTS_PER_AGENT` | `200` | Max facts fed to the recall LLM call |
+| `ENGRAM_RETRIEVAL_TIMEOUT` | `15.0` | Recall LLM call timeout (seconds) |
 | `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11` | Minimum prefilter matches before tier-2 (`0` disables the small-corpus cap) |
-| `ENGRAM_TIER2_MODE` | `single` | Tier-2 strategy: `single` or `multilens` |
 | `ENGRAM_DATA_DIR` | `~/.engram/data` | Storage directory |
 | `ENGRAM_SYNC_ENABLED` | `false` | Run background auto-sync inside the MCP server lifespan |
 | `ENGRAM_SYNC_INTERVAL` | `300.0` | Background auto-sync cadence (seconds) |
@@ -267,7 +264,7 @@ Everything lives under `~/.engram/data/` (override with `ENGRAM_DATA_DIR`):
 
 - `facts.jsonl`: append-only fact event log. Current state comes from replaying events.
 - `candidates.jsonl`: suggested memories pending review.
-- `ingestion_log.jsonl` / `recall_log.jsonl`: audit and recall-quality history.
+- `recall_log.jsonl`: recall-quality and latency history.
 - `transactions.jsonl`: prepared/committed journal for crash-safe writes.
 
 ## Sync across machines

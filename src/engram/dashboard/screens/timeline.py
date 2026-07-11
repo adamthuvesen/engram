@@ -114,10 +114,6 @@ class TimelineScreen(Container):
 
         plot_widget.refresh()
 
-    def on_theme_changed(self) -> None:
-        if HAS_PLOTEXT:
-            self._draw_chart()
-
     def refresh_data(self, data: DashboardData) -> None:
         self._data = data
         try:
