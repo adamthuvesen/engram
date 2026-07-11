@@ -6,6 +6,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import DataTable, Input, Static
 
 from engram.dashboard.constants import NO_PROJECT_LABEL
@@ -37,7 +38,7 @@ class CategoryDetailScreen(ModalScreen):
         self._all_facts = get_facts_for_category(data, category)
         self._filtered_facts = list(self._all_facts)
         self._filter_text: str = ""
-        self._search_timer = None
+        self._search_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         container = Vertical(id="cat-detail-container")

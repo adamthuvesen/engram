@@ -9,7 +9,7 @@ import sys
 import tempfile
 import threading
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,7 +17,7 @@ from typing import ParamSpec, TypeVar
 
 from uuid import uuid4
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from engram.core.config import get_settings
 from engram.core.models import (
@@ -43,7 +43,7 @@ _THREAD_LOCKS_GUARD = threading.Lock()
 _STORE_LOCK_DEPTHS = threading.local()
 P = ParamSpec("P")
 R = TypeVar("R")
-ModelT = TypeVar("ModelT")
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 # Lightweight suffix-stripping stemmer (no NLTK dependency)
 _STEM_SUFFIXES = (
@@ -355,7 +355,13 @@ def _compacted_event_log(
 
 def _unique_ids(ids: list[str]) -> list[str]:
     seen: set[str] = set()
-    return [item_id for item_id in ids if not (item_id in seen or seen.add(item_id))]
+    unique: list[str] = []
+    for item_id in ids:
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        unique.append(item_id)
+    return unique
 
 
 @contextmanager
@@ -1606,7 +1612,7 @@ class FactStore:
                     af.write(b"\n")
 
     def _rewrite(
-        self, records: list[Fact | MemoryCandidate], path: Path | None = None
+        self, records: Sequence[Fact | MemoryCandidate], path: Path | None = None
     ) -> None:
         """Rewrite a store JSONL file atomically with fsync and a unique temp path."""
         target_path = path or self.facts_path

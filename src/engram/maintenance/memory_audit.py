@@ -221,7 +221,8 @@ def _duplicate_suggestions(facts: Sequence[Fact]) -> list[MemoryAuditSuggestion]
             if signal is None:
                 continue
             union.union(left.id, right.id)
-            reasons[tuple(sorted((left.id, right.id)))] = signal
+            pair = (left.id, right.id) if left.id <= right.id else (right.id, left.id)
+            reasons[pair] = signal
 
         duplicate_sets: dict[str, list[str]] = defaultdict(list)
         for fact in group_facts:

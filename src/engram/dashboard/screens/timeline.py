@@ -99,7 +99,7 @@ class TimelineScreen(Container):
             return
 
         created_vals = [self._data.daily_created.get(d, 0) for d in dates]
-        x_indices = list(range(len(dates)))
+        x_indices = [float(index) for index in range(len(dates))]
         plt.bar(x_indices, created_vals, label="created", color=bar_color)
 
         if self._data.daily_forgotten:
@@ -108,7 +108,7 @@ class TimelineScreen(Container):
 
         step = max(1, len(dates) // 10)
         tick_indices = x_indices[::step]
-        tick_labels = [dates[i][5:] for i in tick_indices]  # MM-DD
+        tick_labels = [dates[int(i)][5:] for i in tick_indices]  # MM-DD
         plt.xticks(tick_indices, tick_labels)
         plt.ylabel("count")
 

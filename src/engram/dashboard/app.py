@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+from typing import Protocol, cast
 
 from textual import on
 from textual.app import App, ComposeResult
@@ -12,6 +13,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import (
     Input,
     Label,
@@ -100,9 +102,13 @@ ENGRAM_LIGHT = Theme(
 class DashboardSection:
     id: str
     title: str
-    screen: type
+    screen: type[Widget]
     focus: str | None = None
     count: Callable[[DashboardData], int] | None = None
+
+
+class RefreshableDashboardScreen(Protocol):
+    def refresh_data(self, data: DashboardData) -> None: ...
 
 
 SECTIONS = (
@@ -170,7 +176,10 @@ class EngramDashboard(App):
                 with TabbedContent(initial=SECTIONS[0].id, id="tabs"):
                     for section in SECTIONS:
                         with TabPane(section.title, id=section.id):
-                            yield section.screen(d)
+                            factory = cast(
+                                Callable[[DashboardData], Widget], section.screen
+                            )
+                            yield factory(d)
             yield Label(FOOTER_HINTS["default"], id="dynamic-footer")
 
     def _nav_options(self) -> list[Option]:
@@ -302,7 +311,10 @@ class EngramDashboard(App):
         section = SECTION_BY_ID.get(tab_id)
         if section:
             try:
-                self.query_one(section.screen).refresh_data(self._data)
+                screen = cast(
+                    RefreshableDashboardScreen, self.query_one(section.screen)
+                )
+                screen.refresh_data(self._data)
             except Exception:
                 logger.exception("Unable to refresh dashboard tab %s", tab_id)
 
@@ -350,7 +362,7 @@ class EngramDashboard(App):
             callback=self._on_forget_confirmed,
         )
 
-    def _on_forget_confirmed(self, confirmed: bool) -> None:
+    def _on_forget_confirmed(self, confirmed: bool | None) -> None:
         if not confirmed:
             self._pending_forget = []
             return

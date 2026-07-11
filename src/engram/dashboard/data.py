@@ -132,11 +132,12 @@ def get_facts_for_project(data: DashboardData, project: str) -> list[Fact]:
 
 
 def format_bytes(n: int) -> str:
+    value = float(n)
     for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}" if unit != "B" else f"{n} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
+        if value < 1024:
+            return f"{value:.1f} {unit}" if unit != "B" else f"{n} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
 
 
 def format_age(dt: datetime) -> str:
