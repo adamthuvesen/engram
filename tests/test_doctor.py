@@ -45,8 +45,37 @@ def test_doctor_detects_malformed_facts_jsonl():
     # Write a corrupt line directly.
     store.facts_path.write_text("not json\n")
     report = run_doctor(store)
-    codes = [issue.code for issue in report.issues]
-    assert "facts_jsonl_corrupt" in codes
+    issue = next(i for i in report.issues if i.category == "storage")
+    assert issue.code == "facts_event_log_sentinel_invalid"
+    assert issue.repairable is False
+    assert "--repair-jsonl" not in (issue.repair or "")
+
+
+def test_doctor_detects_missing_event_log_sentinel():
+    store = _make_store()
+    store.facts_path.touch()
+
+    report = run_doctor(store)
+
+    issue = next(i for i in report.issues if i.category == "storage")
+    assert issue.code == "facts_event_log_sentinel_missing"
+    assert issue.repairable is False
+    assert "--repair-jsonl" not in (issue.repair or "")
+
+
+def test_doctor_labels_corrupt_event_line_as_repairable():
+    store = _make_store()
+    store.append_facts(
+        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="ok")]
+    )
+    with store.facts_path.open("a") as fh:
+        fh.write("not json\n")
+
+    report = run_doctor(store)
+
+    issue = next(i for i in report.issues if i.code == "facts_jsonl_corrupt")
+    assert issue.repairable is True
+    assert "--repair-jsonl" in (issue.repair or "")
 
 
 def test_doctor_detects_pending_transactions():

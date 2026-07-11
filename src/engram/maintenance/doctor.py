@@ -4,8 +4,8 @@ Doctor reports problems but does not modify state. The `repair` flag on
 recoverable issues is opt-in and limited to well-tested operations:
 
 - Recovering prepared (uncommitted) transactions by rolling them forward.
-- Repairing JSONL files with corrupt lines via ``FactStore.repair`` (drops
-  unparseable lines after copying valid records).
+- Repairing valid event-log and candidate JSONL files with corrupt record lines
+  via ``FactStore.repair`` (drops unparseable records after copying valid ones).
 - Clearing supersession links that point to missing ancestor facts.
 
 Provider readiness is reported separately so a missing API key never masks
@@ -122,13 +122,20 @@ def _check_jsonl_integrity(
                 try:
                     payload = EventLogMeta.model_validate_json(line)
                 except (ValueError, ValidationError):
-                    _append_jsonl_issue(path, label, [lineno], issues)
+                    _append_event_log_sentinel_issue(
+                        path, issues, code="facts_event_log_sentinel_invalid"
+                    )
                     return 0
                 if payload.meta != EVENT_LOG_META_VERSION:
-                    _append_jsonl_issue(path, label, [lineno], issues)
+                    _append_event_log_sentinel_issue(
+                        path, issues, code="facts_event_log_sentinel_invalid"
+                    )
                     return 0
                 break
         if first_lineno == 0:
+            _append_event_log_sentinel_issue(
+                path, issues, code="facts_event_log_sentinel_missing"
+            )
             return 0
 
         valid = 0
@@ -166,6 +173,27 @@ def _check_jsonl_integrity(
     if corrupt:
         _append_jsonl_issue(path, label, corrupt, issues)
     return valid
+
+
+def _append_event_log_sentinel_issue(
+    path: Path,
+    issues: list[DoctorIssue],
+    *,
+    code: str,
+) -> None:
+    state = "missing" if code.endswith("_missing") else "invalid"
+    issues.append(
+        DoctorIssue(
+            code=code,
+            severity="error",
+            category="storage",
+            message=f"{path.name} has a {state} event-log sentinel.",
+            repair=(
+                "Restore the file from backup, or move it aside and start a new "
+                "store after checking whether it contains data you need."
+            ),
+        )
+    )
 
 
 def _append_jsonl_issue(

@@ -3,7 +3,16 @@
 import tempfile
 from pathlib import Path
 
-from engram.core.models import EventLogMeta, EventType, Fact, FactCategory, FactEvent
+import pytest
+
+from engram.core.models import (
+    EventLogMeta,
+    EventType,
+    Fact,
+    FactCategory,
+    FactEvent,
+    MemoryCandidate,
+)
 from engram.storage.store import FactStore
 
 
@@ -34,9 +43,8 @@ def test_repair_recovers_from_corrupt_lines():
     assert facts[0].id == "good1"
 
 
-def test_repair_resets_non_event_log_file(tmp_path):
-    """A non-event-log facts.jsonl is invalid data: repair drops every line
-    and resets the file to an empty event log."""
+def test_repair_refuses_non_event_log_file_without_changing_it(tmp_path):
+    """Repair must not guess how to rewrite a file without the sentinel."""
     data_dir = tmp_path / "store"
     data_dir.mkdir()
     current_fact = Fact(
@@ -44,17 +52,15 @@ def test_repair_resets_non_event_log_file(tmp_path):
         category=FactCategory.preference,
         content="Valid record fact",
     )
-    (data_dir / "facts.jsonl").write_text(
-        current_fact.model_dump_json() + "\n" + "not json\n"
-    )
+    facts_path = data_dir / "facts.jsonl"
+    facts_path.write_text(current_fact.model_dump_json() + "\n" + "not json\n")
+    original_bytes = facts_path.read_bytes()
     store = FactStore(data_dir=data_dir)
 
-    result = store.repair()
+    with pytest.raises(ValueError, match="missing a valid event-log sentinel"):
+        store.repair()
 
-    assert result["facts_valid"] == 0
-    assert result["facts_corrupt"] == 2
-    assert store.load_facts() == []
-    assert store._is_event_log_format()
+    assert facts_path.read_bytes() == original_bytes
 
 
 def test_repair_no_corruption():
@@ -74,6 +80,21 @@ def test_repair_empty_store():
     result = store.repair()
     assert result["facts_valid"] == 0
     assert result["facts_corrupt"] == 0
+
+
+def test_repair_recovers_corrupt_candidate_lines():
+    store = _make_store()
+    store.append_candidates(
+        [MemoryCandidate(category=FactCategory.preference, content="Valid candidate")]
+    )
+    with store.candidates_path.open("a") as fh:
+        fh.write("not json\n")
+
+    result = store.repair()
+
+    assert result["candidates_valid"] == 1
+    assert result["candidates_corrupt"] == 1
+    assert len(store.load_candidates()) == 1
 
 
 def test_edit_fact_preserves_id_and_timestamps():
