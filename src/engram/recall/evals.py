@@ -397,7 +397,7 @@ def representative_fixtures() -> list[EvalFixture]:
             name="small_corpus_fast_path",
             description=(
                 "A small corpus that would otherwise be tier-2 should be "
-                "demoted by the v2 cap to tier 0/1."
+                "demoted by the small-corpus cap to tier 0/1."
             ),
             query="retrieval note retrieval note",
             facts=[

@@ -256,7 +256,7 @@ def test_select_tier_large_corpus_unchanged_by_cap():
 
 
 def test_select_tier_threshold_zero_disables_cap():
-    """min_prefilter_for_tier2=0 disables the cap even under v2."""
+    """min_prefilter_for_tier2=0 disables the small-corpus cap."""
     scored = [
         (12, Fact(category=FactCategory.preference, content=f"fact {i}"))
         for i in range(5)
@@ -265,7 +265,7 @@ def test_select_tier_threshold_zero_disables_cap():
 
 
 def test_recall_stamps_selector_version():
-    """Recall logs keep selector_version='v2' for stats continuity."""
+    """Recall logs stamp selector_version='v3' (v2 rules + zero-hit escalation)."""
     from engram.core.config import get_settings
 
     store = _make_store()
@@ -285,7 +285,7 @@ def test_recall_stamps_selector_version():
     get_settings.cache_clear()
     asyncio.run(recall("zagblort xylophone", store=store))
     records = store.load_recall_log()
-    assert records[0].selector_version == "v2"
+    assert records[0].selector_version == "v3"
 
 
 def _flat_tier2_facts(store: FactStore, count: int = 15) -> None:
@@ -296,7 +296,7 @@ def _flat_tier2_facts(store: FactStore, count: int = 15) -> None:
     returns 2. No category/project/tags/recency boost-stacking.
 
     Count stays above `ENGRAM_TIER2_MIN_PREFILTER_COUNT` (default 11) so the
-    small-corpus cap doesn't demote these fixtures to tier-1 under v2.
+    small-corpus cap doesn't demote these fixtures to tier-1.
     """
     store.append_facts(
         [

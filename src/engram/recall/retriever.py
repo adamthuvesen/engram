@@ -83,7 +83,9 @@ TIER_1_MIN_GAP = 1.5  # top score must be ≥1.5x the 5th score
 # large corpus doesn't blow up the prompt.
 ZERO_HIT_MAX_CANDIDATES = 50
 
-SELECTOR_VERSION = "v2"
+# v3 = the v2 thresholds plus zero-hit escalation, so recall_stats can split
+# tier mixes recorded before and after escalation shipped.
+SELECTOR_VERSION = "v3"
 
 # Fact-ID extraction from LLM responses. Fact IDs are 12-hex strings emitted in
 # `(id: <hex>)` form by ``format_facts_for_llm``.
