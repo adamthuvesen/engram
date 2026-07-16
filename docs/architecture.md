@@ -36,7 +36,10 @@ dashboard/               Textual TUI (`engram-dash`)
 Natural language enters `extraction.observer`, which extracts structured facts.
 `storage.store` persists those facts as JSONL through `AsyncFactStore`.
 `recall.retriever` runs deterministic fast paths first and escalates to
-a single broad LLM call for complex queries.
+a single broad LLM call for complex queries. A query with no prefilter match
+above the relevance floor escalates to a bounded tier-1 call over the top
+raw-scored candidates (one LLM call) when an LLM key is configured; without a
+key it answers "no relevant memories" at tier-0 with no LLM call.
 
 ## Dev notes
 

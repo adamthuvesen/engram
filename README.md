@@ -8,7 +8,10 @@ server or a CLI.
 Recall uses a score-distribution router over the prefilter results. A sharp
 match returns directly with no LLM call. A focused cluster goes to one LLM call.
 A broad or flat result set goes to the tier-2 path, which is one broad LLM call.
-There are no embeddings and no vector database.
+A query that matches nothing above the prefilter floor also costs one LLM call:
+it escalates to tier-1 over the top raw-scored candidates, so a paraphrase that
+shares no words with a stored fact can still be found. There are no embeddings
+and no vector database.
 
 Facts start as natural language, then an LLM extracts structured records onto
 disk. Every fact keeps its source, supersession chain, and confidence. The store
@@ -16,9 +19,13 @@ is event-sourced: a plain append-only JSONL event log you can read with `cat`.
 
 | Tier | When it runs | LLM calls |
 | --- | --- | ---: |
-| 0 | Few strong matches, or no relevant matches | 0 |
-| 1 | Focused matches with a clear top cluster | 1 |
+| 0 | Few strong matches, or an empty store | 0 |
+| 1 | Focused matches with a clear top cluster, or nothing above the prefilter floor | 1 |
 | 2 | Many matches or a flat score distribution | 1 |
+
+Without an LLM key configured, the zero-hit escalation is skipped: a query with
+nothing above the floor answers "no relevant memories" at tier-0, with no LLM
+call and no error.
 
 ## How it works
 
@@ -82,6 +89,12 @@ This is the deterministic prefilter *floor*. It does not measure end-to-end
 retrieval accuracy. The aggregate includes harder queries the keyword pass can't
 resolve on its own. Those queries escalate to the LLM retrieval engine, which
 this number deliberately leaves out.
+
+One honest cost note: the eval pins zero-hit escalation off, so the 43% counts
+what the prefilter resolves on its own. With an LLM key configured, a query
+that matches nothing above the floor (the 8 no-match queries here) now costs
+one bounded LLM call instead of returning "no relevant memories" for free —
+the zero-LLM share of this mix becomes 31/91 (34%).
 
 The queries are labeled to source facts. The `kind` field shows the mix of
 literal, paraphrased, synonym, semantic, and cross-project queries.
