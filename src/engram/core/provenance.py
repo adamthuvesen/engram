@@ -59,6 +59,9 @@ class TierDecision(BaseModel):
     top_score: int | None = None
     gap_ratio: float | None = None
     cap_applied: bool = False
+    # True when a zero-relevant tier-0 decision was escalated to the tier-1
+    # LLM search because the corpus is non-empty and an LLM key is configured.
+    zero_hit_escalation: bool = False
 
 
 class UsageSummary(BaseModel):

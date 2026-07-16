@@ -172,8 +172,11 @@ async def run_fixture(
         import engram.recall.retriever as retriever_mod
 
         saved = retriever_mod.complete_with_usage
-        # Tier-0 evals run without LLM calls; only patch when tier-1/2 mocks exist.
-        if fixture.mode == "deterministic" and fixture.mocked_responses:
+        # Deterministic mode must never reach a real provider: patch the
+        # completion even when the mock queue is empty, so an unexpected LLM
+        # call (e.g. zero-hit escalation on a machine with a configured key)
+        # raises "exhausted mocked_responses" loudly instead of billing.
+        if fixture.mode == "deterministic":
             _patch_completions(retriever_mod, fixture.mocked_responses)
 
         try:
@@ -394,7 +397,7 @@ def representative_fixtures() -> list[EvalFixture]:
             name="small_corpus_fast_path",
             description=(
                 "A small corpus that would otherwise be tier-2 should be "
-                "demoted by the v2 cap to tier 0/1."
+                "demoted by the small-corpus cap to tier 0/1."
             ),
             query="retrieval note retrieval note",
             facts=[

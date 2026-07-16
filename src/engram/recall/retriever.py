@@ -5,7 +5,7 @@ import logging
 import re
 import time
 
-from engram.core.config import get_settings
+from engram.core.config import ensure_openai_api_key, get_settings
 from engram.core.interfaces import EnvelopeWarning, WarningCode
 from engram.llm import Completion, complete_with_usage
 from engram.core.models import Fact, RecallRecord
@@ -77,7 +77,15 @@ TIER_1_MAX_RELEVANT = 20
 TIER_1_MIN_TOP_SCORE = 8
 TIER_1_MIN_GAP = 1.5  # top score must be ≥1.5x the 5th score
 
-SELECTOR_VERSION = "v2"
+# Zero-hit escalation: when no fact clears RELEVANCE_FLOOR but the corpus is
+# non-empty, the tier-1 LLM search runs over the top raw-scored candidates
+# instead of answering "no relevant memories" without looking. Bounded so a
+# large corpus doesn't blow up the prompt.
+ZERO_HIT_MAX_CANDIDATES = 50
+
+# v3 = the v2 thresholds plus zero-hit escalation, so recall_stats can split
+# tier mixes recorded before and after escalation shipped.
+SELECTOR_VERSION = "v3"
 
 # Fact-ID extraction from LLM responses. Fact IDs are 12-hex strings emitted in
 # `(id: <hex>)` form by ``format_facts_for_llm``.
@@ -189,6 +197,38 @@ def _select_tier_with_decision(
     )
 
 
+def _llm_available() -> bool:
+    """True when an LLM provider key is set or loadable from the key cache."""
+    return ensure_openai_api_key() is not None
+
+
+def _escalate_zero_hit(
+    decision: TierDecision,
+    scored_facts: list[tuple[int, Fact]],
+) -> TierDecision:
+    """Escalate a zero-relevant tier-0 decision to the tier-1 LLM search.
+
+    A paraphrased or synonym query can share zero tokens with a stored fact,
+    so the keyword prefilter alone cannot rule out a match. When the corpus
+    is non-empty and an LLM key is configured, the top raw-scored candidates
+    (even below ``RELEVANCE_FLOOR``) go to tier 1 instead of hard-stopping at
+    "no relevant memories". Without a key the decision is returned unchanged,
+    keeping recall zero-LLM and crash-free.
+    """
+    if decision.tier != 0 or decision.relevant_count > 0 or not scored_facts:
+        return decision
+    if not _llm_available():
+        return decision
+    return TierDecision(
+        tier=1,
+        rules=SELECTOR_VERSION,
+        relevant_count=0,
+        top_score=scored_facts[0][0],
+        gap_ratio=None,
+        zero_hit_escalation=True,
+    )
+
+
 def _select_tier(
     scored_facts: list[tuple[int, Fact]],
     min_prefilter_for_tier2: int = 0,
@@ -202,7 +242,9 @@ def _select_tier(
     Tier 1: Focused matches with concentrated signal → one LLM call.
     Tier 2: Many matches or flat distribution → one broad LLM call.
 
-    Zero relevant matches → Tier 0 (direct).
+    Zero relevant matches → Tier 0 (direct) here; ``recall_with_provenance``
+    escalates that case to tier 1 via :func:`_escalate_zero_hit` when the
+    corpus is non-empty and an LLM key is configured.
 
     When ``min_prefilter_for_tier2 > 0``, an additional cap applies: queries
     whose prefilter produced fewer than ``min_prefilter_for_tier2``
@@ -537,8 +579,14 @@ async def recall_with_provenance(
         scored_facts,
         min_prefilter_for_tier2=settings.tier2_min_prefilter_count,
     )
+    decision = _escalate_zero_hit(decision, scored_facts)
     tier = decision.tier
     prefilter_count = len([s for s, _ in scored_facts if s > 0])
+    llm_facts = (
+        scored_facts[:ZERO_HIT_MAX_CANDIDATES]
+        if decision.zero_hit_escalation
+        else scored_facts
+    )
 
     excerpt_chars = (
         DEFAULT_PROMPT_EXCERPT_CHARS * 4
@@ -560,7 +608,7 @@ async def recall_with_provenance(
         truncated_any,
     ) = await _run_recall_tier(
         tier,
-        scored_facts,
+        llm_facts,
         query,
         settings,
         prefilter_count=prefilter_count,

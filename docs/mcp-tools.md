@@ -27,5 +27,7 @@ is a breaking change for every agent wired to Engram. Treat them like an API.
 `recall_stats` summarizes LLM usage pulled from the recall log: total LLM
 calls, input tokens, cached (prefix-hit) input tokens, and the resulting cache
 hit ratio. Providers that don't report usage leave those fields blank. The
-stats view renders `-` for any column with no data. Recall logs keep
-`selector_version="v2"` for continuity with existing `recall_stats` output.
+stats view renders `-` for any column with no data. Recall logs stamp each
+record with the selector version that routed it (currently `"v3"`: the v2
+thresholds plus zero-hit escalation), so `recall_stats` can compare tier mixes
+across selector versions.
