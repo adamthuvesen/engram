@@ -249,7 +249,8 @@ All settings are `ENGRAM_*` env vars (pydantic-settings). Key knobs:
 
 | Env var | Default | Description |
 | --- | --- | --- |
-| `ENGRAM_LLM_MODEL` | `openai/gpt-5.4-mini` | LLM for extraction and search |
+| `ENGRAM_LLM_MODEL` | `openai/gpt-5.6-luna` | LLM for extraction and search |
+| `ENGRAM_LLM_REASONING_EFFORT` | `medium` | GPT-5.6 reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max` |
 | `ENGRAM_MAX_FACTS_PER_AGENT` | `200` | Max facts fed to the recall LLM call |
 | `ENGRAM_RETRIEVAL_TIMEOUT` | `15.0` | Recall LLM call timeout (seconds) |
 | `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11` | Minimum prefilter matches before tier-2 (`0` disables the small-corpus cap) |

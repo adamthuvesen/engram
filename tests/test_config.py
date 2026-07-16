@@ -2,7 +2,17 @@
 
 import os
 
-from engram.core.config import ensure_openai_api_key, load_cached_api_keys
+from engram.core.config import Settings, ensure_openai_api_key, load_cached_api_keys
+
+
+def test_default_llm_uses_luna_with_medium_reasoning(monkeypatch):
+    monkeypatch.delenv("ENGRAM_LLM_MODEL", raising=False)
+    monkeypatch.delenv("ENGRAM_LLM_REASONING_EFFORT", raising=False)
+
+    settings = Settings()
+
+    assert settings.llm_model == "openai/gpt-5.6-luna"
+    assert settings.llm_reasoning_effort == "medium"
 
 
 def test_load_cached_api_keys_parses_exports(tmp_path):

@@ -11,6 +11,7 @@ from engram.llm.client import (
     Completion,
     _build_user_content,
     _extract_usage,
+    _is_gpt_5_6_model,
     _is_anthropic_model,
     _openai_strict_schema,
     _response_format_for_model,
@@ -39,6 +40,14 @@ def test_is_anthropic_model_bare_claude():
 
 def test_is_anthropic_model_openai_false():
     assert not _is_anthropic_model("openai/gpt-5.4-mini")
+
+
+def test_is_gpt_5_6_model_litellm_prefix():
+    assert _is_gpt_5_6_model("openai/gpt-5.6-luna")
+
+
+def test_is_gpt_5_6_model_other_model_false():
+    assert not _is_gpt_5_6_model("openai/gpt-5.4-mini")
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +214,42 @@ def test_complete_with_usage_returns_text_and_tokens(monkeypatch, fresh_settings
     assert result.text == "answer text"
     assert result.input_tokens == 123
     assert result.cached_tokens == 80
+
+
+def test_complete_with_usage_gpt_5_6_uses_reasoning_effort(monkeypatch, fresh_settings):
+    from engram.core.config import get_settings
+
+    monkeypatch.setenv("ENGRAM_LLM_REASONING_EFFORT", "medium")
+    get_settings.cache_clear()
+    mock = _MockLitellm()
+    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
+    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
+
+    asyncio.run(
+        complete_with_usage(
+            prompt="hello",
+            model="openai/gpt-5.6-luna",
+        )
+    )
+
+    assert mock.last_kwargs["reasoning_effort"] == "medium"
+    assert "temperature" not in mock.last_kwargs
+
+
+def test_complete_with_usage_other_models_keep_temperature(monkeypatch, fresh_settings):
+    mock = _MockLitellm()
+    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
+    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
+
+    asyncio.run(
+        complete_with_usage(
+            prompt="hello",
+            model="openai/gpt-5.4-mini",
+        )
+    )
+
+    assert mock.last_kwargs["temperature"] == 0.0
+    assert "reasoning_effort" not in mock.last_kwargs
 
 
 def test_complete_with_usage_anthropic_sends_cache_control(monkeypatch, fresh_settings):
