@@ -5,7 +5,7 @@ import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,7 +17,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path.home() / ".engram" / "data"
 
     # LLM for extraction and recall
-    llm_model: str = "openai/gpt-5.4-mini"
+    llm_model: str = "openai/gpt-5.6-luna"
+    llm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = (
+        "medium"
+    )
     llm_temperature: float = 0.0
 
     # Retrieval

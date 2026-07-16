@@ -40,6 +40,11 @@ def _is_anthropic_model(model: str) -> bool:
     return lower.startswith("anthropic/") or "claude" in lower
 
 
+def _is_gpt_5_6_model(model: str) -> bool:
+    """Detect GPT-5.6 model names with or without a LiteLLM provider prefix."""
+    return any(part.startswith("gpt-5.6") for part in model.lower().split("/"))
+
+
 def _build_user_content(prompt: str, cache_prefix: str | None, model: str):
     """Build the user-message content.
 
@@ -190,9 +195,12 @@ async def complete_with_usage(
     kwargs: dict = {
         "model": model,
         "messages": messages,
-        "temperature": temperature,
         "num_retries": 2,
     }
+    if _is_gpt_5_6_model(model):
+        kwargs["reasoning_effort"] = settings.llm_reasoning_effort
+    else:
+        kwargs["temperature"] = temperature
     if response_format:
         kwargs["response_format"] = response_format
 
