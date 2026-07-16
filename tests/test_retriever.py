@@ -315,9 +315,10 @@ def _patch_complete(monkeypatch, responses):
     """Replace `complete_with_usage` with a queue-backed stub.
 
     `responses` is a list of (text, input_tokens, cached_tokens) tuples consumed
-    in call order. A counter is attached so tests can assert call count.
+    in call order. A counter and the received prompts are recorded so tests can
+    assert call count and prompt contents.
     """
-    calls = {"n": 0}
+    calls = {"n": 0, "prompts": []}
     queue = list(responses)
 
     async def fake(
@@ -329,6 +330,7 @@ def _patch_complete(monkeypatch, responses):
         cache_prefix=None,
     ):
         calls["n"] += 1
+        calls["prompts"].append(prompt)
         text, input_tokens, cached = queue.pop(0)
         return Completion(text=text, input_tokens=input_tokens, cached_tokens=cached)
 
@@ -378,6 +380,129 @@ def test_recall_tier2_default_single_mode_makes_one_llm_call(monkeypatch):
     assert provenance.usage.llm_calls == 1
     assert trace is not None
     assert [call.name for call in trace.calls] == ["tier2_single"]
+
+
+# ---------------------------------------------------------------------------
+# Zero-hit escalation — paraphrased queries reach the LLM tier
+# ---------------------------------------------------------------------------
+
+# Shares zero unigrams/bigrams/tags with the fixture facts below, so the
+# prefilter scores everything 0 and only the escalated LLM tier can answer.
+_ZERO_HIT_QUERY = "which analytics platform keeps our event data?"
+
+
+def _zero_overlap_store(count: int = 1) -> FactStore:
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id=f"pad{i:09d}",
+                category=FactCategory.preference,
+                content=f"Snowflake warehouse stores raw telemetry, note {i}",
+                tags=[],
+            )
+            for i in range(count)
+        ]
+    )
+    return store
+
+
+def test_zero_hit_query_escalates_to_llm_tier(monkeypatch):
+    """No fact above the floor + non-empty corpus + key → tier-1 LLM search."""
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    store = _zero_overlap_store()
+    calls = _patch_complete(
+        monkeypatch,
+        [("Snowflake stores the telemetry (id: pad000000000).\n[quality: low]", 80, 0)],
+    )
+
+    from engram.recall.retriever import recall_with_provenance
+
+    _answer, _quality, provenance, _ = asyncio.run(
+        recall_with_provenance(_ZERO_HIT_QUERY, store=store)
+    )
+
+    assert calls["n"] == 1
+    assert provenance.tier == 1
+    assert provenance.selected_decision.zero_hit_escalation is True
+    assert provenance.selected_decision.relevant_count == 0
+    records = store.load_recall_log()
+    assert records[0].tier == 1
+    assert records[0].llm_calls == 1
+
+
+def test_zero_hit_query_without_key_keeps_tier0(monkeypatch):
+    """Without a configured LLM key, zero-hit recall degrades to today's answer."""
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: False)
+    store = _zero_overlap_store()
+    calls = _patch_complete(monkeypatch, [])
+
+    from engram.recall.retriever import recall_with_provenance
+
+    answer, _quality, provenance, _ = asyncio.run(
+        recall_with_provenance(_ZERO_HIT_QUERY, store=store)
+    )
+
+    assert calls["n"] == 0
+    assert provenance.tier == 0
+    assert provenance.selected_decision.zero_hit_escalation is False
+    assert "No relevant memories" in answer
+
+
+def test_zero_hit_empty_corpus_never_escalates(monkeypatch):
+    """An empty store stays tier 0 even with an LLM key configured."""
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    store = _make_store()
+    calls = _patch_complete(monkeypatch, [])
+
+    from engram.recall.retriever import recall
+
+    answer = asyncio.run(recall(_ZERO_HIT_QUERY, store=store))
+
+    assert calls["n"] == 0
+    assert "No memories stored yet" in answer
+
+
+def test_strong_hit_fast_path_survives_with_key(monkeypatch):
+    """Strong deterministic hits still resolve at tier 0 with zero LLM calls."""
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="f1",
+                category=FactCategory.personal_info,
+                content="Zagblort works on the xylophone repair department",
+                tags=["zagblort", "xylophone"],
+            ),
+        ]
+    )
+    calls = _patch_complete(monkeypatch, [])
+
+    from engram.recall.retriever import recall
+
+    answer = asyncio.run(recall("zagblort xylophone", store=store))
+
+    assert calls["n"] == 0
+    assert "Zagblort" in answer
+    records = store.load_recall_log()
+    assert records[0].tier == 0
+
+
+def test_zero_hit_escalation_bounds_candidates(monkeypatch):
+    """The escalated call sends at most ZERO_HIT_MAX_CANDIDATES facts."""
+    from engram.recall.retriever import ZERO_HIT_MAX_CANDIDATES
+
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    store = _zero_overlap_store(count=ZERO_HIT_MAX_CANDIDATES + 30)
+    calls = _patch_complete(monkeypatch, [("nothing relevant\n[quality: none]", 40, 0)])
+
+    from engram.recall.retriever import recall
+
+    asyncio.run(recall(_ZERO_HIT_QUERY, store=store))
+
+    assert calls["n"] == 1
+    assert calls["prompts"][0].count("(id: ") <= ZERO_HIT_MAX_CANDIDATES
 
 
 def test_recall_tier0_unrelated_boost_only_fact_logs_no_quality():

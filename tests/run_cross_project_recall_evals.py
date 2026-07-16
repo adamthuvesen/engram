@@ -124,11 +124,16 @@ async def _run_query(store, lq: LabeledQuery) -> QueryResult:
     from engram.recall.retriever import recall_with_provenance
 
     saved = retriever_mod.complete_with_usage
+    saved_available = retriever_mod._llm_available
     retriever_mod.complete_with_usage = _no_op_completion()
+    # Pin zero-hit escalation off so the benchmark stays deterministic with or
+    # without a local LLM key.
+    retriever_mod._llm_available = lambda: False
     try:
         _, _, provenance, _ = await recall_with_provenance(lq.query, store=store)
     finally:
         retriever_mod.complete_with_usage = saved
+        retriever_mod._llm_available = saved_available
 
     ranked = [m.id for m in provenance.prefilter_matches if m.above_floor]
     score, hit, rank, recall_at_1, recall_at_5, bad_evidence = _score_query(

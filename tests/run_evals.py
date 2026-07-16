@@ -21,7 +21,10 @@ near-perfect; synonym/semantic ones are where the LLM closes the gap (e.g.
 
 Determinism: every query runs through ``recall_with_provenance`` against a temp
 store, but ``complete_with_usage`` is replaced with a no-op stub, so there are
-zero LLM calls and no API keys are needed. The metrics read only the
+zero LLM calls and no API keys are needed. Zero-hit escalation is pinned off
+(``_llm_available`` → False) so tier counts stay identical with or without a
+local key; in production with a key, a zero-hit query escalates to one bounded
+tier-1 LLM call instead of resolving at tier-0. The metrics read only the
 deterministic prefilter artifacts:
 
 - ``seen``  = ``cited_fact_ids | {m.id for m in prefilter_matches if above_floor}``
@@ -137,11 +140,17 @@ async def _run_query(store, lq: LabeledQuery) -> QueryResult:
 
     fake, calls = _no_op_completion()
     saved = retriever_mod.complete_with_usage
+    saved_available = retriever_mod._llm_available
     retriever_mod.complete_with_usage = fake
+    # Pin zero-hit escalation off: this script measures the deterministic
+    # prefilter floor, and must report the same tiers with or without a local
+    # LLM key. With a key, zero-hit queries escalate to one tier-1 call.
+    retriever_mod._llm_available = lambda: False
     try:
         _, _, provenance, _ = await recall_with_provenance(lq.query, store=store)
     finally:
         retriever_mod.complete_with_usage = saved
+        retriever_mod._llm_available = saved_available
 
     above_floor = [m.id for m in provenance.prefilter_matches if m.above_floor]
     seen = set(provenance.cited_fact_ids) | set(above_floor)
