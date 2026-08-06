@@ -314,6 +314,8 @@ def _duplicate_signal(left: Fact, right: Fact) -> _DuplicateSignal | None:
         return None
     if _reversed_choice(left, right):
         return None
+    if left.memory_key and right.memory_key and left.memory_key != right.memory_key:
+        return None
 
     if _normalized_content(left.content) == _normalized_content(right.content):
         return _DuplicateSignal(score=0.99, reason="normalized content matches exactly")

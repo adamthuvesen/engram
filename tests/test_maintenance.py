@@ -49,7 +49,10 @@ def test_correct_fact_creates_replacement_with_supersedes():
             Fact(
                 id="oldaaaaaaaaa",
                 category=FactCategory.preference,
+                memory_key="editor-preference",
                 content="prefers vim",
+                retrieval_hints=["preferred editor"],
+                source_group_id="source-group",
             )
         ]
     )
@@ -58,6 +61,9 @@ def test_correct_fact_creates_replacement_with_supersedes():
     assert new is not None
     assert new.supersedes == "oldaaaaaaaaa"
     assert new.content == "prefers neovim"
+    assert new.memory_key == "editor-preference"
+    assert new.retrieval_hints == ["preferred editor"]
+    assert new.source_group_id == "source-group"
 
     # Old fact is dropped from active recall via reduced confidence.
     active_ids = [f.id for f in store.load_active_facts()]
@@ -126,7 +132,10 @@ def test_merge_facts_consolidates_two():
             Fact(
                 id="srcaaaaaaaaa",
                 category=FactCategory.preference,
+                memory_key="editor-preference",
                 content="uses vim daily",
+                retrieval_hints=["daily editor"],
+                source_ref="conversation:editor-policy",
             ),
             Fact(
                 id="srcbbbbbbbbb",
@@ -139,11 +148,17 @@ def test_merge_facts_consolidates_two():
     result = store.merge_facts(
         ["srcaaaaaaaaa", "srcbbbbbbbbb"],
         "uses neovim daily",
+        memory_key="editor-preference",
+        retrieval_hints=["preferred editor", "daily editor"],
         reason="dedupe vim/neovim",
     )
     assert result is not None
     new_fact, superseded = result
     assert set(superseded) == {"srcaaaaaaaaa", "srcbbbbbbbbb"}
+    assert new_fact.memory_key == "editor-preference"
+    assert new_fact.retrieval_hints == ["preferred editor", "daily editor"]
+    assert new_fact.consolidates == ["srcaaaaaaaaa", "srcbbbbbbbbb"]
+    assert new_fact.source_ref == "conversation:editor-policy"
 
     active_ids = {f.id for f in store.load_active_facts()}
     assert new_fact.id in active_ids

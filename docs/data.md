@@ -18,6 +18,19 @@ All data lives under `~/.engram/data/` by default:
   configures `merge=union` for the event-log files so parallel appends from
   two machines auto-merge.
 
+## Memory-card fields
+
+Each current fact record is one coherent memory card, not necessarily one
+sentence. `memory_key` is its stable semantic identity. `retrieval_hints` hold
+likely future queries and vocabulary. `source_group_id` links cards extracted
+from the same input. `supersedes` tracks correction lineage, while
+`consolidates` lists every source fact joined into a replacement card.
+
+Older records load with empty values for these fields. New extraction,
+correction, editing, and merge paths preserve them. A merge appends one new
+card plus supersession events for its sources. It never rewrites the event-log
+prefix.
+
 ## Event-log invariant
 
 Storage is an append-only event log. Mutations (`forget`, `edit_fact`,

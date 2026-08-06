@@ -143,12 +143,16 @@ def fact_payload(fact: FactBase) -> dict:
         "id": fact.id,
         "category": fact.category.value,
         "project": fact.project,
+        "memory_key": fact.memory_key,
         "content": fact.content,
         "confidence": fact.confidence,
         "stale": fact.stale,
         "stale_reason": fact.stale_reason,
         "supersedes": fact.supersedes,
+        "consolidates": fact.consolidates,
         "tags": fact.tags,
+        "retrieval_hints": fact.retrieval_hints,
+        "source_group_id": fact.source_group_id,
         "created_at": fact.created_at.isoformat(),
         "updated_at": fact.updated_at.isoformat(),
     }
@@ -569,7 +573,9 @@ async def edit_fact(
     *,
     content: str | None = None,
     category: str | None = None,
+    memory_key: str | None = None,
     tags: list[str] | None = None,
+    retrieval_hints: list[str] | None = None,
     project: str | None = None,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
@@ -581,8 +587,12 @@ async def edit_fact(
         if cat is None:
             return invalid_category_result(category)
         updates["category"] = cat
+    if memory_key is not None:
+        updates["memory_key"] = memory_key
     if tags is not None:
         updates["tags"] = tags
+    if retrieval_hints is not None:
+        updates["retrieval_hints"] = retrieval_hints
     if project is not None:
         updates["project"] = project
 
@@ -679,6 +689,8 @@ async def correct_memory(
     *,
     category: str | None = None,
     tags: list[str] | None = None,
+    memory_key: str | None = None,
+    retrieval_hints: list[str] | None = None,
     project: str | None = None,
     reason: str = "",
     store: FactStore | AsyncFactStore | None = None,
@@ -692,6 +704,8 @@ async def correct_memory(
         new_content,
         category=cat,
         tags=tags,
+        memory_key=memory_key,
+        retrieval_hints=retrieval_hints,
         project=project,
         reason=reason,
     )
@@ -707,6 +721,8 @@ async def correct_memory(
         "superseded_fact_id": fact_id,
         "category": new_fact.category.value,
         "project": new_fact.project,
+        "memory_key": new_fact.memory_key,
+        "retrieval_hints": new_fact.retrieval_hints,
         "content": new_fact.content,
     }
     return OperationResult(
@@ -724,6 +740,8 @@ async def merge_memories(
     *,
     category: str | None = None,
     tags: list[str] | None = None,
+    memory_key: str | None = None,
+    retrieval_hints: list[str] | None = None,
     project: str | None = None,
     reason: str = "",
     store: FactStore | AsyncFactStore | None = None,
@@ -744,6 +762,8 @@ async def merge_memories(
         merged_content,
         category=cat,
         tags=tags,
+        memory_key=memory_key,
+        retrieval_hints=retrieval_hints,
         project=project,
         reason=reason,
     )
@@ -762,6 +782,9 @@ async def merge_memories(
                 "superseded_fact_ids": superseded_ids,
                 "category": new_fact.category.value,
                 "project": new_fact.project,
+                "memory_key": new_fact.memory_key,
+                "retrieval_hints": new_fact.retrieval_hints,
+                "consolidates": new_fact.consolidates,
                 "content": new_fact.content,
             }
         ),

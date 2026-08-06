@@ -479,9 +479,14 @@ def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
             {
                 "facts": [
                     {
+                        "memory_key": "engram-async-storage",
                         "content": "Engram routes MCP storage through AsyncFactStore",
                         "category": "project",
                         "tags": ["storage"],
+                        "retrieval_hints": ["Engram MCP storage"],
+                        "covered_claims": [
+                            "Engram routes MCP storage through AsyncFactStore"
+                        ],
                         "why_store": "Documents the architecture",
                         "expires_at": None,
                     }
@@ -739,7 +744,7 @@ def test_prefilter_tokenization_cached():
 
     store._tokenize_extended = counting_tokenize
 
-    # First prefilter: tokenizes query (1) + 2 facts (2) = 3 calls
+    # First prefilter tokenizes the query plus content and hints for each fact.
     store.prefilter_facts("polars dataframe library")
     after_first = call_count[0]
 
@@ -747,7 +752,7 @@ def test_prefilter_tokenization_cached():
     store.prefilter_facts("polars dataframe library")
     after_second = call_count[0]
 
-    calls_first_run = after_first  # 3 (query + 2 facts)
+    calls_first_run = after_first
     calls_second_run = after_second - after_first  # should be 1 (query only)
 
     assert calls_first_run > calls_second_run, (

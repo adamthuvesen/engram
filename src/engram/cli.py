@@ -190,7 +190,9 @@ async def cmd_edit_fact(args: argparse.Namespace) -> OperationResult:
         args.fact_id,
         content=args.content,
         category=args.category,
+        memory_key=args.memory_key,
         tags=args.tags,
+        retrieval_hints=args.retrieval_hints,
         project=args.project,
     )
 
@@ -210,6 +212,8 @@ async def cmd_correct_memory(args: argparse.Namespace) -> OperationResult:
         args.content,
         category=args.category,
         tags=args.tags,
+        memory_key=args.memory_key,
+        retrieval_hints=args.retrieval_hints,
         project=args.project,
         reason=args.reason or "",
     )
@@ -221,6 +225,8 @@ async def cmd_merge_memories(args: argparse.Namespace) -> OperationResult:
         args.content,
         category=args.category,
         tags=args.tags,
+        memory_key=args.memory_key,
+        retrieval_hints=args.retrieval_hints,
         project=args.project,
         reason=args.reason or "",
     )
@@ -345,6 +351,8 @@ def _add_correct_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--category", default=None)
     parser.add_argument("--project", default=None)
     parser.add_argument("--tags", nargs="*", default=None)
+    parser.add_argument("--memory-key", default=None)
+    parser.add_argument("--retrieval-hints", nargs="*", default=None)
     parser.add_argument("--reason", default=None)
     _add_json_flag(parser)
 
@@ -355,6 +363,8 @@ def _add_merge_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--category", default=None)
     parser.add_argument("--project", default=None)
     parser.add_argument("--tags", nargs="*", default=None)
+    parser.add_argument("--memory-key", default=None)
+    parser.add_argument("--retrieval-hints", nargs="*", default=None)
     parser.add_argument("--reason", default=None)
     _add_json_flag(parser)
 
@@ -427,7 +437,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_edit.add_argument("fact_id")
     p_edit.add_argument("--content", default=None)
     p_edit.add_argument("--category", default=None)
+    p_edit.add_argument("--memory-key", default=None)
     p_edit.add_argument("--tags", nargs="*", default=None)
+    p_edit.add_argument("--retrieval-hints", nargs="*", default=None)
     p_edit.add_argument("--project", default=None)
     _add_json_flag(p_edit)
 

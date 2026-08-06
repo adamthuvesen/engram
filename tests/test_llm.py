@@ -325,7 +325,7 @@ def test_openai_strict_schema_requires_all_extraction_properties():
     schema = _openai_strict_schema(ExtractionResponse)
     fact_schema = schema["$defs"]["ExtractedFact"]
 
-    assert schema["required"] == ["facts"]
+    assert schema["required"] == ["facts", "excluded_claims"]
     assert fact_schema["required"] == list(fact_schema["properties"])
     assert "tags" in fact_schema["required"]
     assert "default" not in _schema_keys(schema)

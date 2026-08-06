@@ -1,0 +1,259 @@
+{
+  "version": 1,
+  "description": "No-secret extraction-quality fixture for coherent memory cards. All people, projects, policies, and progress details are fictional.",
+  "cases": [
+    {
+      "id": "dual-memory-policy",
+      "kind": "coupled-policy",
+      "policy_regression": true,
+      "raw_input": "We use one dual-memory policy. Store every qualifying durable memory in both Engram and the active tool's native memory when available. Engram is the canonical cross-tool copy. A qualifying memory must be durable, non-obvious, actionable, and likely to matter again. Qualifying memories include corrections, decisions, recurring pitfalls, stable preferences, environment constraints, and proven discoveries. Exclude transient progress, routine details, guesses, one-off failures, secrets, and facts already clear from code or docs. When a stored fact changes, correct both the Engram copy and the active tool's native memory copy. I copied three files and am waiting for CI.",
+      "canonical_memory_units": [
+        {
+          "id": "dual-memory-policy-card",
+          "label": "Dual-memory storage and update policy",
+          "project": null,
+          "required_durable_claims": [
+            "Store every qualifying durable memory in both Engram and the active tool's native memory when available",
+            "Engram is the canonical cross-tool copy",
+            "A qualifying memory must be durable, non-obvious, actionable, and likely to matter again",
+            "Qualifying memories include corrections, decisions, recurring pitfalls, stable preferences, environment constraints, and proven discoveries",
+            "Exclude transient progress, routine details, guesses, one-off failures, secrets, and facts already clear from code or docs",
+            "When a stored fact changes, correct both the Engram copy and the active tool's native memory copy"
+          ],
+          "future_recall_queries": [
+            "Where should agents store durable memories?",
+            "What information qualifies for memory?",
+            "How should agents correct a stored memory?"
+          ]
+        }
+      ],
+      "forbidden_transient_claims": [
+        "copied three files",
+        "waiting for CI"
+      ],
+      "fixture_extracted_cards": [
+        {
+          "memory_key": "dual-memory-policy",
+          "content": "Dual-memory policy: Store every qualifying durable memory in both Engram and the active tool's native memory when available. Engram is the canonical cross-tool copy. A qualifying memory must be durable, non-obvious, actionable, and likely to matter again. Qualifying memories include corrections, decisions, recurring pitfalls, stable preferences, environment constraints, and proven discoveries. Exclude transient progress, routine details, guesses, one-off failures, secrets, and facts already clear from code or docs. When a stored fact changes, correct both the Engram copy and the active tool's native memory copy.",
+          "retrieval_hints": ["where to store durable memories", "memory qualification criteria", "correct stored memories"],
+          "project": null,
+          "supersedes": null
+        }
+      ]
+    },
+    {
+      "id": "independent-decisions",
+      "kind": "independent-units",
+      "policy_regression": false,
+      "raw_input": "For Atlas, use PostgreSQL for application data. Publish the release handbook with MkDocs. I created the first migration this morning and am waiting for review.",
+      "canonical_memory_units": [
+        {
+          "id": "atlas-database",
+          "label": "Atlas application database decision",
+          "project": "atlas",
+          "required_durable_claims": [
+            "Use PostgreSQL for application data"
+          ],
+          "future_recall_queries": [
+            "Which database should Atlas use?"
+          ]
+        },
+        {
+          "id": "atlas-release-handbook",
+          "label": "Atlas release handbook tool",
+          "project": "atlas",
+          "required_durable_claims": [
+            "Publish the release handbook with MkDocs"
+          ],
+          "future_recall_queries": [
+            "How is the Atlas release handbook published?"
+          ]
+        }
+      ],
+      "forbidden_transient_claims": [
+        "created the first migration this morning",
+        "waiting for review"
+      ],
+      "fixture_extracted_cards": [
+        {
+          "memory_key": "atlas-application-database",
+          "content": "Use PostgreSQL for application data.",
+          "retrieval_hints": ["Atlas application database"],
+          "project": "atlas",
+          "supersedes": null
+        },
+        {
+          "memory_key": "atlas-release-handbook",
+          "content": "Publish the release handbook with MkDocs.",
+          "retrieval_hints": ["Atlas release handbook publishing"],
+          "project": "atlas",
+          "supersedes": null
+        }
+      ]
+    },
+    {
+      "id": "preference-correction",
+      "kind": "correction-update",
+      "policy_regression": false,
+      "raw_input": "Correction to pref-editor-v1: Rowan uses Zed as the default editor now and keeps Vim mode enabled. I am currently reinstalling plugins.",
+      "canonical_memory_units": [
+        {
+          "id": "rowan-editor-v2",
+          "label": "Corrected editor preference",
+          "project": null,
+          "expected_supersedes": "pref-editor-v1",
+          "required_durable_claims": [
+            "Rowan uses Zed as the default editor",
+            "keeps Vim mode enabled"
+          ],
+          "future_recall_queries": [
+            "Which editor does Rowan use?",
+            "Does Rowan keep Vim mode enabled?"
+          ]
+        }
+      ],
+      "forbidden_transient_claims": [
+        "currently reinstalling plugins"
+      ],
+      "fixture_extracted_cards": [
+        {
+          "memory_key": "rowan-editor-preference",
+          "content": "Rowan uses Zed as the default editor and keeps Vim mode enabled.",
+          "retrieval_hints": ["Rowan default editor", "Vim mode preference"],
+          "project": null,
+          "supersedes": "pref-editor-v1"
+        }
+      ]
+    },
+    {
+      "id": "project-scoping",
+      "kind": "project-scope",
+      "policy_regression": false,
+      "raw_input": "Atlas uses pnpm 10 for JavaScript packages. Beacon uses npm 11 for JavaScript packages. I am debugging both lockfiles right now.",
+      "canonical_memory_units": [
+        {
+          "id": "atlas-package-manager",
+          "label": "Atlas package manager",
+          "project": "atlas",
+          "required_durable_claims": [
+            "Atlas uses pnpm 10 for JavaScript packages"
+          ],
+          "future_recall_queries": [
+            "Which package manager does Atlas use?"
+          ]
+        },
+        {
+          "id": "beacon-package-manager",
+          "label": "Beacon package manager",
+          "project": "beacon",
+          "required_durable_claims": [
+            "Beacon uses npm 11 for JavaScript packages"
+          ],
+          "future_recall_queries": [
+            "Which package manager does Beacon use?"
+          ]
+        }
+      ],
+      "forbidden_transient_claims": [
+        "debugging both lockfiles right now"
+      ],
+      "fixture_extracted_cards": [
+        {
+          "memory_key": "atlas-package-manager",
+          "content": "Atlas uses pnpm 10 for JavaScript packages.",
+          "retrieval_hints": ["Atlas package manager"],
+          "project": "atlas",
+          "supersedes": null
+        },
+        {
+          "memory_key": "beacon-package-manager",
+          "content": "Beacon uses npm 11 for JavaScript packages.",
+          "retrieval_hints": ["Beacon package manager"],
+          "project": "beacon",
+          "supersedes": null
+        }
+      ]
+    },
+    {
+      "id": "related-resilience-decisions",
+      "kind": "related-distinct-units",
+      "policy_regression": false,
+      "raw_input": "For Helios, retry failed requests up to three times with exponential backoff. Open the circuit breaker after five consecutive failures. The load test is at 62 percent.",
+      "canonical_memory_units": [
+        {
+          "id": "helios-retry-policy",
+          "label": "Helios request retry policy",
+          "project": "helios",
+          "required_durable_claims": [
+            "Retry failed requests up to three times with exponential backoff"
+          ],
+          "future_recall_queries": [
+            "How should Helios retry failed requests?"
+          ]
+        },
+        {
+          "id": "helios-circuit-breaker",
+          "label": "Helios circuit breaker threshold",
+          "project": "helios",
+          "required_durable_claims": [
+            "Open the circuit breaker after five consecutive failures"
+          ],
+          "future_recall_queries": [
+            "When should the Helios circuit breaker open?"
+          ]
+        }
+      ],
+      "forbidden_transient_claims": [
+        "load test is at 62 percent"
+      ],
+      "fixture_extracted_cards": [
+        {
+          "memory_key": "helios-retry-policy",
+          "content": "Retry failed requests up to three times with exponential backoff.",
+          "retrieval_hints": ["Helios failed request retries"],
+          "project": "helios",
+          "supersedes": null
+        },
+        {
+          "memory_key": "helios-circuit-breaker",
+          "content": "Open the circuit breaker after five consecutive failures.",
+          "retrieval_hints": ["Helios circuit breaker threshold"],
+          "project": "helios",
+          "supersedes": null
+        }
+      ]
+    },
+    {
+      "id": "durable-rule-with-progress",
+      "kind": "transient-exclusion",
+      "policy_regression": false,
+      "raw_input": "Keep Orion production backups for 30 days. The restore rehearsal is on step four of nine and Dana is watching the logs.",
+      "canonical_memory_units": [
+        {
+          "id": "orion-backup-retention",
+          "label": "Orion production backup retention",
+          "project": "orion",
+          "required_durable_claims": [
+            "Keep Orion production backups for 30 days"
+          ],
+          "future_recall_queries": [
+            "How long are Orion production backups retained?"
+          ]
+        }
+      ],
+      "forbidden_transient_claims": [
+        "restore rehearsal is on step four of nine",
+        "Dana is watching the logs"
+      ],
+      "fixture_extracted_cards": [
+        {
+          "memory_key": "orion-backup-retention",
+          "content": "Keep Orion production backups for 30 days.",
+          "retrieval_hints": ["Orion production backup retention"],
+          "project": "orion",
+          "supersedes": null
+        }
+      ]
+    }
+  ]
+}
