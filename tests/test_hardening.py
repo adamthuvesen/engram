@@ -21,6 +21,7 @@ from engram.core.models import (
     TransactionStatus,
 )
 from engram.storage.store import AsyncFactStore, FactStore
+from tests.mcp_helpers import call_tool
 
 
 def _make_store() -> FactStore:
@@ -392,7 +393,8 @@ def test_recall_context_prompt_mode_smoke():
     app = server.create_mcp(store)
 
     result = asyncio.run(
-        app._call_tool_mcp(
+        call_tool(
+            app,
             "recall_context",
             {
                 "query": "What does Alex prefer?",
@@ -420,7 +422,8 @@ def test_recall_context_prompt_mode_omits_unrelated_fallbacks():
     app = server.create_mcp(store)
 
     result = asyncio.run(
-        app._call_tool_mcp(
+        call_tool(
+            app,
             "recall_context",
             {
                 "query": "What database warehouse should we use?",
@@ -446,9 +449,7 @@ def test_import_memories_empty_directory_returns_message(tmp_path, monkeypatch):
 
     store = _make_store()
     app = server.create_mcp(store)
-    result = asyncio.run(
-        app._call_tool_mcp("import_memories", {"source": "claude_code"})
-    )
+    result = asyncio.run(call_tool(app, "import_memories", {"source": "claude_code"}))
 
     assert "No memory files found to import" in str(result)
 
@@ -520,7 +521,8 @@ def test_list_candidates_search_filters_before_limit():
     app = server.create_mcp(store)
 
     result = asyncio.run(
-        app._call_tool_mcp(
+        call_tool(
+            app,
             "list_candidates",
             {"status": "pending", "search": "Needle", "limit": 5},
         )
@@ -542,13 +544,15 @@ def test_mcp_candidate_approval_and_rejection_use_async_store():
     app = server.create_mcp(AsyncFactStore(store))
 
     approved = asyncio.run(
-        app._call_tool_mcp(
+        call_tool(
+            app,
             "approve_candidates",
             {"candidate_ids": ["approve-me"]},
         )
     )
     rejected = asyncio.run(
-        app._call_tool_mcp(
+        call_tool(
+            app,
             "reject_candidates",
             {"candidate_ids": ["reject-me"], "reason": "not durable"},
         )
@@ -564,7 +568,8 @@ def test_inspect_invalid_category_returns_helpful_message():
     app = server.create_mcp(_make_store())
 
     result = asyncio.run(
-        app._call_tool_mcp(
+        call_tool(
+            app,
             "inspect",
             {"category": "bogus"},
         )
@@ -583,19 +588,21 @@ def test_mcp_inspect_stats_purge_and_rename_use_async_store():
     app = server.create_mcp(AsyncFactStore(store))
 
     renamed = asyncio.run(
-        app._call_tool_mcp(
+        call_tool(
+            app,
             "rename_project",
             {"old_project": "old-project", "new_project": "new-project"},
         )
     )
     inspected = asyncio.run(
-        app._call_tool_mcp(
+        call_tool(
+            app,
             "inspect",
             {"project": "new-project"},
         )
     )
-    stats = asyncio.run(app._call_tool_mcp("memory_stats", {}))
-    purged = asyncio.run(app._call_tool_mcp("purge", {}))
+    stats = asyncio.run(call_tool(app, "memory_stats", {}))
+    purged = asyncio.run(call_tool(app, "purge", {}))
 
     assert "Renamed 2 record" in str(renamed)
     assert "Project fact" in str(inspected)
@@ -617,7 +624,7 @@ def test_recall_stats_reports_zero_llm_calls():
     )
     app = server.create_mcp(store)
 
-    result = asyncio.run(app._call_tool_mcp("recall_stats", {}))
+    result = asyncio.run(call_tool(app, "recall_stats", {}))
 
     assert "LLM calls (reported): 0" in str(result)
 
@@ -627,7 +634,7 @@ def test_mcp_tools_return_text_and_structured_content():
     store.append_facts([_make_fact(id="aaaaaaaaaaaa", content="Project fact")])
     app = server.create_mcp(AsyncFactStore(store))
 
-    content, structured = asyncio.run(app._call_tool_mcp("inspect", {"format": "json"}))
+    content, structured = asyncio.run(call_tool(app, "inspect", {"format": "json"}))
 
     assert content[0].text.startswith('{"status":"ok"')
     assert structured["status"] == "ok"

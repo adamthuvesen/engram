@@ -10,6 +10,7 @@ from engram import server
 from engram.llm import Completion
 from engram.core.models import Fact, FactCategory
 from engram.storage.store import AsyncFactStore, FactStore
+from tests.mcp_helpers import call_tool
 
 
 def _setup_store(monkeypatch) -> FactStore:
@@ -42,7 +43,7 @@ def _patch_complete(monkeypatch, responses):
 
 
 async def _call(tool_name: str, **kwargs):
-    return await server.mcp._call_tool_mcp(tool_name, kwargs)
+    return await call_tool(server.mcp, tool_name, kwargs)
 
 
 def _text(result) -> str:

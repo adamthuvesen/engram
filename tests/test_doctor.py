@@ -17,6 +17,7 @@ from engram.core.models import (
     TransactionStatus,
 )
 from engram.storage.store import AsyncFactStore, FactStore
+from tests.mcp_helpers import call_tool
 
 
 def _make_store() -> FactStore:
@@ -292,7 +293,7 @@ def test_doctor_mcp_returns_envelope(monkeypatch):
     store = _make_store()
     app = server.create_mcp(AsyncFactStore(store))
 
-    result = asyncio.run(app._call_tool_mcp("doctor", {}))
+    result = asyncio.run(call_tool(app, "doctor", {}))
     parsed = result[1]
     assert parsed["status"] == "ok"
     assert "report" in parsed["data"]

@@ -11,6 +11,7 @@ import pytest
 from engram import server
 from engram.core.models import Fact, FactCategory
 from engram.storage.store import AsyncFactStore, FactStore
+from tests.mcp_helpers import call_tool
 
 
 def _make_store() -> FactStore:
@@ -29,7 +30,7 @@ def _setup_server(monkeypatch) -> FactStore:
 
 
 async def _call(tool_name: str, **kwargs):
-    return await server.mcp._call_tool_mcp(tool_name, kwargs)
+    return await call_tool(server.mcp, tool_name, kwargs)
 
 
 def _structured(result):

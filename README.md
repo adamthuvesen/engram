@@ -170,6 +170,10 @@ paths need whatever credentials your configured model expects, such as
 Point your MCP client at the `engram` entrypoint. Since bare `engram` starts the
 server, the command is `uv run` in the repo:
 
+Engram pins FastMCP 4.0.0b2 so clients can negotiate MCP `2026-07-28` or an
+older protocol revision. Engram still uses stdio, so the new sessionless HTTP
+deployment rules do not change its local configuration.
+
 ```json
 {
   "mcpServers": {

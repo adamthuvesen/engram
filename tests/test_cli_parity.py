@@ -13,6 +13,7 @@ from engram import cli, server
 from engram.core.config import get_settings
 from engram.core.models import Fact, FactCategory, RecallRecord
 from engram.storage.store import AsyncFactStore, FactStore
+from tests.mcp_helpers import call_tool
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ def _seed(tmp: Path, facts: list[Fact]) -> FactStore:
 
 
 async def _mcp_call(app, tool_name: str, **kwargs):
-    return await app._call_tool_mcp(tool_name, kwargs)
+    return await call_tool(app, tool_name, kwargs)
 
 
 def _structured(result):
