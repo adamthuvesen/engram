@@ -6,4 +6,3 @@ __pycache__/
 .claude/
 test_live.py
 .DS_Store
-openspec/
