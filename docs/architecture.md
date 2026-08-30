@@ -33,8 +33,13 @@ dashboard/               Textual TUI (`engram-dash`)
 
 ## Data flow
 
-Natural language enters `extraction.observer`, which extracts structured facts.
-`storage.store` persists those facts as JSONL through `AsyncFactStore`.
+Natural language enters `extraction.observer`, which extracts coherent memory
+cards. One card represents one independently maintainable future-use context.
+A stable `memory_key` identifies later restatements of the same memory, while
+`retrieval_hints` preserve the language future queries may use. Cards from one
+input share a `source_group_id`, and deterministic within-batch consolidation
+joins accidental same-key fragments before persistence. `storage.store`
+persists the cards as fact records in JSONL through `AsyncFactStore`.
 `recall.retriever` runs deterministic fast paths first and escalates to
 a single broad LLM call for complex queries. A query with no prefilter match
 above the relevance floor escalates to a bounded tier-1 call over the top
@@ -48,5 +53,8 @@ key it answers "no relevant memories" at tier-0 with no LLM call.
 - litellm for model-agnostic LLM calls.
 - All MCP tools are async. Storage I/O is synchronous behind an
   `AsyncFactStore` `asyncio.to_thread` facade.
-- Facts have: category, content, confidence, timestamps, project scope,
-  supersession chain, source metadata.
+- Fact records have: memory key, content, retrieval hints, category,
+  confidence, timestamps, project scope, supersession and consolidation
+  provenance, and source metadata.
+- The MCP server and CLI are adapters over the same operations. MCP provides
+  local typed stdio tools for agents. The CLI serves humans and batch scripts.

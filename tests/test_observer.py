@@ -5,10 +5,14 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from engram.core.models import CandidateStatus, Fact, FactCategory
 from engram.extraction.observer import (
+    _consolidate_batch,
     _dedup,
     _find_near_matches,
+    _normalize_memory_key,
     extract_facts,
     suggest_memories,
 )
@@ -21,7 +25,147 @@ def _make_store() -> FactStore:
 
 
 def _structured(response_model, data):
+    if "facts" in data:
+        data = {**data, "excluded_claims": data.get("excluded_claims", [])}
+        facts = []
+        for index, fact in enumerate(data["facts"]):
+            content = fact.get("content", "missing content")
+            facts.append(
+                {
+                    "memory_key": f"test-memory-{index}",
+                    "project": None,
+                    "retrieval_hints": [content],
+                    "covered_claims": [content],
+                    "why_store": "Useful future context",
+                    **fact,
+                }
+            )
+        data["facts"] = facts
     return response_model.model_validate(data)
+
+
+def test_consolidate_batch_combines_fragments_with_same_memory_identity():
+    cards = [
+        Fact(
+            category=FactCategory.assistant_info,
+            memory_key="agent-memory-policy",
+            content="Store durable memories in Engram.",
+            tags=["memory"],
+            retrieval_hints=["where memories live"],
+            project="dotfiles",
+        ),
+        Fact(
+            category=FactCategory.assistant_info,
+            memory_key="agent-memory-policy",
+            content="Also store them in native memory when available.",
+            tags=["policy"],
+            retrieval_hints=["dual memory"],
+            project="dotfiles",
+        ),
+    ]
+
+    consolidated = _consolidate_batch(cards)
+
+    assert len(consolidated) == 1
+    assert "Store durable memories in Engram." in consolidated[0].content
+    assert "Also store them in native memory when available." in consolidated[0].content
+    assert consolidated[0].tags == ["memory", "policy"]
+    assert consolidated[0].retrieval_hints == [
+        "where memories live",
+        "dual memory",
+    ]
+
+
+def test_consolidate_batch_keeps_independent_memory_keys_separate():
+    cards = [
+        Fact(
+            category=FactCategory.decision,
+            memory_key="storage-format",
+            content="Use JSONL for storage.",
+        ),
+        Fact(
+            category=FactCategory.decision,
+            memory_key="retrieval-strategy",
+            content="Use tiered retrieval.",
+        ),
+    ]
+
+    assert len(_consolidate_batch(cards)) == 2
+
+
+def test_normalize_memory_key_produces_stable_slug():
+    assert _normalize_memory_key(" Agent Memory Policy! ") == "agent-memory-policy"
+
+
+def test_normalize_memory_key_rejects_empty_slug():
+    with pytest.raises(ValueError, match="letter or number"):
+        _normalize_memory_key("!!!")
+
+
+def test_extract_facts_preserves_per_card_project_scope(monkeypatch):
+    store = _make_store()
+
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
+    ):
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "memory_key": "atlas-package-manager",
+                        "content": "Atlas uses pnpm.",
+                        "category": "project",
+                        "project": "atlas",
+                    },
+                    {
+                        "memory_key": "beacon-package-manager",
+                        "content": "Beacon uses npm.",
+                        "category": "project",
+                        "project": "beacon",
+                    },
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
+
+    facts = asyncio.run(extract_facts("Atlas uses pnpm. Beacon uses npm.", store=store))
+
+    assert {fact.project for fact in facts} == {"atlas", "beacon"}
+
+
+def test_explicit_project_overrides_model_scope(monkeypatch):
+    store = _make_store()
+
+    async def fake_complete_model(
+        prompt: str, system: str, response_model, model: str | None = None
+    ):
+        assert "fixed the scope to project 'atlas'" in prompt
+        return _structured(
+            response_model,
+            {
+                "facts": [
+                    {
+                        "content": "Atlas uses PostgreSQL.",
+                        "category": "project",
+                        "project": "wrong-project",
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        "engram.extraction.observer.complete_model", fake_complete_model
+    )
+
+    facts = asyncio.run(
+        extract_facts("Atlas uses PostgreSQL.", project="atlas", store=store)
+    )
+
+    assert facts[0].project == "atlas"
 
 
 def test_suggest_memories_queues_pending_candidates(monkeypatch):
@@ -215,7 +359,7 @@ def test_extract_facts_accepts_async_store_for_dedup_and_persist(monkeypatch):
     assert old.confidence == 0.0
 
 
-def test_dedup_ignores_malformed_update_entries(monkeypatch):
+def test_dedup_retries_then_rejects_unclassified_candidates(monkeypatch):
     existing = [
         Fact(
             id="oldfact",
@@ -230,9 +374,13 @@ def test_dedup_ignores_malformed_update_entries(monkeypatch):
         )
     ]
 
+    calls = 0
+
     async def fake_complete_model(
         prompt: str, system: str, response_model, model: str | None = None
     ):
+        nonlocal calls
+        calls += 1
         return _structured(
             response_model,
             {
@@ -250,9 +398,10 @@ def test_dedup_ignores_malformed_update_entries(monkeypatch):
         "engram.extraction.observer.complete_model", fake_complete_model
     )
 
-    kept = asyncio.run(_dedup(candidates, existing, store=None))
+    with pytest.raises(ValueError, match="remained invalid"):
+        asyncio.run(_dedup(candidates, existing, store=None))
 
-    assert kept == candidates
+    assert calls == 2
 
 
 def test_extract_facts_dedup_respects_project_scope(monkeypatch):

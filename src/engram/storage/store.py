@@ -9,7 +9,7 @@ import sys
 import tempfile
 import threading
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -304,6 +304,8 @@ def format_facts_for_llm(facts: list[Fact]) -> str:
         meta = f"[{fact.category.value}]"
         if fact.project:
             meta += f" [{fact.project}]"
+        if fact.memory_key:
+            meta += f" [key: {fact.memory_key}]"
         if fact.confidence < 1.0:
             meta += f" [confidence: {fact.confidence:.1f}]"
         if fact.source_ref:
@@ -362,6 +364,10 @@ def _unique_ids(ids: list[str]) -> list[str]:
         seen.add(item_id)
         unique.append(item_id)
     return unique
+
+
+def _unique_strings(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
 
 
 @contextmanager
@@ -430,8 +436,11 @@ class FactStore:
     def __init__(self, data_dir: Path | None = None):
         self.data_dir = data_dir or get_settings().data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        # Cache: fact.id -> (updated_at_iso, unigrams, bigrams)
-        self._tok_cache: dict[str, tuple[str, set[str], set[str]]] = {}
+        # Cache: fact.id -> updated_at plus content and retrieval token sets.
+        self._tok_cache: dict[
+            str,
+            tuple[str, set[str], set[str], set[str], set[str]],
+        ] = {}
         self.recover_transactions()
 
     @property
@@ -624,13 +633,21 @@ class FactStore:
         recency_cutoff: datetime,
     ) -> tuple[int, int]:
         evidence_score = 0
-        content_unigrams, content_bigrams = self._get_cached_tokens(fact)
+        (
+            content_unigrams,
+            content_bigrams,
+            hint_unigrams,
+            hint_bigrams,
+        ) = self._get_cached_tokens(fact)
 
         evidence_score += len(query_unigrams & content_unigrams) * 5
         evidence_score += len(query_bigrams & content_bigrams) * 3
 
         tag_set = {_stem(tag) for tag in fact.tags}
         evidence_score += len(query_unigrams & tag_set) * 4
+
+        evidence_score += len(query_unigrams & hint_unigrams) * 4
+        evidence_score += len(query_bigrams & hint_bigrams) * 2
 
         if fact.project and fact.project in query_lower:
             evidence_score += 6
@@ -982,6 +999,8 @@ class FactStore:
         *,
         category: FactCategory | None = None,
         tags: list[str] | None = None,
+        memory_key: str | None = None,
+        retrieval_hints: list[str] | None = None,
         project: str | None = None,
         reason: str = "",
     ) -> Fact | None:
@@ -1004,6 +1023,9 @@ class FactStore:
             new_fact = Fact(
                 id=uuid4().hex[:12],
                 category=category or existing.category,
+                memory_key=(
+                    memory_key if memory_key is not None else existing.memory_key
+                ),
                 content=new_content,
                 source=existing.source,
                 confidence=existing.confidence,
@@ -1012,8 +1034,16 @@ class FactStore:
                 observed_at=now,
                 project=project if project is not None else existing.project,
                 tags=tags if tags is not None else list(existing.tags),
+                retrieval_hints=(
+                    list(retrieval_hints)
+                    if retrieval_hints is not None
+                    else list(existing.retrieval_hints)
+                ),
+                source_group_id=existing.source_group_id,
                 supersedes=fact_id,
+                consolidates=list(existing.consolidates),
                 evidence_kind=existing.evidence_kind,
+                source_ref=existing.source_ref,
                 why_store=reason or existing.why_store,
             )
             self.append_events(
@@ -1056,6 +1086,8 @@ class FactStore:
         *,
         category: FactCategory | None,
         tags: list[str] | None,
+        memory_key: str | None,
+        retrieval_hints: list[str] | None,
         project: str | None,
         reason: str,
         now: datetime,
@@ -1064,6 +1096,7 @@ class FactStore:
         return Fact(
             id=uuid4().hex[:12],
             category=category or primary.category,
+            memory_key=memory_key if memory_key is not None else primary.memory_key,
             content=merged_content,
             source=primary.source,
             confidence=max(fact.confidence for fact in sources),
@@ -1072,8 +1105,28 @@ class FactStore:
             observed_at=now,
             project=project if project is not None else primary.project,
             tags=tags if tags is not None else list(primary.tags),
+            retrieval_hints=(
+                _unique_strings(retrieval_hints)[:5]
+                if retrieval_hints is not None
+                else _unique_strings(
+                    hint for fact in sources for hint in fact.retrieval_hints
+                )[:5]
+            ),
+            source_group_id=(
+                primary.source_group_id
+                if all(
+                    fact.source_group_id == primary.source_group_id for fact in sources
+                )
+                else None
+            ),
             supersedes=primary.id,
+            consolidates=_unique_strings(
+                source_id
+                for fact in sources
+                for source_id in [fact.id, *fact.consolidates]
+            ),
             evidence_kind=primary.evidence_kind,
+            source_ref=primary.source_ref,
             why_store=reason or "merged",
         )
 
@@ -1111,6 +1164,8 @@ class FactStore:
         *,
         category: FactCategory | None = None,
         tags: list[str] | None = None,
+        memory_key: str | None = None,
+        retrieval_hints: list[str] | None = None,
         project: str | None = None,
         reason: str = "",
     ) -> tuple[Fact, list[str]] | None:
@@ -1141,6 +1196,8 @@ class FactStore:
                 merged_content,
                 category=category,
                 tags=tags,
+                memory_key=memory_key,
+                retrieval_hints=retrieval_hints,
                 project=project,
                 reason=reason,
                 now=now,
@@ -1652,15 +1709,25 @@ class FactStore:
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
 
-    def _get_cached_tokens(self, fact: Fact) -> tuple[set[str], set[str]]:
-        """Return cached stemmed unigram/bigram sets, recomputing if stale."""
+    def _get_cached_tokens(
+        self, fact: Fact
+    ) -> tuple[set[str], set[str], set[str], set[str]]:
+        """Return cached content and retrieval-metadata token sets."""
         updated_iso = fact.updated_at.isoformat()
         cached = self._tok_cache.get(fact.id)
         if cached and cached[0] == updated_iso:
-            return cached[1], cached[2]
+            return cached[1], cached[2], cached[3], cached[4]
         unigrams, bigrams = self._tokenize_extended(fact.content)
-        self._tok_cache[fact.id] = (updated_iso, unigrams, bigrams)
-        return unigrams, bigrams
+        hint_text = " ".join([fact.memory_key, *fact.retrieval_hints])
+        hint_unigrams, hint_bigrams = self._tokenize_extended(hint_text)
+        self._tok_cache[fact.id] = (
+            updated_iso,
+            unigrams,
+            bigrams,
+            hint_unigrams,
+            hint_bigrams,
+        )
+        return unigrams, bigrams, hint_unigrams, hint_bigrams
 
     def _tokenize_extended(self, text: str) -> tuple[set[str], set[str]]:
         """Tokenize text into stemmed unigrams and bigrams.

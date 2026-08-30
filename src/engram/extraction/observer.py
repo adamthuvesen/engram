@@ -1,8 +1,11 @@
 """Observer agent — extracts structured facts from raw text."""
 
 import logging
+import re
+from collections.abc import Iterable
 from collections import defaultdict
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -11,6 +14,7 @@ from engram.core.models import (
     CandidateStatus,
     EvidenceKind,
     Fact,
+    FactCategory,
     MemoryCandidate,
 )
 from engram.storage.store import (
@@ -24,12 +28,29 @@ from engram.core.structured_outputs import DedupResponse, ExtractionResponse
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_SYSTEM = """You are a knowledge extraction agent. Your job is to extract discrete,
-structured facts from user input. Each fact should be:
-- Self-contained (understandable without the original context)
+EXTRACTION_SYSTEM = """You are a durable-memory extraction agent. Extract the minimum set
+of independently useful memory cards from the input.
+
+A memory card captures one future-use context: a policy, decision with rationale,
+workflow, pitfall with remedy, stable preference, correction, or project constraint.
+It may contain several coupled clauses. Split cards only when the claims can be
+corrected, contradicted, expired, or acted on independently. Never split a policy
+or workflow into sentence-level fragments merely because it contains several rules.
+
+Store a card only when it is durable, non-obvious, actionable, and likely to change
+future agent behavior. Exclude progress updates, routine implementation details,
+guesses, one-off failures, secrets, and facts already obvious from the referenced
+code or docs. Preserve every durable claim by mapping it to exactly one card.
+
+Each card must be:
+- Self-contained and understandable without the original context
 - Categorized into exactly one category
 - Written in third person ("The user prefers..." not "I prefer...")
-- Specific and actionable, not vague
+- Specific and actionable
+- Assigned a stable semantic memory_key such as "agent-memory-policy" or
+  "snowflake-read-only". Use the same key when later wording updates the same memory
+- Given 1-5 retrieval_hints phrased as terms or questions a future agent may use
+- Linked to the durable source claims it covers
 
 Categories:
 - personal_info: User identity, role, team, responsibilities
@@ -44,24 +65,36 @@ Categories:
 - workflow: Reusable patterns, tool locations, process knowledge
 
 Return a JSON object with a "facts" array. Each fact has:
+- "memory_key": stable lowercase semantic identity for this memory card
 - "content": the fact as a clear sentence
 - "category": one of the categories above
+- "project": repository or project scope when the claim is project-specific, null for global memories
 - "tags": 1-3 relevant tags (lowercase)
+- "retrieval_hints": 1-5 likely search phrases or questions
+- "covered_claims": the durable source claims preserved by this card
 - "why_store": one short reason this would be useful for future agent behavior
 - "effective_at": ISO datetime if the fact became true at a known time, null otherwise
 - "expires_at": ISO datetime if this is temporal/time-bound, null otherwise
 
+Also return "excluded_claims", a list of {"claim": ..., "reason": ...} entries for
+source claims intentionally omitted. This coverage ledger is reviewed but not stored.
+
 Example output:
 {"facts": [
-  {"content": "The user works on a data platform team", "category": "personal_info", "tags": ["team", "role"], "why_store": "Useful background for project context", "effective_at": null, "expires_at": null},
-  {"content": "The user prefers polars over pandas for large datasets", "category": "preference", "tags": ["python", "data"], "why_store": "Guides future tool and library choices", "effective_at": null, "expires_at": null}
+  {"memory_key": "dataframe-library-preference", "content": "The user prefers Polars over pandas for large datasets because its execution model fits their workloads.", "category": "preference", "project": null, "tags": ["python", "data"], "retrieval_hints": ["preferred dataframe library", "polars or pandas", "large dataset tooling"], "covered_claims": ["Prefer Polars over pandas for large datasets", "The preference is based on workload fit"], "why_store": "Guides future library choices", "effective_at": null, "expires_at": null}
+], "excluded_claims": [
+  {"claim": "The current migration is 60% complete", "reason": "Transient progress state"}
 ]}"""
 
-DEDUP_SYSTEM = """You are a deduplication agent. Given a list of EXISTING facts and a list of
-NEW facts, identify which new facts are:
-1. Duplicates of existing facts (same information, possibly different wording)
-2. Updates to existing facts (newer version of the same knowledge)
-3. Genuinely new facts
+DEDUP_SYSTEM = """You are a memory-card deduplication agent. Given EXISTING cards and
+NEW cards, identify which new cards are:
+1. Duplicates of existing cards (same memory_key and same meaning)
+2. Updates to existing cards (same memory_key, newer or materially changed meaning)
+3. Genuinely new cards
+
+Cards with different memory_key values are related but distinct unless one key is
+clearly malformed. Do not merge complementary policies merely because they share
+terms or tags.
 
 Return a JSON object with:
 - "new": list of indices (0-based) of genuinely new facts to add
@@ -130,7 +163,20 @@ async def _extract_candidate_facts(
     project: str | None,
 ) -> list[Fact]:
     """Run extraction without persisting the results."""
-    prompt = f"Extract structured facts from the following input:\n\n{content}"
+    if project is None:
+        scope_instruction = (
+            "Infer each card's project from the input. Use null only for truly "
+            "cross-project or personal memories."
+        )
+    else:
+        scope_instruction = (
+            f"The caller fixed the scope to project {project!r}. Return that exact "
+            "project value for every card."
+        )
+    prompt = (
+        f"{scope_instruction}\n\n"
+        f"Extract structured facts from the following input:\n\n{content}"
+    )
     try:
         result = await complete_model(
             prompt=prompt,
@@ -147,14 +193,17 @@ async def _extract_candidate_facts(
         return []
 
     now = datetime.now(timezone.utc)
+    source_group_id = uuid4().hex[:12]
     extracted: list[Fact] = []
     for raw in raw_facts:
         fact = Fact(
             category=raw.category,
+            memory_key=_normalize_memory_key(raw.memory_key),
             content=raw.content,
             source=source,
-            project=project,
+            project=project if project is not None else raw.project,
             tags=raw.tags,
+            retrieval_hints=raw.retrieval_hints,
             created_at=now,
             updated_at=now,
             observed_at=now,
@@ -162,11 +211,98 @@ async def _extract_candidate_facts(
             expires_at=raw.expires_at,
             evidence_kind=_infer_evidence_kind(source),
             source_ref=source,
+            source_group_id=source_group_id,
             why_store=raw.why_store,
         )
         extracted.append(fact)
 
-    return extracted
+    consolidated = _consolidate_batch(extracted)
+    logger.info(
+        "Extraction coverage: %d durable claim(s), %d excluded claim(s), "
+        "%d raw card(s), %d consolidated card(s)",
+        sum(len(raw.covered_claims) for raw in raw_facts),
+        len(result.excluded_claims),
+        len(extracted),
+        len(consolidated),
+    )
+    return consolidated
+
+
+def _normalize_memory_key(value: str) -> str:
+    """Normalize a model-supplied semantic identity into a stable key."""
+    normalized = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    if not normalized:
+        raise ValueError("memory_key must contain at least one letter or number")
+    return normalized[:120]
+
+
+def _consolidate_batch(facts: list[Fact]) -> list[Fact]:
+    """Combine sibling cards with the same identity and lifecycle.
+
+    The extraction prompt should normally emit one card per memory key. This
+    deterministic pass preserves every clause when the model returns multiple
+    fragments for the same card.
+    """
+    by_identity: dict[
+        tuple[str | None, FactCategory, str, datetime | None, datetime | None],
+        list[Fact],
+    ] = defaultdict(list)
+    order: list[
+        tuple[str | None, FactCategory, str, datetime | None, datetime | None]
+    ] = []
+    seen_content: set[str] = set()
+
+    for fact in facts:
+        content_key = _content_hash(fact.content)
+        if content_key in seen_content:
+            continue
+        seen_content.add(content_key)
+        identity = (
+            fact.project,
+            fact.category,
+            fact.memory_key,
+            fact.effective_at,
+            fact.expires_at,
+        )
+        if identity not in by_identity:
+            order.append(identity)
+        by_identity[identity].append(fact)
+
+    return [_merge_sibling_cards(by_identity[identity]) for identity in order]
+
+
+def _merge_sibling_cards(cards: list[Fact]) -> Fact:
+    primary = cards[0]
+    if len(cards) == 1:
+        return primary
+
+    contents: list[str] = []
+    seen: set[str] = set()
+    for card in cards:
+        normalized = _content_hash(card.content)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        contents.append(card.content.strip())
+
+    return primary.model_copy(
+        update={
+            "content": " ".join(contents),
+            "tags": _ordered_unique(tag for card in cards for tag in card.tags)[:5],
+            "retrieval_hints": _ordered_unique(
+                hint for card in cards for hint in card.retrieval_hints
+            )[:5],
+            "why_store": max(
+                (card.why_store for card in cards),
+                key=len,
+                default=primary.why_store,
+            ),
+        }
+    )
+
+
+def _ordered_unique(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
 
 
 async def _dedup(
@@ -183,15 +319,33 @@ async def _dedup(
     if not near_matches:
         return after_exact
 
-    result = await complete_model(
-        prompt=_dedup_prompt(after_exact, near_matches),
-        system=DEDUP_SYSTEM,
-        response_model=DedupResponse,
-    )
+    prompt = _dedup_prompt(after_exact, near_matches)
+    for attempt in range(2):
+        result = await complete_model(
+            prompt=prompt,
+            system=DEDUP_SYSTEM,
+            response_model=DedupResponse,
+        )
+        new_indices = _valid_dedup_indices(result.new, after_exact)
+        duplicate_indices = _valid_dedup_indices(result.duplicates, after_exact)
+        raw_update_map = _dedup_update_map(result, after_exact, near_matches)
+        issue = _dedup_classification_issue(
+            len(after_exact),
+            new_indices,
+            duplicate_indices,
+            set(raw_update_map),
+        )
+        if issue is None:
+            break
+        if attempt == 0:
+            logger.warning("Retrying incomplete dedup response: %s", issue)
+            prompt += (
+                "\n\nYour prior response was incomplete. Classify every candidate "
+                "exactly once as new, duplicate, or update."
+            )
+    else:
+        raise ValueError(f"Dedup response remained invalid after retry: {issue}")
 
-    new_indices = _valid_dedup_indices(result.new, after_exact)
-    duplicate_indices = _valid_dedup_indices(result.duplicates, after_exact)
-    raw_update_map = _dedup_update_map(result, after_exact, near_matches)
     resolved_update_map = _resolve_update_collisions(raw_update_map, after_exact)
 
     return await _apply_dedup_decisions(
@@ -202,6 +356,25 @@ async def _dedup(
         resolved_update_map,
         store,
     )
+
+
+def _dedup_classification_issue(
+    candidate_count: int,
+    new_indices: set[int],
+    duplicate_indices: set[int],
+    update_indices: set[int],
+) -> str | None:
+    groups = [new_indices, duplicate_indices, update_indices]
+    overlaps = set().union(
+        new_indices & duplicate_indices,
+        new_indices & update_indices,
+        duplicate_indices & update_indices,
+    )
+    classified = set().union(*groups)
+    missing = set(range(candidate_count)) - classified
+    if overlaps or missing:
+        return f"overlapping={sorted(overlaps)}, missing={sorted(missing)}"
+    return None
 
 
 def _drop_exact_duplicates(candidates: list[Fact], existing: list[Fact]) -> list[Fact]:
@@ -302,10 +475,7 @@ async def _apply_dedup_decisions(
         elif i in dropped_update_indices:
             continue
         else:
-            logger.warning(
-                "Dedup response did not classify candidate %d, keeping it", i
-            )
-            kept.append(fact)
+            raise AssertionError(f"Validated dedup response omitted candidate {i}")
 
     return kept
 
@@ -364,7 +534,11 @@ async def _update_fact(
 
 def _format_fact_for_dedup(fact: Fact) -> str:
     project = fact.project if fact.project is not None else "(global)"
-    return f"[id:{fact.id}] [{fact.category.value}] [project:{project}] {fact.content}"
+    key = fact.memory_key or "(legacy)"
+    return (
+        f"[id:{fact.id}] [{fact.category.value}] [project:{project}] "
+        f"[memory_key:{key}] {fact.content}"
+    )
 
 
 def _find_near_matches(candidates: list[Fact], existing: list[Fact]) -> list[Fact]:
@@ -385,6 +559,15 @@ def _find_near_matches(candidates: list[Fact], existing: list[Fact]) -> list[Fac
 
     near: list[Fact] = []
     for fact in existing:
+        if any(
+            candidate.memory_key
+            and candidate.memory_key == fact.memory_key
+            and candidate.category == fact.category
+            and candidate.project == fact.project
+            for candidate in candidates
+        ):
+            near.append(fact)
+            continue
         normalized = fact.content.lower().replace("_", " ").replace("-", " ")
         fact_tokens = {_stem(t) for t in _TOKEN_RE.findall(normalized)}
         if not fact_tokens:

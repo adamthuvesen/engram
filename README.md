@@ -13,9 +13,13 @@ it escalates to tier-1 over the top raw-scored candidates, so a paraphrase that
 shares no words with a stored fact can still be found. There are no embeddings
 and no vector database.
 
-Facts start as natural language, then an LLM extracts structured records onto
-disk. Every fact keeps its source, supersession chain, and confidence. The store
-is event-sourced: a plain append-only JSONL event log you can read with `cat`.
+Memories start as natural language, then an LLM extracts the minimum set of
+coherent memory cards onto disk. A card may contain several coupled clauses.
+Engram splits cards only when the claims can be corrected, contradicted,
+expired, or acted on independently. Every card keeps a stable `memory_key`,
+retrieval hints, source grouping, consolidation provenance, supersession chain,
+and confidence. The store is event-sourced: a plain append-only JSONL event log
+you can inspect directly.
 
 | Tier | When it runs | LLM calls |
 | --- | --- | ---: |
@@ -32,6 +36,12 @@ call and no error.
 1. **Store**: natural language in, structured facts out, appended to a JSONL event log.
 2. **Review** (optional): queue suggestions as candidates before they become recallable.
 3. **Recall**: prefilter, route by score distribution, then call the LLM only when needed.
+
+The MCP server and CLI share the same operation layer. MCP is the agent-facing
+interface because clients get typed local tools over stdio with a persistent
+process. The CLI is the faster interface for humans, scripts, audits, and batch
+maintenance. Neither adds network transport, and model inference dominates the
+latency of extraction and complex recall.
 
 ## No-key demo
 
@@ -103,6 +113,21 @@ Reproduce the deterministic no-key run:
 
 ```bash
 uv run python tests/run_evals.py
+```
+
+Extraction has a separate no-key contract fixture for claim coverage, card
+precision, fragmentation, transient exclusion, stable keys, and retrieval
+hints. Its gold outputs test the scorer and required quality floor:
+
+```bash
+uv run python tests/run_extraction_quality_evals.py
+```
+
+Run the same labels through the real extraction and dedup path when provider
+credentials are available:
+
+```bash
+uv run python tests/run_extraction_quality_evals.py --live
 ```
 
 ## Cross-project recall quality
@@ -196,7 +221,10 @@ engram recall-trace "what does alex prefer for editors?" --json   # + prompt/out
 engram doctor --check-provider --json
 engram inspect --include-stale --json --limit 50
 engram correct-memory <fact_id> "new content" --reason "user updated"
-engram merge-memories <id1> <id2> --content "merged" --reason "dedupe"
+engram merge-memories <id1> <id2> --content "merged" \
+  --memory-key "editor-preference" \
+  --retrieval-hints "preferred editor" "editor setup" \
+  --reason "dedupe"
 engram audit-memories --json                                      # read-only suggestions
 engram sync --json                                                 # git-backed pull + push
 ```

@@ -31,3 +31,11 @@ stats view renders `-` for any column with no data. Recall logs stamp each
 record with the selector version that routed it (currently `"v3"`: the v2
 thresholds plus zero-hit escalation), so `recall_stats` can compare tier mixes
 across selector versions.
+
+`edit_fact`, `correct_memory`, and `merge_memories` accept `memory_key` and
+`retrieval_hints` where relevant. `merge_memories` returns `consolidates`, the
+complete source-ID list retained on the new card for provenance.
+
+The MCP process uses local stdio. It exists for typed discovery and persistent
+agent integration, not as a network service. The `engram` CLI exposes the same
+operations for direct inspection, scripting, and batch maintenance.

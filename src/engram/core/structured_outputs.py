@@ -14,20 +14,32 @@ class StructuredOutput(BaseModel):
 
 
 class ExtractedFact(StructuredOutput):
-    """One fact proposed by the extraction prompt."""
+    """One coherent memory card proposed by the extraction prompt."""
 
+    memory_key: str = Field(min_length=3, max_length=120)
     content: str
     category: FactCategory
+    project: str | None = None
     tags: list[str] = Field(default_factory=list)
-    why_store: str = ""
+    retrieval_hints: list[str] = Field(min_length=1, max_length=5)
+    covered_claims: list[str] = Field(min_length=1)
+    why_store: str = Field(min_length=1)
     effective_at: datetime | None = None
     expires_at: datetime | None = None
 
 
+class ExcludedClaim(StructuredOutput):
+    """One source claim intentionally excluded from durable memory."""
+
+    claim: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 class ExtractionResponse(StructuredOutput):
-    """Response shape for fact extraction."""
+    """Response shape for memory-card extraction."""
 
     facts: list[ExtractedFact] = Field(default_factory=list)
+    excluded_claims: list[ExcludedClaim] = Field(default_factory=list)
 
 
 class DedupUpdate(StructuredOutput):

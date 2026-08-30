@@ -79,6 +79,7 @@ class FactBase(BaseModel):
 
     id: str = Field(default_factory=lambda: uuid4().hex[:12])
     category: FactCategory
+    memory_key: str = ""
     content: str
     source: str = "conversation"
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
@@ -88,8 +89,11 @@ class FactBase(BaseModel):
     effective_at: datetime | None = None
     expires_at: datetime | None = None
     tags: list[str] = Field(default_factory=list)
+    retrieval_hints: list[str] = Field(default_factory=list)
     project: str | None = None
+    source_group_id: str | None = None
     supersedes: str | None = None
+    consolidates: list[str] = Field(default_factory=list)
     evidence_kind: EvidenceKind = EvidenceKind.unknown
     source_ref: str | None = None
     why_store: str = ""
@@ -100,7 +104,7 @@ class FactBase(BaseModel):
 
 
 class Fact(FactBase):
-    """Atomic unit of knowledge in the memory store."""
+    """One coherent, independently maintainable memory card."""
 
     pass
 
@@ -169,6 +173,7 @@ EVENT_LOG_META_VERSION = "event-log-v1"
 EDITABLE_FACT_FIELDS = frozenset(
     {
         "category",
+        "memory_key",
         "content",
         "source",
         "confidence",
@@ -176,7 +181,9 @@ EDITABLE_FACT_FIELDS = frozenset(
         "effective_at",
         "expires_at",
         "tags",
+        "retrieval_hints",
         "project",
+        "source_group_id",
         "supersedes",
         "evidence_kind",
         "source_ref",

@@ -113,6 +113,25 @@ def test_audit_respects_project_boundaries_for_duplicates():
     assert result.suggestions == []
 
 
+def test_audit_does_not_merge_related_cards_with_distinct_memory_keys():
+    facts = [
+        _fact(
+            "policy-store",
+            "Store qualifying durable memories in Engram and native memory",
+            category=FactCategory.assistant_info,
+        ).model_copy(update={"memory_key": "memory-storage-policy"}),
+        _fact(
+            "policy-correct",
+            "Correct Engram and native memory when a durable fact changes",
+            category=FactCategory.assistant_info,
+        ).model_copy(update={"memory_key": "memory-correction-policy"}),
+    ]
+
+    result = audit_facts(facts, now=NOW)
+
+    assert result.suggestions == []
+
+
 def test_audit_flags_expired_facts_without_mutating_store(tmp_path):
     store = FactStore(data_dir=tmp_path)
     expired = _fact(

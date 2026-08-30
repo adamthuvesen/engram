@@ -548,6 +548,29 @@ def test_prefilter_facts_prioritizes_matching_content():
     assert "polars" in top_fact.content.lower()
 
 
+def test_prefilter_uses_memory_key_and_retrieval_hints():
+    store = _make_store()
+    hinted = Fact(
+        id="hinted-memory",
+        category=FactCategory.workflow,
+        memory_key="projection-regeneration",
+        content="Run the canonical generator after changing shared instructions.",
+        retrieval_hints=["refresh generated agent copies"],
+    )
+    unrelated = Fact(
+        id="unrelated-memory",
+        category=FactCategory.workflow,
+        memory_key="release-process",
+        content="Tag releases after the checks pass.",
+    )
+    store.append_facts([unrelated, hinted])
+
+    results = store.prefilter_facts("How do I refresh generated agent copies?")
+
+    assert results[0][1].id == hinted.id
+    assert results[0][0] >= 5
+
+
 def test_prefilter_bigram_and_normalization():
     """Bigrams and underscore normalization catch near-misses."""
     store = _make_store()
