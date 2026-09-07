@@ -22,6 +22,13 @@ SuggestionAction = Literal["merge_memories", "mark_stale", "review_contradiction
 
 DEFAULT_TEMPORAL_STALE_DAYS = 30
 
+# Facts carrying this tag are durable conventions that keep trigger wording
+# (e.g. "temporary" in "temporary FactStore test fixtures") or old example
+# dates by design. The tag exempts the age/wording and dated-window
+# heuristics below, but NOT an explicit expires_at that has passed: an
+# explicit expiry is an explicit instruction and still flags.
+EVERGREEN_TAG = "evergreen"
+
 _TEMPORAL_STALE_RE = re.compile(
     r"\b("
     r"currently|temporary|temporarily|right now|today|tomorrow|yesterday|"
@@ -358,6 +365,9 @@ def _stale_reason(
 ) -> str | None:
     if fact.expires_at is not None and _aware(fact.expires_at) <= now:
         return f"fact expired at {fact.expires_at.date().isoformat()}"
+
+    if any(tag.lower() == EVERGREEN_TAG for tag in fact.tags):
+        return None
 
     observed_at = _aware(fact.observed_at)
     age_days = (now - observed_at).days
