@@ -22,6 +22,7 @@ def _fact(
     project: str | None = "engram",
     observed_days_ago: int = 0,
     expires_days_ago: int | None = None,
+    tags: list[str] | None = None,
 ) -> Fact:
     observed_at = NOW - timedelta(days=observed_days_ago)
     expires_at = None
@@ -35,7 +36,7 @@ def _fact(
         observed_at=observed_at,
         updated_at=observed_at,
         expires_at=expires_at,
-        tags=["audit"],
+        tags=["audit"] if tags is None else tags,
     )
 
 
@@ -164,6 +165,70 @@ def test_expired_facts_do_not_participate_in_duplicate_groups():
     ]
 
     result = audit_facts(facts, now=NOW)
+
+    assert [suggestion.kind for suggestion in result.suggestions] == ["stale"]
+
+
+def test_evergreen_tag_exempts_temporal_wording_from_stale():
+    facts = [
+        _fact(
+            "evergreen-wording",
+            "Currently using the temporary FactStore test fixtures",
+            category=FactCategory.workflow,
+            observed_days_ago=90,
+            tags=["audit", "evergreen"],
+        ),
+        _fact(
+            "plain-wording",
+            "Currently using the temporary auth migration branch",
+            category=FactCategory.workflow,
+            observed_days_ago=90,
+        ),
+    ]
+
+    result = audit_facts(facts, now=NOW)
+    stale_ids = [
+        fact_id
+        for suggestion in result.suggestions
+        if suggestion.kind == "stale"
+        for fact_id in suggestion.fact_ids
+    ]
+
+    assert "evergreen-wording" not in stale_ids
+    assert "plain-wording" in stale_ids
+
+
+def test_evergreen_tag_exempts_passed_dated_window_from_stale():
+    result = audit_facts(
+        [
+            _fact(
+                "evergreen-window",
+                "Mobile release freeze runs until 2026-05-01",
+                category=FactCategory.event,
+                project=None,
+                tags=["audit", "evergreen"],
+            ),
+        ],
+        now=NOW,
+    )
+
+    assert result.suggestions == []
+
+
+def test_evergreen_tag_does_not_exempt_explicit_expiry():
+    result = audit_facts(
+        [
+            _fact(
+                "evergreen-expired",
+                "Durable convention note",
+                category=FactCategory.event,
+                project=None,
+                expires_days_ago=10,
+                tags=["audit", "evergreen"],
+            ),
+        ],
+        now=NOW,
+    )
 
     assert [suggestion.kind for suggestion in result.suggestions] == ["stale"]
 
