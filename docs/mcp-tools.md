@@ -36,6 +36,8 @@ across selector versions.
 `retrieval_hints` where relevant. `merge_memories` returns `consolidates`, the
 complete source-ID list retained on the new card for provenance.
 
-The MCP process uses local stdio. It exists for typed discovery and persistent
-agent integration, not as a network service. The `engram` CLI exposes the same
+The MCP process uses local stdio, or stateless streamable HTTP on loopback via
+`engram serve --transport http` (default `http://127.0.0.1:7422/mcp`) so many
+clients can share one long-lived daemon. It exists for typed discovery and
+persistent agent integration, not as a remote network service. The `engram` CLI exposes the same
 operations for direct inspection, scripting, and batch maintenance.

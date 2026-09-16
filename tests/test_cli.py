@@ -52,6 +52,33 @@ def test_is_cli_invocation_true_for_unknown_argv():
     assert cli.is_cli_invocation(["mysterious"]) is True
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["serve"], {"transport": "stdio", "host": "127.0.0.1", "port": 7422}),
+        (
+            ["serve", "--transport", "http"],
+            {"transport": "http", "host": "127.0.0.1", "port": 7422},
+        ),
+        (
+            ["serve", "--transport", "http", "--host", "0.0.0.0", "--port", "7432"],
+            {"transport": "http", "host": "0.0.0.0", "port": 7432},
+        ),
+    ],
+)
+def test_serve_starts_server_with_requested_transport(monkeypatch, argv, expected):
+    calls: list[dict] = []
+    monkeypatch.setattr("engram.server.main", lambda **kwargs: calls.append(kwargs))
+
+    assert cli.main_dispatch(argv) == cli.EXIT_OK
+    assert calls == [expected]
+
+
+def test_serve_rejects_unknown_transport(capsys):
+    assert cli.run(["serve", "--transport", "sse"]) == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
 def test_cli_normalizes_only_top_level_help():
     assert cli._normalize_argv(["help"]) == ["--help"]
     assert cli._normalize_argv(["--json", "help"]) == ["--help"]

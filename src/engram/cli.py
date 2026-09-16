@@ -8,7 +8,11 @@ import sys
 from collections.abc import Callable, Coroutine
 from typing import Any, Sequence
 
-from engram.core.config import configure_logging
+from engram.core.config import (
+    DEFAULT_HTTP_HOST,
+    DEFAULT_HTTP_PORT,
+    configure_logging,
+)
 from engram.core.interfaces import Envelope, storage_error, validation_error
 from engram.operations import (
     EXIT_DOCTOR_ERROR,
@@ -82,7 +86,8 @@ ALIASES = {
     "unstale": "unmark-stale",
 }
 
-CLI_SUBCOMMANDS = CANONICAL_COMMANDS | frozenset(ALIASES)
+# `serve` runs the server itself, so it has no MCP tool and is not canonical.
+CLI_SUBCOMMANDS = CANONICAL_COMMANDS | frozenset(ALIASES) | frozenset({"serve"})
 
 
 def _emit(result: OperationResult, *, as_json: bool, out=None) -> int:
@@ -504,6 +509,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Timeout in seconds for each underlying git invocation.",
     )
     _add_json_flag(p_sync)
+
+    p_serve = sub.add_parser("serve", help="Run the MCP server")
+    p_serve.add_argument("--transport", choices=("stdio", "http"), default="stdio")
+    p_serve.add_argument(
+        "--host",
+        default=DEFAULT_HTTP_HOST,
+        help=f"HTTP bind host (default: {DEFAULT_HTTP_HOST})",
+    )
+    p_serve.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_HTTP_PORT,
+        help=f"HTTP bind port (default: {DEFAULT_HTTP_PORT})",
+    )
     return parser
 
 
@@ -534,6 +553,11 @@ def run(argv: Sequence[str] | None = None) -> int:
     if args.cmd is None:
         parser.print_help()
         return EXIT_OK
+    if args.cmd == "serve":
+        from engram.server import main as server_main
+
+        server_main(transport=args.transport, host=args.host, port=args.port)
+        return EXIT_OK
 
     handler = HANDLERS[args.cmd]
     try:
@@ -556,7 +580,8 @@ def is_cli_invocation(argv: Sequence[str]) -> bool:
 
     Bare ``engram`` (no args) starts the MCP stdio server; anything else is
     treated as a CLI invocation so typos surface as argparse errors instead of
-    silently launching a long-running stdio process.
+    silently launching a long-running stdio process. ``engram serve`` is parsed
+    by the CLI and starts the server with the requested transport.
     """
     return bool(argv)
 

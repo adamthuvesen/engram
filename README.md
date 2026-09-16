@@ -38,10 +38,10 @@ call and no error.
 3. **Recall**: prefilter, route by score distribution, then call the LLM only when needed.
 
 The MCP server and CLI share the same operation layer. MCP is the agent-facing
-interface because clients get typed local tools over stdio with a persistent
-process. The CLI is the faster interface for humans, scripts, audits, and batch
-maintenance. Neither adds network transport, and model inference dominates the
-latency of extraction and complex recall.
+interface because clients get typed local tools from a persistent process, over
+stdio or a loopback HTTP daemon. The CLI is the faster interface for humans,
+scripts, audits, and batch maintenance. Model inference dominates the latency of
+extraction and complex recall.
 
 ## No-key demo
 
@@ -161,12 +161,15 @@ Measured on the committed fixture:
 uv sync --extra dev        # install (omit --extra dev for runtime only)
 uv run engram              # no args → start the MCP server (stdio)
 uv run engram --help       # any args → CLI; this lists the subcommands
+uv run engram serve --transport http   # shared daemon at http://127.0.0.1:7422/mcp
 uv run engram-dash         # terminal dashboard for browsing memory
 ```
 
 Bare `engram` (no arguments) launches the MCP stdio server. Anything else is
 treated as a CLI invocation, so a typo surfaces as an argparse error instead of
-silently starting a long-running server.
+silently starting a long-running server. `engram serve` starts the server
+explicitly: `--transport stdio` (the default) or `--transport http` with
+`--host` (default `127.0.0.1`) and `--port` (default `7422`).
 
 No-key paths:
 
@@ -196,8 +199,10 @@ Point your MCP client at the `engram` entrypoint. Since bare `engram` starts the
 server, the command is `uv run` in the repo:
 
 Engram pins FastMCP 4.0.0b2 so clients can negotiate MCP `2026-07-28` or an
-older protocol revision. Engram still uses stdio, so the new sessionless HTTP
-deployment rules do not change its local configuration.
+older protocol revision. Over HTTP, `engram serve` runs stateless streamable
+HTTP at `/mcp`: the server keeps no MCP session, so clients keep working across a
+daemon restart. One process then serves every client, so concurrent tool calls
+share one store and its in-process locks.
 
 ```json
 {

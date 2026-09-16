@@ -1485,9 +1485,7 @@ class FactStore:
                     EventLogMeta(created_at=now),
                     [_compaction_created_event(fact.id, fact) for fact in kept],
                 )
-                kept_ids = {fact.id for fact in kept}
-                for stale_id in [key for key in self._tok_cache if key not in kept_ids]:
-                    del self._tok_cache[stale_id]
+                self._evict_token_cache_except({fact.id for fact in kept})
                 logger.info("Purged %d facts (%d retained)", purged, len(kept))
 
             return {"purged": purged, "retained": len(kept)}
@@ -1681,9 +1679,7 @@ class FactStore:
                 EventLogMeta(),
                 [_compaction_created_event(fact.id, fact) for fact in facts],
             )
-            kept_ids = {fact.id for fact in facts}
-            for stale_id in [key for key in self._tok_cache if key not in kept_ids]:
-                del self._tok_cache[stale_id]
+            self._evict_token_cache_except({fact.id for fact in facts})
             return
 
         parent = target_path.parent
@@ -1708,6 +1704,13 @@ class FactStore:
             finally:
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
+
+    def _evict_token_cache_except(self, kept_ids: set[str]) -> None:
+        # Recall threads insert into the cache without the store lock, so
+        # snapshot the keys (one atomic C call) instead of iterating the live dict.
+        for stale_id in list(self._tok_cache):
+            if stale_id not in kept_ids:
+                self._tok_cache.pop(stale_id, None)
 
     def _get_cached_tokens(
         self, fact: Fact

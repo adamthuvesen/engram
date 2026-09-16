@@ -4,12 +4,18 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
 from mcp.types import TextContent
 
-from engram.core.config import configure_logging, get_settings
+from engram.core.config import (
+    DEFAULT_HTTP_HOST,
+    DEFAULT_HTTP_PORT,
+    configure_logging,
+    get_settings,
+)
 from engram.core.interfaces import Envelope, validation_error
 from engram.operations import (
     EXIT_VALIDATION,
@@ -577,10 +583,33 @@ def _register_reporting_tools(app: FastMCP, get_store: StoreGetter) -> None:
 mcp = create_mcp()
 
 
-def main(mcp_factory: Callable[[], FastMCP] = create_mcp) -> None:
+HTTP_PATH = "/mcp"
+
+
+def main(
+    mcp_factory: Callable[[], FastMCP] = create_mcp,
+    *,
+    transport: Literal["stdio", "http"] = "stdio",
+    host: str = DEFAULT_HTTP_HOST,
+    port: int = DEFAULT_HTTP_PORT,
+) -> None:
     """Entry point for the MCP server."""
     configure_logging()
-    mcp_factory().run()
+    if transport == "stdio":
+        mcp_factory().run()
+        return
+    # Stateless: no server-side MCP session, so clients survive a daemon restart
+    # without holding a session id the new process has never seen. FastMCP
+    # leaves Host/Origin checks off by default; "auto" blocks DNS-rebinding
+    # pages from reaching the unauthenticated write tools on a loopback bind.
+    mcp_factory().run(
+        transport="http",
+        host=host,
+        port=port,
+        path=HTTP_PATH,
+        stateless_http=True,
+        host_origin_protection="auto",
+    )
 
 
 if __name__ == "__main__":

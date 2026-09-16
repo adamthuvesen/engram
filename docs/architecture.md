@@ -57,4 +57,5 @@ key it answers "no relevant memories" at tier-0 with no LLM call.
   confidence, timestamps, project scope, supersession and consolidation
   provenance, and source metadata.
 - The MCP server and CLI are adapters over the same operations. MCP provides
-  local typed stdio tools for agents. The CLI serves humans and batch scripts.
+  local typed tools for agents over stdio or loopback HTTP (`engram serve`). The
+  CLI serves humans and batch scripts.

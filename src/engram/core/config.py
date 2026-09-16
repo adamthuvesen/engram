@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     )
 
 
+# `engram serve --transport http` bind defaults: the shared local daemon address.
+DEFAULT_HTTP_HOST = "127.0.0.1"
+DEFAULT_HTTP_PORT = 7422
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Get cached settings instance."""
