@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "description": "Knowledge-update and staleness recall fixtures for engram.recall.evals. Each fixture seeds its own store and checks which facts recall delivers, which it must not, the top card, and warning codes. Deterministic: no LLM calls.",
+  "fixtures": [
+    {
+      "name": "superseded_fact_replaced_by_newer",
+      "description": "An old fact superseded by a newer one on the same memory_key: only the new one is delivered.",
+      "project": "engramx",
+      "query": "engramx memory storage backend",
+      "facts": [
+        {
+          "id": "a1d000000001",
+          "category": "decision",
+          "project": "engramx",
+          "memory_key": "storage-backend",
+          "content": "Engramx stores memory facts in a SQLite database backend.",
+          "observed_days_ago": 200
+        },
+        {
+          "id": "a1d000000002",
+          "category": "decision",
+          "project": "engramx",
+          "memory_key": "storage-backend",
+          "content": "Engramx stores memory facts in an append-only JSONL event log backend.",
+          "supersedes": "a1d000000001",
+          "observed_days_ago": 10
+        }
+      ],
+      "expected_source_ids": ["a1d000000002"],
+      "excluded_source_ids": ["a1d000000001"],
+      "expected_top": "a1d000000002",
+      "budget": {"max_tier": 0, "max_llm_calls": 0}
+    },
+    {
+      "name": "correction_supersedes_reworded_fact",
+      "description": "A correction that rewords the old fact still hides the superseded one.",
+      "query": "where do production deploys happen?",
+      "facts": [
+        {
+          "id": "a2d000000001",
+          "category": "workflow",
+          "memory_key": "deploy-target",
+          "content": "Production deploys go to Heroku through the release pipeline.",
+          "observed_days_ago": 300
+        },
+        {
+          "id": "a2d000000002",
+          "category": "correction",
+          "memory_key": "deploy-target",
+          "content": "Production deploys now happen on Fly.io; Heroku is no longer used.",
+          "supersedes": "a2d000000001",
+          "observed_days_ago": 5
+        }
+      ],
+      "expected_source_ids": ["a2d000000002"],
+      "excluded_source_ids": ["a2d000000001"],
+      "expected_top": "a2d000000002",
+      "budget": {"max_tier": 0, "max_llm_calls": 0}
+    },
+    {
+      "name": "stale_fact_excluded",
+      "description": "A fact marked stale never reaches recall; its live replacement does.",
+      "query": "staging database Postgres version",
+      "facts": [
+        {
+          "id": "a3d000000001",
+          "category": "project",
+          "content": "The staging database runs Postgres version 13.",
+          "stale": true,
+          "observed_days_ago": 400
+        },
+        {
+          "id": "a3d000000002",
+          "category": "project",
+          "content": "The staging database runs Postgres version 16.",
+          "observed_days_ago": 20
+        }
+      ],
+      "expected_source_ids": ["a3d000000002"],
+      "excluded_source_ids": ["a3d000000001"],
+      "expected_top": "a3d000000002",
+      "budget": {"max_tier": 0, "max_llm_calls": 0}
+    },
+    {
+      "name": "old_ephemeral_event_ranks_below_durable",
+      "description": "A 120-day-old ephemeral event with the same wording as a durable fact must not outrank it.",
+      "query": "release branch cut from main on Tuesday",
+      "facts": [
+        {
+          "id": "a4d000000001",
+          "category": "event",
+          "durability": "ephemeral",
+          "content": "The release branch is cut from main on Tuesday.",
+          "observed_days_ago": 120
+        },
+        {
+          "id": "a4d000000002",
+          "category": "workflow",
+          "durability": "durable",
+          "content": "The release branch is cut from main on Tuesday.",
+          "observed_days_ago": 120
+        }
+      ],
+      "expected_source_ids": ["a4d000000002"],
+      "expected_top": "a4d000000002",
+      "budget": {"max_tier": 0, "max_llm_calls": 0}
+    },
+    {
+      "name": "suspect_fact_flagged",
+      "description": "A fact upkeep flagged as possibly outdated is still delivered, with a suspect_fact warning.",
+      "project": "engramx",
+      "query": "engramx retriever relevance cutoff module",
+      "facts": [
+        {
+          "id": "a5d000000001",
+          "category": "convention",
+          "project": "engramx",
+          "content": "The engramx retriever relevance cutoff lives in src/engramx/recall/cutoff.py.",
+          "suspect_reason": "anchor src/engramx/recall/cutoff.py no longer exists",
+          "observed_days_ago": 60
+        }
+      ],
+      "expected_source_ids": ["a5d000000001"],
+      "expected_top": "a5d000000001",
+      "expected_warnings": ["suspect_fact"],
+      "answer_contains": ["unverified"],
+      "budget": {"max_tier": 0, "max_llm_calls": 0}
+    },
+    {
+      "name": "project_scope_does_not_leak",
+      "description": "A project-scoped query never delivers another project's facts.",
+      "project": "atlas",
+      "query": "atlas billing data",
+      "facts": [
+        {
+          "id": "a6d000000001",
+          "category": "project",
+          "project": "atlas",
+          "content": "Atlas keeps billing data in a Postgres database."
+        },
+        {
+          "id": "a6d000000002",
+          "category": "project",
+          "project": "orion",
+          "content": "Orion keeps billing data in a BigQuery database."
+        }
+      ],
+      "expected_source_ids": ["a6d000000001"],
+      "excluded_source_ids": ["a6d000000002"],
+      "expected_top": "a6d000000001",
+      "budget": {"max_tier": 0, "max_llm_calls": 0}
+    },
+    {
+      "name": "unresolved_conflict_warned",
+      "description": "Two active facts on the same project memory_key without a supersession raise conflicting_facts.",
+      "project": "atlas",
+      "query": "atlas test runner",
+      "facts": [
+        {
+          "id": "a7d000000001",
+          "category": "convention",
+          "project": "atlas",
+          "memory_key": "test-runner",
+          "content": "Atlas runs its test suite with pytest."
+        },
+        {
+          "id": "a7d000000002",
+          "category": "convention",
+          "project": "atlas",
+          "memory_key": "test-runner",
+          "content": "Atlas runs its test suite with unittest."
+        }
+      ],
+      "expected_source_ids": ["a7d000000001", "a7d000000002"],
+      "expected_warnings": ["conflicting_facts"],
+      "budget": {"max_tier": 0, "max_llm_calls": 0}
+    }
+  ]
+}

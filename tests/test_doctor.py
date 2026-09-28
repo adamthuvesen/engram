@@ -10,9 +10,11 @@ from pathlib import Path
 from engram import server
 from engram.maintenance.doctor import DoctorIssue, repair_store, run_doctor
 from engram.core.models import (
+    Durability,
     Fact,
     FactCategory,
     MemoryCandidate,
+    RecallRecord,
     StoreTransaction,
     TransactionStatus,
 )
@@ -341,3 +343,44 @@ def test_doctor_sync_group_is_local_only(monkeypatch):
     monkeypatch.setattr("engram.maintenance.doctor.subprocess.run", watching_run)
     run_doctor(store)
     assert network_calls == []
+
+
+def test_doctor_reports_volume_metrics():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(id="a", category=FactCategory.project, content="a", project="x"),
+            Fact(
+                id="b",
+                category=FactCategory.project,
+                content="b",
+                project="x",
+                durability=Durability.ephemeral,
+                suspect_reason="missing: src/b.py",
+            ),
+            Fact(id="c", category=FactCategory.preference, content="c"),
+        ]
+    )
+    store.log_recall(
+        RecallRecord(
+            query="q", tier=0, prefilter_count=1, latency_ms=1.0, delivered_ids=["a"]
+        )
+    )
+    store.log_recall(
+        RecallRecord(
+            query="old",
+            tier=0,
+            prefilter_count=1,
+            latency_ms=1.0,
+            delivered_ids=["c"],
+            timestamp=datetime.now(timezone.utc) - timedelta(days=200),
+        )
+    )
+
+    volume = run_doctor(store).counts["volume"]
+
+    assert volume["active_by_project"] == {"x": 2, "(global)": 1}
+    assert volume["ephemeral_share"] == 0.333
+    assert volume["suspect_facts"] == 1
+    assert volume["recalls_with_delivery_90d"] == 1
+    assert volume["never_delivered_90d"] == 2

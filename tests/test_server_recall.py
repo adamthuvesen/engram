@@ -35,6 +35,7 @@ def _patch_complete(monkeypatch, responses):
         temperature=None,
         response_format=None,
         cache_prefix=None,
+        reasoning_effort=None,
     ):
         text, input_tokens, cached = queue.pop(0)
         return Completion(text=text, input_tokens=input_tokens, cached_tokens=cached)
@@ -173,7 +174,7 @@ def test_recall_limit_alias(monkeypatch):
 def test_recall_limit_and_max_sources_conflict(monkeypatch):
     _setup_store(monkeypatch)
     result = asyncio.run(
-        _call("recall", query="x", format="json", limit=5, max_sources=10)
+        _call("recall", query="x", format="json", limit=5, max_sources=7)
     )
     parsed = _structured(result)
     assert parsed["status"] == "error"
@@ -181,7 +182,7 @@ def test_recall_limit_and_max_sources_conflict(monkeypatch):
     assert parsed["errors"][0]["details"] == {"parameter": "limit"}
 
 
-def test_recall_warns_on_superseded(monkeypatch):
+def test_recall_never_delivers_superseded_fact(monkeypatch):
     store = _setup_store(monkeypatch)
     store.append_facts(
         [
@@ -201,10 +202,9 @@ def test_recall_warns_on_superseded(monkeypatch):
         ]
     )
 
-    result = asyncio.run(_call("recall", query="zagblort editor", format="json"))
+    result = asyncio.run(_call("recall", query="zagblort neovim", format="json"))
     parsed = _structured(result)
-    codes = [w["code"] for w in parsed["warnings"]]
-    assert "superseded_fact" in codes
+    assert parsed["data"]["cited_fact_ids"] == ["newaaaaaaaaa"]
 
 
 def test_recall_warns_on_stale(monkeypatch):
@@ -254,16 +254,18 @@ def test_recall_trace_success(monkeypatch):
         [("traced (id: f00aaaaaaaaa)\n[quality: medium]", 200, 100)],
     )
 
-    result = asyncio.run(_call("recall_trace", query="trace"))
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+
+    result = asyncio.run(_call("recall_trace", query="trace", mode="answer"))
     parsed = _structured(result)
     assert parsed["status"] == "ok"
     trace = parsed["data"]["trace"]
     assert trace is not None
     assert len(trace["calls"]) == 1
-    assert trace["calls"][0]["name"] == "tier2_single"
+    assert trace["calls"][0]["name"] == "answer"
 
 
-def test_recall_trace_provider_failure(monkeypatch):
+def test_recall_trace_provider_failure_falls_back_to_cards(monkeypatch):
     store = _setup_store(monkeypatch)
     store.append_facts(
         [
@@ -281,11 +283,14 @@ def test_recall_trace_provider_failure(monkeypatch):
         raise RuntimeError("provider down")
 
     monkeypatch.setattr("engram.recall.retriever.complete_with_usage", boom)
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
 
-    result = asyncio.run(_call("recall_trace", query="failure"))
+    result = asyncio.run(_call("recall_trace", query="failure", mode="answer"))
     parsed = _structured(result)
-    assert parsed["status"] == "error"
-    assert parsed["errors"][0]["code"] == "provider_error"
+    # Answer mode degrades to cards instead of failing the agent's call.
+    assert parsed["status"] == "ok"
+    codes = [w["code"] for w in parsed["warnings"]]
+    assert "provider_unavailable" in codes
 
 
 def test_recall_json_meta_fields_populated(monkeypatch):
@@ -303,5 +308,5 @@ def test_recall_json_meta_fields_populated(monkeypatch):
     result = asyncio.run(_call("recall", query="abc xyz", format="json"))
     parsed = _structured(result)
     assert "meta" in parsed
-    assert parsed["meta"]["limit"] == 25  # default max_sources
+    assert parsed["meta"]["limit"] == 10  # default max_sources
     assert parsed["meta"]["returned"] >= 0

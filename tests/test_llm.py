@@ -1,7 +1,7 @@
-"""Tests for the litellm wrapper — cache-marker plumbing and usage extraction."""
+"""Tests for the OpenAI client wrapper — request shaping and usage extraction."""
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import pytest
@@ -9,10 +9,9 @@ from pydantic import BaseModel, ValidationError
 
 from engram.llm.client import (
     Completion,
-    _build_user_content,
+    _accepts_reasoning_effort,
     _extract_usage,
-    _is_gpt_5_6_model,
-    _is_anthropic_model,
+    _model_name,
     _openai_strict_schema,
     _response_format_for_model,
     complete_model,
@@ -26,85 +25,27 @@ class _StructuredAnswer(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Provider detection
+# Model names
 # ---------------------------------------------------------------------------
 
 
-def test_is_anthropic_model_litellm_prefix():
-    assert _is_anthropic_model("anthropic/claude-sonnet-4")
+def test_model_name_strips_openai_prefix():
+    assert _model_name("openai/gpt-6-luna") == "gpt-6-luna"
+    assert _model_name("gpt-6-luna") == "gpt-6-luna"
 
 
-def test_is_anthropic_model_bare_claude():
-    assert _is_anthropic_model("claude-3-5-haiku-latest")
+def test_model_name_rejects_other_providers():
+    with pytest.raises(ValueError, match="OpenAI API directly"):
+        _model_name("anthropic/claude-sonnet-5")
 
 
-def test_is_anthropic_model_openai_false():
-    assert not _is_anthropic_model("openai/gpt-5.4-mini")
+def test_reasoning_models_accept_reasoning_effort():
+    assert _accepts_reasoning_effort("openai/gpt-6-luna")
+    assert _accepts_reasoning_effort("gpt-5.4-mini")
 
 
-def test_is_gpt_5_6_model_litellm_prefix():
-    assert _is_gpt_5_6_model("openai/gpt-5.6-luna")
-
-
-def test_is_gpt_5_6_model_other_model_false():
-    assert not _is_gpt_5_6_model("openai/gpt-5.4-mini")
-
-
-# ---------------------------------------------------------------------------
-# User-content shaping
-# ---------------------------------------------------------------------------
-
-
-def test_build_user_content_openai_passes_through():
-    """OpenAI-family calls never get a content list — implicit cache handles it."""
-    prompt = "PREFIX\n\nQUERY: x"
-    out = _build_user_content(
-        prompt, cache_prefix="PREFIX", model="openai/gpt-5.4-mini"
-    )
-    assert out == prompt
-
-
-def test_build_user_content_anthropic_splits_prefix():
-    """Anthropic-family calls get a two-part content list with cache_control."""
-    prompt = "STORED FACTS:\n1. foo\n\nQUERY: x"
-    prefix = "STORED FACTS:\n1. foo\n\n"
-    out = _build_user_content(
-        prompt, cache_prefix=prefix, model="anthropic/claude-sonnet-4"
-    )
-    assert isinstance(out, list)
-    assert out[0] == {
-        "type": "text",
-        "text": prefix,
-        "cache_control": {"type": "ephemeral"},
-    }
-    assert out[1] == {"type": "text", "text": "QUERY: x"}
-
-
-def test_build_user_content_anthropic_no_prefix_passthrough():
-    """No cache_prefix → plain string even on Anthropic."""
-    out = _build_user_content(
-        "hi", cache_prefix=None, model="anthropic/claude-sonnet-4"
-    )
-    assert out == "hi"
-
-
-def test_build_user_content_anthropic_prefix_equals_prompt():
-    """Prefix == prompt → only the prefix block, no empty suffix entry."""
-    prompt = "exact"
-    out = _build_user_content(
-        prompt, cache_prefix=prompt, model="anthropic/claude-sonnet-4"
-    )
-    assert isinstance(out, list)
-    assert len(out) == 1
-    assert out[0]["cache_control"] == {"type": "ephemeral"}
-
-
-def test_build_user_content_bad_prefix_falls_back_to_string():
-    """If cache_prefix isn't actually a prefix, fall back to plain string."""
-    out = _build_user_content(
-        "hello world", cache_prefix="nope", model="anthropic/claude-sonnet-4"
-    )
-    assert out == "hello world"
+def test_non_reasoning_models_keep_temperature_path():
+    assert not _accepts_reasoning_effort("openai/gpt-4.1-mini")
 
 
 # ---------------------------------------------------------------------------
@@ -117,45 +58,20 @@ def test_extract_usage_openai_style():
         prompt_tokens=1234,
         prompt_tokens_details=SimpleNamespace(cached_tokens=800),
     )
-    resp = SimpleNamespace(usage=usage)
-    assert _extract_usage(resp) == (1234, 800)
-
-
-def test_extract_usage_anthropic_style():
-    usage = SimpleNamespace(
-        prompt_tokens=1500,
-        cache_read_input_tokens=1000,
-    )
-    resp = SimpleNamespace(usage=usage)
-    assert _extract_usage(resp) == (1500, 1000)
+    assert _extract_usage(SimpleNamespace(usage=usage)) == (1234, 800)
 
 
 def test_extract_usage_no_cached_field():
-    usage = SimpleNamespace(prompt_tokens=500)
-    resp = SimpleNamespace(usage=usage)
-    input_tokens, cached = _extract_usage(resp)
-    assert input_tokens == 500
-    assert cached is None
+    usage = SimpleNamespace(prompt_tokens=500, prompt_tokens_details=None)
+    assert _extract_usage(SimpleNamespace(usage=usage)) == (500, None)
 
 
 def test_extract_usage_missing_entirely():
-    resp = SimpleNamespace()
-    assert _extract_usage(resp) == (None, None)
-
-
-def test_extract_usage_dict_shape():
-    """litellm sometimes returns usage as a dict."""
-    resp = SimpleNamespace(
-        usage={
-            "prompt_tokens": 100,
-            "prompt_tokens_details": {"cached_tokens": 60},
-        }
-    )
-    assert _extract_usage(resp) == (100, 60)
+    assert _extract_usage(SimpleNamespace()) == (None, None)
 
 
 # ---------------------------------------------------------------------------
-# complete_with_usage — end-to-end with a mocked litellm.acompletion
+# complete_with_usage — end-to-end with a mocked OpenAI client
 # ---------------------------------------------------------------------------
 
 
@@ -168,23 +84,28 @@ def _mock_response(
     if prompt_tokens is not None:
         usage = SimpleNamespace(
             prompt_tokens=prompt_tokens,
-            prompt_tokens_details=SimpleNamespace(cached_tokens=cached)
-            if cached is not None
-            else None,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=cached),
         )
     return SimpleNamespace(choices=[choice], usage=usage)
 
 
 @dataclass
-class _MockLitellm:
+class _MockClient:
+    """Stands in for ``AsyncOpenAI``; records the last request."""
+
+    response: SimpleNamespace = field(
+        default_factory=lambda: _mock_response(
+            "answer text", prompt_tokens=123, cached=80
+        )
+    )
     last_kwargs: dict | None = None
 
     def __post_init__(self):
-        self.suppress_debug_info = True
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
-    async def acompletion(self, **kwargs):
+    async def _create(self, **kwargs):
         self.last_kwargs = kwargs
-        return _mock_response("answer text", prompt_tokens=123, cached=80)
+        return self.response
 
 
 @pytest.fixture
@@ -198,111 +119,72 @@ def fresh_settings(monkeypatch, tmp_path):
     get_settings.cache_clear()
 
 
-def test_complete_with_usage_returns_text_and_tokens(monkeypatch, fresh_settings):
-    mock = _MockLitellm()
-    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
+@pytest.fixture
+def client(monkeypatch):
+    mock = _MockClient()
+    monkeypatch.setattr("engram.llm.client._client", lambda: mock)
     monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
+    return mock
 
+
+def test_complete_with_usage_returns_text_and_tokens(client, fresh_settings):
     result = asyncio.run(
-        complete_with_usage(
-            prompt="hello",
-            system="sys",
-            model="openai/gpt-5.4-mini",
-        )
+        complete_with_usage(prompt="hello", system="sys", model="openai/gpt-6-luna")
     )
     assert isinstance(result, Completion)
     assert result.text == "answer text"
     assert result.input_tokens == 123
     assert result.cached_tokens == 80
+    assert client.last_kwargs["model"] == "gpt-6-luna"
+    assert client.last_kwargs["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+    ]
 
 
-def test_complete_with_usage_gpt_5_6_uses_reasoning_effort(monkeypatch, fresh_settings):
+def test_complete_with_usage_reasoning_model_uses_reasoning_effort(
+    client, monkeypatch, fresh_settings
+):
     from engram.core.config import get_settings
 
     monkeypatch.setenv("ENGRAM_LLM_REASONING_EFFORT", "medium")
     get_settings.cache_clear()
-    mock = _MockLitellm()
-    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
-    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
 
+    asyncio.run(complete_with_usage(prompt="hello", model="openai/gpt-6-luna"))
+
+    assert client.last_kwargs["reasoning_effort"] == "medium"
+    assert "temperature" not in client.last_kwargs
+    assert client.last_kwargs["service_tier"] == "fast"
+
+
+def test_reasoning_effort_override_wins(client, fresh_settings):
     asyncio.run(
         complete_with_usage(
-            prompt="hello",
-            model="openai/gpt-5.6-luna",
+            prompt="hello", model="openai/gpt-6-luna", reasoning_effort="low"
         )
     )
-
-    assert mock.last_kwargs["reasoning_effort"] == "medium"
-    assert "temperature" not in mock.last_kwargs
+    assert client.last_kwargs["reasoning_effort"] == "low"
 
 
-def test_complete_with_usage_other_models_keep_temperature(monkeypatch, fresh_settings):
-    mock = _MockLitellm()
-    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
-    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
+def test_complete_with_usage_other_models_keep_temperature(client, fresh_settings):
+    asyncio.run(complete_with_usage(prompt="hello", model="openai/gpt-4.1-mini"))
 
-    asyncio.run(
-        complete_with_usage(
-            prompt="hello",
-            model="openai/gpt-5.4-mini",
-        )
-    )
-
-    assert mock.last_kwargs["temperature"] == 0.0
-    assert "reasoning_effort" not in mock.last_kwargs
+    assert client.last_kwargs["temperature"] == 0.0
+    assert "reasoning_effort" not in client.last_kwargs
 
 
-def test_complete_with_usage_anthropic_sends_cache_control(monkeypatch, fresh_settings):
-    mock = _MockLitellm()
-    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
-    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
+def test_empty_service_tier_is_omitted(client, monkeypatch, fresh_settings):
+    from engram.core.config import get_settings
 
-    prefix = "PREFIX_BLOCK\n\n"
-    prompt = prefix + "QUERY: x"
-    asyncio.run(
-        complete_with_usage(
-            prompt=prompt,
-            system="sys",
-            model="anthropic/claude-sonnet-4",
-            cache_prefix=prefix,
-        )
-    )
+    monkeypatch.setenv("ENGRAM_LLM_SERVICE_TIER", "")
+    get_settings.cache_clear()
 
-    user_msg = mock.last_kwargs["messages"][-1]
-    assert user_msg["role"] == "user"
-    assert isinstance(user_msg["content"], list)
-    assert user_msg["content"][0]["cache_control"] == {"type": "ephemeral"}
-    assert user_msg["content"][0]["text"] == prefix
+    asyncio.run(complete_with_usage(prompt="hello"))
+    assert "service_tier" not in client.last_kwargs
 
 
-def test_complete_with_usage_openai_stays_plain_string(monkeypatch, fresh_settings):
-    mock = _MockLitellm()
-    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: mock)
-    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
-
-    prefix = "PREFIX_BLOCK\n\n"
-    prompt = prefix + "QUERY: x"
-    asyncio.run(
-        complete_with_usage(
-            prompt=prompt,
-            system="sys",
-            model="openai/gpt-5.4-mini",
-            cache_prefix=prefix,
-        )
-    )
-
-    user_msg = mock.last_kwargs["messages"][-1]
-    assert user_msg["content"] == prompt
-
-
-def test_complete_with_usage_missing_usage_returns_none(monkeypatch, fresh_settings):
-    class _NoUsage(_MockLitellm):
-        async def acompletion(self, **kwargs):
-            self.last_kwargs = kwargs
-            return _mock_response("answer", prompt_tokens=None)
-
-    monkeypatch.setattr("engram.llm.client._get_litellm", lambda: _NoUsage())
-    monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: "k")
+def test_complete_with_usage_missing_usage_returns_none(client, fresh_settings):
+    client.response = _mock_response("answer", prompt_tokens=None)
 
     result = asyncio.run(complete_with_usage(prompt="hi"))
     assert result.text == "answer"
@@ -325,7 +207,7 @@ def test_openai_strict_schema_requires_all_extraction_properties():
     schema = _openai_strict_schema(ExtractionResponse)
     fact_schema = schema["$defs"]["ExtractedFact"]
 
-    assert schema["required"] == ["facts", "excluded_claims"]
+    assert schema["required"] == ["facts", "retire", "excluded_claims"]
     assert fact_schema["required"] == list(fact_schema["properties"])
     assert "tags" in fact_schema["required"]
     assert "default" not in _schema_keys(schema)

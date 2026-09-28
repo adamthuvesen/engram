@@ -44,15 +44,20 @@ GITATTRIBUTES_LINES = [
     "recall_log.jsonl merge=union",
     "transactions.jsonl merge=union",
     "candidates.jsonl merge=union",
+    "maintenance_state.jsonl merge=union",
 ]
 
 # Files engram writes inside the data dir that should NEVER be tracked by
-# git: inter-process lock sidecars and per-machine sync state.
+# git: inter-process lock sidecars (including upkeep.lock), per-machine sync
+# state, the per-machine project -> repository path cache, and upkeep's
+# in-flight state rewrites.
 GITIGNORE_MARKER = "# engram-sync: managed ignores"
 GITIGNORE_PATTERNS = [
     "*.lock",
     ".engram-sync-state",
     ".engram-compaction-in-progress",
+    "projects.local.json",
+    ".maintenance_state.*.tmp",
 ]
 GITIGNORE_LINES = [GITIGNORE_MARKER, *GITIGNORE_PATTERNS]
 
@@ -208,12 +213,16 @@ def _ensure_managed_file(
 ) -> bool:
     """Helper: append a managed block to ``relative_path`` if missing.
 
-    Returns True if a new commit was created.
+    When the block already exists, appends only the managed lines added since
+    it was written. Returns True if a new commit was created.
     """
     target = data_dir / relative_path
     existing = target.read_text() if target.exists() else ""
-    if marker in existing:
-        return False
+    present = set(existing.splitlines())
+    if marker in present:
+        lines = [line for line in lines if line not in present]
+        if not lines:
+            return False
 
     new_block = "\n".join(lines) + "\n"
     if existing and not existing.endswith("\n"):

@@ -6,7 +6,8 @@ from pathlib import Path
 import yaml
 
 from engram.core.config import get_settings
-from engram.extraction.observer import extract_facts
+from engram.core.projects import canonical_project
+from engram.extraction.observer import ingest
 from engram.storage.store import AsyncFactStore, FactStore
 
 logger = logging.getLogger(__name__)
@@ -47,12 +48,12 @@ async def import_claude_code_memories(
 
         # Derive project name from the directory path
         project_dir = memory_file.parent.parent.name
-        project_name = _clean_project_name(project_dir)
+        project_name = canonical_project(_clean_project_name(project_dir))
 
         source = f"claude_code:{memory_file.relative_to(projects_dir)}"
         logger.info("Importing %s (project: %s)", source, project_name)
 
-        facts = await extract_facts(
+        result = await ingest(
             content=f"Memory type: {metadata.get('type', 'unknown')}\n"
             f"Name: {metadata.get('name', 'unknown')}\n"
             f"Description: {metadata.get('description', '')}\n\n"
@@ -62,12 +63,12 @@ async def import_claude_code_memories(
             store=store,
         )
 
-        total_facts += len(facts)
+        total_facts += len(result.created)
         imported_files.append(
             {
                 "file": str(memory_file.name),
                 "project": project_name,
-                "facts_extracted": len(facts),
+                "facts_extracted": len(result.created),
             }
         )
 

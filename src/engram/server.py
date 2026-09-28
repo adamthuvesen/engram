@@ -44,34 +44,37 @@ from engram.operations import (
     suggest_memories as op_suggest_memories,
     sync as op_sync,
     unmark_stale as op_unmark_stale,
+    upkeep as op_upkeep,
 )
 from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
 from engram.storage.store import AsyncFactStore, FactStore
 
-INSTRUCTIONS = """Engram — structured, cross-project memory for coding agents.
+INSTRUCTIONS = """Engram — durable, cross-project memory for coding agents.
 
-A cross-project, structured memory system that uses LLM-powered retrieval
-instead of vector search. Facts are extracted, categorized, and stored as
-structured knowledge. Tiered retrieval uses deterministic fast paths first,
-then a single LLM call over the prefiltered facts for complex queries.
+Pass `project` as your working directory path (or the repo name) on every
+call; Engram maps paths and worktrees to the repository's project scope.
 
-Tools:
-- remember: Store new memories (extracts structured facts from natural language)
-- suggest_memories: Propose memories for review without storing them immediately
-- list_candidates: Browse pending/reviewed memory suggestions
-- approve_candidates: Promote reviewed suggestions into active memory
-- reject_candidates: Dismiss candidates with an audit trail
-- recall: Search memory using tiered retrieval
-- recall_context: Recall as answer or compact prompt block
-- forget: Remove a fact from active memory
-- edit_fact: Edit a fact in place
-- inspect: Browse stored facts
-- import_memories: Bootstrap from Claude Code memory files
-- memory_stats: View memory system statistics
-- recall_stats: View recall quality and performance statistics
-- purge: Permanently remove forgotten and expired facts
-- rename_project: Bulk-rename facts and candidates
-- audit_memories: Suggest duplicate, stale, and contradictory memory cleanup
+Read:
+- Session start: recall_context(mode="brief", project=<cwd>) for the project's
+  synthesized brief.
+- Before deciding something the user may have an opinion on, or when stuck:
+  recall(query, project=<cwd>). Returns dated memory cards in milliseconds
+  (no LLM). Use mode="answer" only when you need a synthesized answer.
+- Cards flagged "unverified" or "time-bound" may be outdated: check the code.
+
+Write:
+- remember(content, project=<cwd>) after learning something durable: a user
+  preference or correction, a decision and its rationale, a pitfall and its
+  fix, a convention, a workflow. Plain language is fine; Engram extracts
+  cards, merges them with what it already knows, and retires what the new
+  information contradicts. Skip progress, test results, and branch/PR
+  bookkeeping.
+- When a recalled card is wrong: correct_memory(fact_id, new_content); when
+  it is no longer true: mark_stale(fact_id, reason).
+
+Engram keeps itself current: background upkeep merges fragmented cards,
+retires junk, verifies file anchors against the repository, and refreshes
+project briefs.
 """
 
 
@@ -156,9 +159,26 @@ def _make_lifespan(get_store: StoreGetter):
                 "engram-sync auto-loop scheduled (interval=%.1fs)",
                 settings.sync_interval,
             )
+        upkeep_task: asyncio.Task | None = None
+        if settings.maintenance_enabled:
+            from engram.maintenance.upkeep import upkeep_loop
+
+            upkeep_task = asyncio.create_task(
+                upkeep_loop(get_store, interval=settings.maintenance_interval)
+            )
+            logger.info(
+                "engram upkeep loop scheduled (interval=%.0fs)",
+                settings.maintenance_interval,
+            )
         try:
             yield
         finally:
+            if upkeep_task is not None:
+                upkeep_task.cancel()
+                try:
+                    await upkeep_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             if auto_sync_task is not None:
                 auto_sync_task.cancel()
                 try:
@@ -201,7 +221,12 @@ def _register_capture_tools(app: FastMCP, get_store: StoreGetter) -> None:
         project: str | None = None,
         format: str = "text",
     ) -> ToolResult:
-        """Store a new memory. Extracts structured facts from natural language input."""
+        """Save durable knowledge from plain language.
+
+        One call extracts memory cards, merges them with related existing
+        cards (updating or replacing them), and retires cards the input shows
+        are no longer true. Pass ``project`` as your working directory.
+        """
         result = await op_remember(
             content,
             source=source,
@@ -280,16 +305,19 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
     async def recall(
         query: str,
         project: str | None = None,
+        mode: str = "cards",
         format: str = "text",
         with_provenance: bool = False,
         max_sources: int = DEFAULT_MAX_SOURCES,
         max_prefilter_matches: int = DEFAULT_MAX_PREFILTER_MATCHES,
         limit: int | None = None,
     ) -> ToolResult:
-        """Search memory using tiered agentic retrieval.
+        """Find memories relevant to ``query``.
 
-        ``limit`` is an alias for ``max_sources`` (for consistency with inspect
-        and list tools). Do not pass both with different values.
+        ``mode="cards"`` (default) returns ranked, dated memory cards without
+        an LLM call. ``mode="answer"`` synthesizes an answer with one LLM call.
+        Pass ``project`` as your working directory. ``limit`` is an alias for
+        ``max_sources``; do not pass both with different values.
         """
         try:
             resolved_max_sources = _resolve_recall_max_sources(max_sources, limit)
@@ -301,6 +329,7 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
         result = await op_recall(
             query,
             project=project,
+            mode=mode,
             format=format,
             with_provenance=with_provenance,
             max_sources=resolved_max_sources,
@@ -315,6 +344,7 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
     async def recall_trace(
         query: str,
         project: str | None = None,
+        mode: str = "cards",
         verbose: bool = False,
         max_sources: int = DEFAULT_MAX_SOURCES,
         max_prefilter_matches: int = DEFAULT_MAX_PREFILTER_MATCHES,
@@ -332,6 +362,7 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
         result = await op_recall_trace(
             query,
             project=project,
+            mode=mode,
             verbose=verbose,
             max_sources=resolved_max_sources,
             max_prefilter_matches=max_prefilter_matches,
@@ -341,12 +372,17 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
 
     @app.tool()
     async def recall_context(
-        query: str,
+        query: str = "",
         project: str | None = None,
-        mode: str = "answer",
+        mode: str = "cards",
         format: str = "text",
     ) -> ToolResult:
-        """Recall either a natural-language answer or a compact prompt block."""
+        """Context for the current task.
+
+        ``mode``: ``brief`` (the project's synthesized brief; no query needed —
+        call at session start), ``cards`` (dated memory cards, no LLM),
+        ``answer`` (one LLM call). ``prompt`` is an alias for ``cards``.
+        """
         result = await op_recall_context(
             query,
             project=project,
@@ -515,6 +551,31 @@ def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
         but does not mutate the memory store.
         """
         result = await op_audit_memories(project=project, store=get_store())
+        return _tool_result(result, format=format)
+
+    @app.tool()
+    async def upkeep(
+        project: str | None = None,
+        steps: list[str] | None = None,
+        dry_run: bool = False,
+        full: bool = False,
+        format: str = "text",
+    ) -> ToolResult:
+        """Run memory upkeep now (it also runs in the background).
+
+        Steps: ``projects`` (canonical scopes), ``verify`` (check file/symbol
+        anchors against the repo; flag or retire drifted cards),
+        ``consolidate`` (merge fragmented cards, retire junk; LLM),
+        ``briefs`` (refresh project briefs; LLM). Changes are applied to the
+        append-only log; ``dry_run`` reports without writing.
+        """
+        result = await op_upkeep(
+            project=project,
+            steps=steps,
+            dry_run=dry_run,
+            full=full,
+            store=get_store(),
+        )
         return _tool_result(result, format=format)
 
     @app.tool()

@@ -11,6 +11,10 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 MIN_ACTIVE_CONFIDENCE = 0.1
 
+# memory_key of the per-project brief card that upkeep synthesizes. Briefs are
+# served by ``recall_context(mode="brief")``, never as search results.
+BRIEF_MEMORY_KEY = "project-brief"
+
 
 _EVENT_ID_LOCK = threading.Lock()
 _LAST_EVENT_MS: int = 0
@@ -59,6 +63,20 @@ class EvidenceKind(str, Enum):
     unknown = "unknown"
 
 
+class Durability(str, Enum):
+    """How long a memory is expected to stay true.
+
+    ``evergreen`` never ages (identity, lasting preferences). ``durable`` holds
+    until something contradicts it (conventions, decisions, pitfalls).
+    ``ephemeral`` describes in-flight state that decays within weeks and gets a
+    default expiry.
+    """
+
+    evergreen = "evergreen"
+    durable = "durable"
+    ephemeral = "ephemeral"
+
+
 class CandidateStatus(str, Enum):
     """Lifecycle states for proposed memories."""
 
@@ -97,6 +115,13 @@ class FactBase(BaseModel):
     evidence_kind: EvidenceKind = EvidenceKind.unknown
     source_ref: str | None = None
     why_store: str = ""
+    durability: Durability = Durability.durable
+    # Repo-relative file paths or code symbols the memory depends on. Upkeep
+    # checks them against the project's repository to catch code drift.
+    anchors: list[str] = Field(default_factory=list)
+    # Non-empty when upkeep found evidence the memory may be outdated (e.g.
+    # some anchors vanished). Suspect facts stay recallable but are flagged.
+    suspect_reason: str = ""
     # Stale facts are inspectable but excluded from active recall and prefilter.
     # Set via the maintenance workflows (mark_stale).
     stale: bool = False
@@ -129,6 +154,8 @@ class MemoryCandidate(FactBase):
 
     status: CandidateStatus = CandidateStatus.pending
     review_note: str = ""
+    # Active fact IDs this candidate replaces once approved.
+    replaces: list[str] = Field(default_factory=list)
 
 
 class RecallRecord(BaseModel):
@@ -145,6 +172,9 @@ class RecallRecord(BaseModel):
     input_tokens: int | None = None
     cached_tokens: int | None = None
     selector_version: str | None = None
+    mode: str | None = None
+    # Fact IDs handed back to the caller (cards shown or answer citations).
+    delivered_ids: list[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -158,6 +188,8 @@ class StoreTransaction(BaseModel):
     fact_updates: dict[str, dict] = Field(default_factory=dict)
     candidate_updates: dict[str, dict] = Field(default_factory=dict)
     new_facts: list[Fact] = Field(default_factory=list)
+    # old fact id -> replacing fact id, applied as ``superseded`` events.
+    supersessions: dict[str, str] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     committed_at: datetime | None = None
 
@@ -188,6 +220,10 @@ EDITABLE_FACT_FIELDS = frozenset(
         "evidence_kind",
         "source_ref",
         "why_store",
+        "durability",
+        "anchors",
+        "suspect_reason",
+        "consolidates",
         "stale",
         "stale_reason",
     }

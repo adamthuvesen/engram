@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+
+import pytest
+
 from tests.run_extraction_quality_evals import (
     DATASET_PATH,
     MAX_FRAGMENTATION,
@@ -9,6 +14,7 @@ from tests.run_extraction_quality_evals import (
     MIN_EMITTED_CARD_PRECISION,
     POLICY_REQUIRED_CLAUSES,
     evaluate,
+    extract_live_provider_outputs,
     load_dataset,
     main,
 )
@@ -46,6 +52,7 @@ def test_dataset_covers_required_memory_shapes():
         "correction-update",
         "project-scope",
         "related-distinct-units",
+        "bookkeeping-exclusion",
     } <= cases_by_kind.keys()
 
     policy_case = cases_by_kind["coupled-policy"]
@@ -129,8 +136,13 @@ def test_transient_claim_is_counted_and_makes_card_imprecise():
 
     summary = evaluate(extracted_cards_by_case=outputs)
 
+    result = next(
+        result
+        for result in summary.results
+        if result.case_id == "durable-rule-with-progress"
+    )
     assert summary.forbidden_transient_claims == 1
-    assert summary.emitted_card_precision == MIN_EMITTED_CARD_PRECISION
+    assert result.precise_cards == result.emitted_cards - 1
     assert not summary.passes_gates
 
 
@@ -194,3 +206,22 @@ def test_live_cli_reports_provider_failure_without_traceback(monkeypatch, capsys
     assert capsys.readouterr().err == (
         "Live extraction eval failed: provider unavailable\n"
     )
+
+
+@pytest.mark.skipif(
+    os.environ.get("ENGRAM_EVAL_PROVIDER") != "1",
+    reason="provider mode disabled (set ENGRAM_EVAL_PROVIDER=1)",
+)
+def test_live_provider_meets_extraction_quality_gates():
+    outputs = asyncio.run(extract_live_provider_outputs())
+
+    summary = evaluate(extracted_cards_by_case=outputs)
+
+    failures = [
+        result.model_dump(
+            include={"case_id", "uncovered_claims", "forbidden_transient_hits"}
+        )
+        for result in summary.results
+        if result.uncovered_claims or result.forbidden_transient_hits
+    ]
+    assert summary.passes_gates, failures

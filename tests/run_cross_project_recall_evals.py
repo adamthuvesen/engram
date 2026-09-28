@@ -67,26 +67,6 @@ class Summary(BaseModel):
     results: list[QueryResult]
 
 
-def _no_op_completion():
-    from engram.llm import Completion
-
-    async def fake(
-        prompt,
-        system="",
-        model=None,
-        temperature=None,
-        response_format=None,
-        cache_prefix=None,
-    ):
-        return Completion(
-            text="(no deterministic answer) [quality: low]",
-            input_tokens=0,
-            cached_tokens=0,
-        )
-
-    return fake
-
-
 def _score_query(
     *,
     expected: set[str],
@@ -123,16 +103,13 @@ async def _run_query(store, lq: LabeledQuery) -> QueryResult:
     import engram.recall.retriever as retriever_mod
     from engram.recall.retriever import recall_with_provenance
 
-    saved = retriever_mod.complete_with_usage
     saved_available = retriever_mod._llm_available
-    retriever_mod.complete_with_usage = _no_op_completion()
-    # Pin zero-hit escalation off so the benchmark stays deterministic with or
-    # without a local LLM key.
+    # Pin the LLM off so the benchmark stays deterministic with or without a
+    # local key.
     retriever_mod._llm_available = lambda: False
     try:
         _, _, provenance, _ = await recall_with_provenance(lq.query, store=store)
     finally:
-        retriever_mod.complete_with_usage = saved
         retriever_mod._llm_available = saved_available
 
     ranked = [m.id for m in provenance.prefilter_matches if m.above_floor]

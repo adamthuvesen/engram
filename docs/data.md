@@ -11,6 +11,12 @@ All data lives under `~/.engram/data/` by default:
 - `recall_log.jsonl`: recall quality and latency history.
 - `transactions.jsonl`: prepared/committed markers for crash-safe candidate
   approval.
+- `maintenance_state.jsonl`: upkeep progress (last run, per-project
+  consolidation snapshot time, retry seeds, own writes). Append-only, synced
+  with `merge=union`; the latest line per key wins.
+- `projects.local.json`: project name → repo root on this machine. Written when
+  a caller passes a path as `project`; read by `verify`. Not synced.
+- `upkeep.lock`: per-machine upkeep lock. Not synced.
 - `.engram-sync-state`: last successful sync timestamp and commit counts (only
   exists when `engram sync` has been run).
 - `.gitignore` / `.gitattributes`: managed by `engram sync` on first run.
@@ -26,7 +32,14 @@ likely future queries and vocabulary. `source_group_id` links cards extracted
 from the same input. `supersedes` tracks correction lineage, while
 `consolidates` lists every source fact joined into a replacement card.
 
-Older records load with empty values for these fields. New extraction,
+`durability` is `evergreen` (never ages), `durable` (true until contradicted),
+or `ephemeral` (in-flight state; gets an `expires_at` of now +
+`ENGRAM_EPHEMERAL_TTL_DAYS` when none is given and decays in ranking).
+`anchors` lists repo-relative paths or code symbols the card depends on;
+`verify` checks them. `suspect_reason` is set when some anchors are missing:
+the card stays recallable, flagged "unverified", and ranks lower.
+
+Older records load with empty values for these fields (durability `durable`). New extraction,
 correction, editing, and merge paths preserve them. A merge appends one new
 card plus supersession events for its sources. It never rewrites the event-log
 prefix.

@@ -59,6 +59,7 @@ class WarningCode(str, Enum):
     conflicting_facts = "conflicting_facts"
     truncated_output = "truncated_output"
     provider_unavailable = "provider_unavailable"
+    suspect_fact = "suspect_fact"
 
 
 class EnvelopeWarning(BaseModel):

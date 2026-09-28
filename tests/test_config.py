@@ -11,7 +11,7 @@ def test_default_llm_uses_luna_with_medium_reasoning(monkeypatch):
 
     settings = Settings()
 
-    assert settings.llm_model == "openai/gpt-5.6-luna"
+    assert settings.llm_model == "openai/gpt-6-luna"
     assert settings.llm_reasoning_effort == "medium"
 
 

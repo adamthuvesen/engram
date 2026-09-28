@@ -1,14 +1,16 @@
 """Recall evaluation harness — golden-fixture testing for retrieval quality.
 
 Fixtures describe input facts, a query, expected source IDs that must appear
-in provenance, excluded source IDs that must not, optional answer-text
-assertions, and optional performance budgets (max tier, max LLM calls, max
-latency, max input tokens, expected cached tokens).
+in provenance, excluded source IDs that must not be delivered, an optional
+expected top card, expected warning codes, optional answer-text assertions,
+and optional performance budgets (max tier, max LLM calls, max latency, max
+input tokens, expected cached tokens).
 
 Two execution modes are supported:
 
-- Deterministic: prefilter, tier-0, ``prompt`` mode (compact fact dump), or
-  user-supplied mocked synthesis. No live provider needed.
+- Deterministic: lexical cards, or user-supplied mocked LLM output. The LLM
+  counts as available only when ``mocked_responses`` is non-empty, so a
+  deterministic fixture never reaches a real provider.
 - Provider-backed: requires ``ENGRAM_EVAL_PROVIDER=1`` and live credentials.
   Skipped (not failed) when the env flag is missing.
 
@@ -20,16 +22,18 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+import engram.recall.retriever as retriever_mod
+from engram.core.interfaces import WarningCode
+from engram.core.models import Durability, Fact, FactCategory
 from engram.llm import Completion
-from engram.core.models import Fact, FactCategory
-from engram.recall.retriever import recall_with_provenance
+from engram.recall.retriever import RecallMode, recall_with_provenance
 from engram.storage.store import FactStore
 
 
@@ -42,6 +46,11 @@ class EvalFactSpec(BaseModel):
     confidence: float = 1.0
     supersedes: str | None = None
     stale: bool = False
+    memory_key: str = ""
+    durability: Durability = Durability.durable
+    suspect_reason: str = ""
+    # Age of the observation; drives freshness decay for time-bound facts.
+    observed_days_ago: int = 0
 
 
 class EvalBudget(BaseModel):
@@ -61,13 +70,18 @@ class EvalFixture(BaseModel):
     facts: list[EvalFactSpec] = Field(default_factory=list)
     expected_source_ids: list[str] = Field(default_factory=list)
     excluded_source_ids: list[str] = Field(default_factory=list)
+    # The first delivered fact (top card, or first answer citation).
+    expected_top: str | None = None
+    expected_warnings: list[WarningCode] = Field(default_factory=list)
+    recall_mode: RecallMode = "cards"
     answer_contains: list[str] = Field(default_factory=list)
     answer_excludes: list[str] = Field(default_factory=list)
     budget: EvalBudget = Field(default_factory=EvalBudget)
     mode: Literal["deterministic", "provider"] = "deterministic"
-    # When ``mode == "deterministic"`` and the eval drives tier-1/tier-2,
+    # When ``mode == "deterministic"`` and the eval drives an LLM call,
     # ``mocked_responses`` supplies (text, input_tokens, cached_tokens) tuples
-    # consumed in call order. Leave empty for tier-0 evals.
+    # consumed in call order; a selection call parses ``text`` as JSON. Leave
+    # empty for lexical-only evals.
     mocked_responses: list[tuple[str, int | None, int | None]] = Field(
         default_factory=list
     )
@@ -101,6 +115,7 @@ def _materialize_facts(specs: list[EvalFactSpec]) -> list[Fact]:
     now = datetime.now(timezone.utc)
     facts: list[Fact] = []
     for spec in specs:
+        observed = now - timedelta(days=spec.observed_days_ago)
         facts.append(
             Fact(
                 id=spec.id,
@@ -111,34 +126,34 @@ def _materialize_facts(specs: list[EvalFactSpec]) -> list[Fact]:
                 confidence=spec.confidence,
                 supersedes=spec.supersedes,
                 stale=spec.stale,
-                created_at=now,
-                updated_at=now,
-                observed_at=now,
+                memory_key=spec.memory_key,
+                durability=spec.durability,
+                suspect_reason=spec.suspect_reason,
+                created_at=observed,
+                updated_at=observed,
+                observed_at=observed,
             )
         )
     return facts
 
 
-def _patch_completions(
-    monkeypatch_target, queue: list[tuple[str, int | None, int | None]]
-):
-    """Replace ``engram.recall.retriever.complete_with_usage`` with a queue stub."""
+def _mock_llm(queue: list[tuple[str, int | None, int | None]]):
+    """Queue-backed stand-ins for ``complete_with_usage`` and ``complete_model``."""
     pending = list(queue)
 
-    async def fake(
-        prompt,
-        system="",
-        model=None,
-        temperature=None,
-        response_format=None,
-        cache_prefix=None,
-    ):
+    def pop() -> tuple[str, int | None, int | None]:
         if not pending:
             raise RuntimeError("eval fixture exhausted mocked_responses")
-        text, input_tokens, cached = pending.pop(0)
+        return pending.pop(0)
+
+    async def fake_completion(prompt, system="", **_kwargs):
+        text, input_tokens, cached = pop()
         return Completion(text=text, input_tokens=input_tokens, cached_tokens=cached)
 
-    setattr(monkeypatch_target, "complete_with_usage", fake)
+    async def fake_model(prompt, system, response_model, **_kwargs):
+        return response_model.model_validate_json(pop()[0])
+
+    return fake_completion, fake_model
 
 
 async def run_fixture(
@@ -169,24 +184,33 @@ async def run_fixture(
         if facts:
             store.append_facts(facts)
 
-        import engram.recall.retriever as retriever_mod
-
-        saved = retriever_mod.complete_with_usage
-        # Deterministic mode must never reach a real provider: patch the
-        # completion even when the mock queue is empty, so an unexpected LLM
-        # call (e.g. zero-hit escalation on a machine with a configured key)
-        # raises "exhausted mocked_responses" loudly instead of billing.
+        saved = (
+            retriever_mod.complete_with_usage,
+            retriever_mod.complete_model,
+            retriever_mod._llm_available,
+        )
+        # Deterministic mode must never reach a real provider: the LLM counts
+        # as available only when the fixture mocks its output.
         if fixture.mode == "deterministic":
-            _patch_completions(retriever_mod, fixture.mocked_responses)
+            fake_completion, fake_model = _mock_llm(fixture.mocked_responses)
+            retriever_mod.complete_with_usage = fake_completion
+            retriever_mod.complete_model = fake_model
+            has_mocks = bool(fixture.mocked_responses)
+            retriever_mod._llm_available = lambda: has_mocks
 
         try:
             answer, quality, provenance, _ = await recall_with_provenance(
                 fixture.query,
                 project=fixture.project,
                 store=store,
+                mode=fixture.recall_mode,
             )
         finally:
-            retriever_mod.complete_with_usage = saved
+            (
+                retriever_mod.complete_with_usage,
+                retriever_mod.complete_model,
+                retriever_mod._llm_available,
+            ) = saved
 
     checks: list[EvalCheck] = []
 
@@ -214,6 +238,28 @@ async def run_fixture(
                 expected="not in cited_fact_ids",
                 actual=sorted(cited),
                 message="" if passed else "Excluded source appeared as cited",
+            )
+        )
+
+    if fixture.expected_top is not None:
+        top = provenance.cited_fact_ids[0] if provenance.cited_fact_ids else None
+        checks.append(
+            EvalCheck(
+                name="expected_top",
+                passed=top == fixture.expected_top,
+                expected=fixture.expected_top,
+                actual=top,
+            )
+        )
+
+    warning_codes = {warning.code for warning in provenance.warnings}
+    for code in fixture.expected_warnings:
+        checks.append(
+            EvalCheck(
+                name=f"expected_warning:{code.value}",
+                passed=code in warning_codes,
+                expected=code.value,
+                actual=sorted(c.value for c in warning_codes),
             )
         )
 
@@ -317,11 +363,10 @@ def representative_fixtures() -> list[EvalFixture]:
     """Bundle of fixtures covering the cases mentioned in the spec.
 
     Cases covered:
-    - project preferences (tier-0 fast path)
+    - project preferences (lexical cards, zero LLM calls)
     - outdated facts (superseded fact must be excluded)
-    - conflicting facts (two active facts that disagree)
     - duplicate memories (same content twice)
-    - small-corpus fast-path (cap demotes tier-2 to tier-1 in real config)
+    - answer mode (one mocked LLM call citing a card)
     """
     return [
         EvalFixture(
@@ -367,9 +412,8 @@ def representative_fixtures() -> list[EvalFixture]:
                     supersedes="oldedaaaaaaa",
                 ),
             ],
-            # Tier-0 will return both; the test asserts that the newer fact
-            # is in the cited list.
             expected_source_ids=["newedaaaaaaa"],
+            excluded_source_ids=["oldedaaaaaaa"],
             budget=EvalBudget(max_tier=0, max_llm_calls=0),
         ),
         EvalFixture(
@@ -394,26 +438,23 @@ def representative_fixtures() -> list[EvalFixture]:
             budget=EvalBudget(max_tier=0, max_llm_calls=0),
         ),
         EvalFixture(
-            name="small_corpus_fast_path",
-            description=(
-                "A small corpus that would otherwise be tier-2 should be "
-                "demoted by the small-corpus cap to tier 0/1."
-            ),
-            query="retrieval note retrieval note",
+            name="answer_mode_single_call",
+            description="Answer mode spends exactly one LLM call over the cards.",
+            query="retrieval note",
+            recall_mode="answer",
             facts=[
                 EvalFactSpec(
-                    id=f"small{i:02d}aaaa",
+                    id=f"ab{i:010d}",
                     category=FactCategory.preference,
                     content=f"retrieval note number {i}",
                 )
                 for i in range(5)
             ],
-            # Either 0 or 1 is acceptable on a small corpus.
-            budget=EvalBudget(max_tier=1),
-            # Provide a tier-1 mocked response so the eval is hermetic.
+            expected_source_ids=["ab0000000000"],
+            budget=EvalBudget(max_tier=1, max_llm_calls=1),
             mocked_responses=[
                 (
-                    "All notes mention retrieval (id: small00aaaa).\n[quality: medium]",
+                    "All notes mention retrieval (id: ab0000000000).\n[quality: medium]",
                     100,
                     0,
                 ),

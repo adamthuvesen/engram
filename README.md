@@ -3,45 +3,46 @@
 ![License](https://img.shields.io/github/license/adamthuvesen/engram) ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 
 Engram is structured, cross-project memory for coding agents. It runs as an MCP
-server or a CLI.
+server or a CLI, and keeps itself current: what an agent recalls is ranked,
+dated, and scoped to the repository it is working in.
 
-Recall uses a score-distribution router over the prefilter results. A sharp
-match returns directly with no LLM call. A focused cluster goes to one LLM call.
-A broad or flat result set goes to the tier-2 path, which is one broad LLM call.
-A query that matches nothing above the prefilter floor also costs one LLM call:
-it escalates to tier-1 over the top raw-scored candidates, so a paraphrase that
-shares no words with a stored fact can still be found. There are no embeddings
-and no vector database.
+**Recall is lexical and instant.** A BM25 index over memory cards (content,
+stable `memory_key`, retrieval hints, tags) returns the few cards that clear a
+relevance bar, each stamped with its category, project, and date, in a few
+milliseconds and with no LLM call. Only when nothing clears the bar does one
+small LLM call pick relevant cards from the top candidates, and `mode="answer"`
+opts into a synthesized answer. There are no embeddings and no vector database.
 
-Memories start as natural language, then an LLM extracts the minimum set of
-coherent memory cards onto disk. A card may contain several coupled clauses.
-Engram splits cards only when the claims can be corrected, contradicted,
-expired, or acted on independently. Every card keeps a stable `memory_key`,
-retrieval hints, source grouping, consolidation provenance, supersession chain,
-and confidence. The store is event-sourced: a plain append-only JSONL event log
-you can inspect directly.
+**Saving is one call.** `remember` takes plain language. One LLM call extracts
+memory cards and reconciles them against the closest existing cards: it reuses
+their `memory_key`, replaces the cards it updates or contradicts, skips what is
+already known, and retires what the input shows is no longer true. All of it
+lands in one atomic append to an event-sourced JSONL log.
 
-| Tier | When it runs | LLM calls |
-| --- | --- | ---: |
-| 0 | Few strong matches, or an empty store | 0 |
-| 1 | Focused matches with a clear top cluster, or nothing above the prefilter floor | 1 |
-| 2 | Many matches or a flat score distribution | 1 |
+**Memory stays current.** Background upkeep inside the MCP server:
 
-Without an LLM key configured, the zero-hit escalation is skipped: a query with
-nothing above the floor answers "no relevant memories" at tier-0, with no LLM
-call and no error.
+| Step | What it does | LLM |
+| --- | --- | --- |
+| `projects` | Canonicalizes scopes (paths and worktrees → repo name) | no |
+| `verify` | Checks file/symbol anchors against the repo; flags or retires drifted cards | no |
+| `consolidate` | Merges fragmented cards, retires junk and contradicted cards | yes |
+| `briefs` | Refreshes a per-project brief for session start | yes |
+
+Time-bound (`ephemeral`) memories fade in ranking and expire; `durable` ones hold
+until something contradicts them. Every change is an event, so nothing is
+rewritten in place.
 
 ## How it works
 
-1. **Store**: natural language in, structured facts out, appended to a JSONL event log.
-2. **Review** (optional): queue suggestions as candidates before they become recallable.
-3. **Recall**: prefilter, route by score distribution, then call the LLM only when needed.
+1. **Remember**: plain language in; cards extracted, reconciled, appended atomically.
+2. **Recall**: BM25 → relevance bar → dated cards (LLM only for zero-hit or `answer` mode).
+3. **Upkeep**: projects → verify → consolidate → briefs, on a schedule or via `engram upkeep`.
+4. **Review** (optional): `suggest_memories` queues candidates before they become recallable.
 
 The MCP server and CLI share the same operation layer. MCP is the agent-facing
 interface because clients get typed local tools from a persistent process, over
 stdio or a loopback HTTP daemon. The CLI is the faster interface for humans,
-scripts, audits, and batch maintenance. Model inference dominates the latency of
-extraction and complex recall.
+scripts, audits, and batch maintenance.
 
 ## No-key demo
 
@@ -56,19 +57,23 @@ uv run python tests/run_evals.py
 Expected shape:
 
 ```text
-Deterministic prefilter recall — representative query mix
+Deterministic lexical recall — representative query mix
 83 answerable labeled queries + 8 no-match queries over a 57-fact corpus  ·  no LLM, no embeddings
 
-43% of queries resolved at tier-0 with zero LLM calls  ·  tiers {0: 39, 1: 42, 2: 10}
+86% of queries resolve with zero LLM calls even when a key is configured
 
 metric                       value
 ----------------------------------
-recall@1                       89%
-recall@5                       96%
-candidate recall (hit-rate)     98%
-MRR                           0.92
+recall@1                       70%
+recall@5                       76%
+candidate recall (hit-rate)     90%
+MRR                           0.73
 
-no-match returns nothing above floor: ok
+recall@1 by query kind (where lexical search wins vs. where the LLM earns it):
+  literal        23/24    96%
+  paraphrase     20/21    95%
+  semantic       11/28    39%
+  synonym         3/9     33%
 ```
 
 What this covers:
@@ -80,34 +85,21 @@ What this covers:
 
 ## Recall, measured
 
-A deterministic keyword prefilter handles easy queries for free. The LLM tier
-runs only when a query needs it. The no-key eval measures that prefilter on **83
-answerable labeled queries plus 8 no-match queries over a 57-fact corpus**
-([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json)):
+The labeled dataset ([`tests/recall_eval_dataset.json`](tests/recall_eval_dataset.json))
+deliberately over-weights synonym and semantic queries (37 of 83) that share
+few words with the stored fact. Lexical search wins literal and paraphrased
+queries (95%+ at rank 1); synonym and semantic queries are where the zero-hit
+LLM selection earns its call. Candidate recall (90%) counts a hit when the right
+card is either returned or among the 30 candidates that LLM call chooses from.
 
-**43% of queries resolve at tier-0 with zero LLM calls.** For the rest, the
-prefilter still keeps the right memory in the deterministic candidate pool:
+Real agent queries skew toward literal keyword bags. Against 1,826 logged
+queries on a 5.6k-card store, the relevance bar returns a median of 4 cards and
+sends 32% of queries to the LLM selection call; search itself takes ~2 ms.
 
-| Deterministic prefilter (no LLM, no embeddings) | value |
-| ----------------------------------------------- | ----- |
-| recall@1 (answer ranked #1)                     | 89%   |
-| recall@5 (answer in the top 5)                  | 96%   |
-| candidate recall (answer kept in the pool)      | 98%   |
-| MRR                                             | 0.92  |
-
-This is the deterministic prefilter *floor*. It does not measure end-to-end
-retrieval accuracy. The aggregate includes harder queries the keyword pass can't
-resolve on its own. Those queries escalate to the LLM retrieval engine, which
-this number deliberately leaves out.
-
-One honest cost note: the eval pins zero-hit escalation off, so the 43% counts
-what the prefilter resolves on its own. With an LLM key configured, a query
-that matches nothing above the floor (the 8 no-match queries here) now costs
-one bounded LLM call instead of returning "no relevant memories" for free —
-the zero-LLM share of this mix becomes 31/91 (34%).
-
-The queries are labeled to source facts. The `kind` field shows the mix of
-literal, paraphrased, synonym, semantic, and cross-project queries.
+[`tests/knowledge_update_eval_fixtures.json`](tests/knowledge_update_eval_fixtures.json)
+pins staleness behavior: a superseded card never returns, a stale card is
+excluded, an old time-bound event ranks below an equally matching durable card,
+suspect cards carry a warning, and scoped queries never leak other projects.
 
 Reproduce the deterministic no-key run:
 
@@ -116,18 +108,12 @@ uv run python tests/run_evals.py
 ```
 
 Extraction has a separate no-key contract fixture for claim coverage, card
-precision, fragmentation, transient exclusion, stable keys, and retrieval
-hints. Its gold outputs test the scorer and required quality floor:
+precision, fragmentation, transient and bookkeeping exclusion, stable keys, and
+retrieval hints:
 
 ```bash
 uv run python tests/run_extraction_quality_evals.py
-```
-
-Run the same labels through the real extraction and dedup path when provider
-credentials are available:
-
-```bash
-uv run python tests/run_extraction_quality_evals.py --live
+uv run python tests/run_extraction_quality_evals.py --live   # with provider credentials
 ```
 
 ## Cross-project recall quality
@@ -183,14 +169,15 @@ No-key paths:
 
 Runtime paths that can call the LLM:
 
-- `remember` and `suggest-memories`
-- `recall`, `recall-context`, and `recall-trace` when a query escalates past
-  tier-0
+- `remember` and `suggest-memories` (one call each)
+- `recall`, `recall-context`, and `recall-trace` when nothing clears the
+  relevance bar, or with `mode="answer"`
+- `upkeep` steps `consolidate` and `briefs` (also run in the background)
 - `doctor --check-provider`
 
-Engram talks to an LLM via [litellm](https://github.com/BerriAI/litellm). These
-paths need whatever credentials your configured model expects, such as
-`OPENAI_API_KEY`. The model is set with `ENGRAM_LLM_MODEL` (see
+Engram calls the OpenAI API directly through the official SDK, so these paths
+need `OPENAI_API_KEY`. The model is set with `ENGRAM_LLM_MODEL` (default
+`openai/gpt-6-luna`, run in OpenAI's fast tier; see
 [Configuration](#configuration)).
 
 ### As an MCP server
@@ -221,6 +208,11 @@ Every MCP tool has a hyphenated CLI subcommand. Bare `engram` starts the server,
 and `engram --help` lists the subcommands. Every subcommand accepts `--json`.
 
 ```bash
+engram remember "We moved CI to uv; never pip install in workflows" --project ~/dev/app
+engram recall "editor preference" --project ~/dev/app            # dated cards, no LLM
+engram recall "why did we drop pandas?" --mode answer            # one LLM call
+engram recall-context --mode brief --project ~/dev/app           # session-start brief
+engram upkeep --dry-run                                          # what upkeep would change
 engram recall "what does alex prefer for editors?" --json --with-provenance
 engram recall-trace "what does alex prefer for editors?" --json   # + prompt/output excerpts
 engram doctor --check-provider --json
@@ -243,19 +235,24 @@ Operation failures use stable exit codes (1 validation, 2 not-found, 3 runtime,
 
 | Tool | Purpose |
 | --- | --- |
-| `remember` | Store memories (extracts facts from natural language) |
-| `suggest_memories` | Propose candidates for human review |
+| `remember` | Save plain language: extract, reconcile, replace, retire (one LLM call) |
+| `suggest_memories` | Same extraction, queued as candidates for review |
 | `list_candidates` / `approve_candidates` / `reject_candidates` | Manage candidates |
-| `recall` | Search memory; `format="json"` for an agent envelope |
-| `recall_context` | Recall as an answer or a compact prompt block |
+| `recall` | Dated memory cards (`mode="cards"`, default) or an answer (`mode="answer"`) |
+| `recall_context` | `brief` (project brief), `cards`, or `answer` |
 | `recall_trace` | Recall + bounded prompt/output excerpts (always JSON) |
 | `correct_memory` / `merge_memories` | Supersede or consolidate facts (audit preserved) |
 | `mark_stale` / `unmark_stale` / `forget` | Toggle recall eligibility or soft-delete |
 | `inspect` / `memory_stats` / `recall_stats` | Browse and inspect |
+| `upkeep` | Run projects / verify / consolidate / briefs now (`dry_run` available) |
 | `audit_memories` | Read-only duplicate / stale / contradiction suggestions |
-| `doctor` | Health check (read-only; opt-in `repair`) |
+| `doctor` | Health check incl. volume metrics (read-only; opt-in `repair`) |
 | `sync` | Git-backed pull + push of the data directory |
 | `import_memories` | Bootstrap from `~/.claude/projects/*/memory/` |
+
+Pass `project` as the agent's working directory (or the repo name). Paths and
+git worktrees resolve to the repository's name, and the repo root is recorded
+locally so `verify` can check anchors.
 
 Default tool responses are concise text. MCP tools also expose the same envelope
 as `structuredContent`, so agent clients don't have to parse JSON out of text.
@@ -263,10 +260,10 @@ Pass `format="json"` (or `--json` in the CLI) when you want the envelope inline:
 
 ```
 recall(query, format="json", with_provenance=True) →
-  {status, data: {answer, tier, source_fact_ids, cited_fact_ids, provenance, usage}, warnings, errors, meta}
+  {status, data: {answer, mode, facts, tier, source_fact_ids, cited_fact_ids, provenance, usage}, warnings, errors, meta}
 ```
 
-`recall` / `recall_trace` cap synthesis with `max_sources` (default 25; `limit`
+`recall` / `recall_trace` return at most `max_sources` cards (default 10; `limit`
 is an MCP-only alias). Maintenance tools always return JSON with a stable
 `status` and error codes (`validation_error`, `not_found`, `provider_error`,
 `storage_error`, `conflict`). Lists carry default safety caps, and truncation is
@@ -299,11 +296,17 @@ All settings are `ENGRAM_*` env vars (pydantic-settings). Key knobs:
 
 | Env var | Default | Description |
 | --- | --- | --- |
-| `ENGRAM_LLM_MODEL` | `openai/gpt-5.6-luna` | LLM for extraction and search |
-| `ENGRAM_LLM_REASONING_EFFORT` | `medium` | GPT-5.6 reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max` |
-| `ENGRAM_MAX_FACTS_PER_AGENT` | `200` | Max facts fed to the recall LLM call |
+| `ENGRAM_LLM_MODEL` | `openai/gpt-6-luna` | LLM for extraction, recall fallback, and upkeep |
+| `ENGRAM_LLM_REASONING_EFFORT` | `medium` | Reasoning effort for extraction and upkeep (reasoning models) |
+| `ENGRAM_LLM_SERVICE_TIER` | `fast` | OpenAI processing tier: `fast` (lowest latency, ~2x price), `default`, or empty to omit |
+| `ENGRAM_RECALL_REASONING_EFFORT` | `low` | Reasoning effort for recall calls (reasoning models) |
+| `ENGRAM_MAX_FACTS_PER_AGENT` | `40` | Max facts fed to a recall LLM call |
 | `ENGRAM_RETRIEVAL_TIMEOUT` | `15.0` | Recall LLM call timeout (seconds) |
-| `ENGRAM_TIER2_MIN_PREFILTER_COUNT` | `11` | Minimum prefilter matches before tier-2 (`0` disables the small-corpus cap) |
+| `ENGRAM_EPHEMERAL_TTL_DAYS` | `45` | Default expiry for time-bound memories |
+| `ENGRAM_MAINTENANCE_ENABLED` | `true` | Run background upkeep in the MCP server |
+| `ENGRAM_MAINTENANCE_INTERVAL` | `21600` | Seconds between background upkeep runs |
+| `ENGRAM_MAINTENANCE_CONCURRENCY` | `4` | Parallel consolidation LLM calls |
+| `ENGRAM_REPO_SEARCH_ROOTS` | `~/dev`, `~/code`, `~/src`, `~/projects`, `~` | Where `verify` looks for a project's checkout when none is recorded |
 | `ENGRAM_DATA_DIR` | `~/.engram/data` | Storage directory |
 | `ENGRAM_SYNC_ENABLED` | `false` | Run background auto-sync inside the MCP server lifespan |
 | `ENGRAM_SYNC_INTERVAL` | `300.0` | Background auto-sync cadence (seconds) |
@@ -317,6 +320,8 @@ Everything lives under `~/.engram/data/` (override with `ENGRAM_DATA_DIR`):
 - `candidates.jsonl`: suggested memories pending review.
 - `recall_log.jsonl`: recall-quality and latency history.
 - `transactions.jsonl`: prepared/committed journal for crash-safe writes.
+- `maintenance_state.jsonl`: upkeep progress (synced, union-merged).
+- `projects.local.json`: project → repo root on this machine (not synced).
 
 ## Sync across machines
 
@@ -340,7 +345,9 @@ stay local) and `.gitattributes` (`merge=union` on the event-log files, so
 parallel appends from two machines auto-merge). Set `ENGRAM_SYNC_ENABLED=true`
 to have the MCP server sync on `ENGRAM_SYNC_INTERVAL` and once on shutdown.
 `engram doctor` reports sync state under `counts.sync`. That check is local and
-makes no network calls.
+makes no network calls. Upkeep's lock is per machine, so with sync enabled run
+background upkeep on one machine (`ENGRAM_MAINTENANCE_ENABLED=false` elsewhere)
+to avoid two machines consolidating the same cards.
 
 ## Development
 
@@ -355,4 +362,4 @@ uv build                                   # build sdist + wheel
 Architecture notes live in [docs/architecture.md](docs/architecture.md). The
 storage and event-log model lives in [docs/data.md](docs/data.md).
 
-Python 3.11+ · FastMCP 3.x · litellm · pydantic-settings · JSONL storage · MIT-licensed.
+Python 3.11+ · FastMCP · OpenAI SDK · snowballstemmer · pydantic-settings · JSONL storage · MIT-licensed.
