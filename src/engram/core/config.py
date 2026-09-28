@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     )
     llm_temperature: float = 0.0
     # OpenAI processing tier: "fast" (priority, ~2x price, lowest latency),
-    # "default", or "" to omit the parameter. Ignored for Anthropic models.
+    # "default", or "" to omit the parameter.
     llm_service_tier: str = "fast"
     # Recall sits on the agent's critical path; extraction and upkeep can think
     # harder than recall does.
@@ -169,6 +169,6 @@ def configure_logging() -> None:
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    # LiteLLM logs every completion at INFO; upkeep makes hundreds of calls.
-    for name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy", "httpx"):
+    # The HTTP stack logs every request at INFO; upkeep makes hundreds.
+    for name in ("httpx", "openai"):
         logging.getLogger(name).setLevel(logging.WARNING)

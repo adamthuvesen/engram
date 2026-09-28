@@ -175,9 +175,9 @@ Runtime paths that can call the LLM:
 - `upkeep` steps `consolidate` and `briefs` (also run in the background)
 - `doctor --check-provider`
 
-Engram talks to an LLM via [litellm](https://github.com/BerriAI/litellm). These
-paths need whatever credentials your configured model expects, such as
-`OPENAI_API_KEY`. The model is set with `ENGRAM_LLM_MODEL` (see
+Engram calls the OpenAI API directly through the official SDK, so these paths
+need `OPENAI_API_KEY`. The model is set with `ENGRAM_LLM_MODEL` (default
+`openai/gpt-6-luna`, run in OpenAI's fast tier; see
 [Configuration](#configuration)).
 
 ### As an MCP server
@@ -298,7 +298,7 @@ All settings are `ENGRAM_*` env vars (pydantic-settings). Key knobs:
 | --- | --- | --- |
 | `ENGRAM_LLM_MODEL` | `openai/gpt-6-luna` | LLM for extraction, recall fallback, and upkeep |
 | `ENGRAM_LLM_REASONING_EFFORT` | `medium` | Reasoning effort for extraction and upkeep (reasoning models) |
-| `ENGRAM_LLM_SERVICE_TIER` | `fast` | OpenAI processing tier (`fast`, `default`, or empty to omit) |
+| `ENGRAM_LLM_SERVICE_TIER` | `fast` | OpenAI processing tier: `fast` (lowest latency, ~2x price), `default`, or empty to omit |
 | `ENGRAM_RECALL_REASONING_EFFORT` | `low` | Reasoning effort for recall calls (reasoning models) |
 | `ENGRAM_MAX_FACTS_PER_AGENT` | `40` | Max facts fed to a recall LLM call |
 | `ENGRAM_RETRIEVAL_TIMEOUT` | `15.0` | Recall LLM call timeout (seconds) |
@@ -362,4 +362,4 @@ uv build                                   # build sdist + wheel
 Architecture notes live in [docs/architecture.md](docs/architecture.md). The
 storage and event-log model lives in [docs/data.md](docs/data.md).
 
-Python 3.11+ · FastMCP · litellm · snowballstemmer · pydantic-settings · JSONL storage · MIT-licensed.
+Python 3.11+ · FastMCP · OpenAI SDK · snowballstemmer · pydantic-settings · JSONL storage · MIT-licensed.

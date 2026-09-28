@@ -21,7 +21,7 @@ storage/                 persistence
                          review, transaction journal
   search.py              tokenizer + BM25F index (IDF, bigrams, freshness decay)
   sync.py                git-backed sync of the data directory, background loop
-llm/                     litellm wrapper (`engram.llm` re-exports the client)
+llm/                     OpenAI SDK client (`engram.llm` re-exports it)
 extraction/              natural language to facts
   observer.py            ingest: one LLM call extracts cards and reconciles
                          them against BM25 neighbors (replace/retire/duplicate)
@@ -76,7 +76,7 @@ refreshes a `project-brief` card per project. The MCP server runs it every
 
 - Python 3.11+, managed with `uv`.
 - FastMCP 3.x for the MCP server surface.
-- litellm for model-agnostic LLM calls.
+- The official OpenAI SDK for LLM calls (reasoning effort, fast service tier).
 - All MCP tools are async. Storage I/O is synchronous behind an
   `AsyncFactStore` `asyncio.to_thread` facade.
 - Fact records have: memory key, content, retrieval hints, category,

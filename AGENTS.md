@@ -17,7 +17,7 @@ src/engram/
 ├── operations.py   shared operation layer behind the MCP tools and CLI
 ├── core/           domain models, agent-facing contracts, config
 ├── storage/        event-log store, BM25 search index, git sync
-├── llm/            litellm wrapper
+├── llm/            OpenAI SDK client
 ├── extraction/     single-call extract + reconcile (ingest)
 ├── recall/         BM25 card recall + answer mode + eval harness
 ├── maintenance/    upkeep (verify, consolidate, briefs), audit, doctor

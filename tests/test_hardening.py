@@ -351,32 +351,22 @@ def test_complete_model_unparseable_raises_validation_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 3.5 LLM retry: num_retries=2 is forwarded to litellm
+# 3.5 LLM retry: the OpenAI client retries transient failures
 # ---------------------------------------------------------------------------
 
 
-def test_complete_passes_num_retries(monkeypatch):
-    """complete() passes num_retries=2 to litellm.acompletion."""
+def test_openai_client_retries_and_is_reused_per_loop(monkeypatch):
+    """Each event loop gets one client, configured with max_retries=2."""
     from engram.llm import client as llm
 
-    captured_kwargs: dict = {}
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    async def fake_acompletion(**kwargs):
-        captured_kwargs.update(kwargs)
-        response = MagicMock()
-        response.choices[0].message.content = "hello"
-        return response
+    async def two_lookups():
+        return llm._client(), llm._client()
 
-    fake_litellm = MagicMock()
-    fake_litellm.suppress_debug_info = False
-    fake_litellm.acompletion = fake_acompletion
-
-    monkeypatch.setattr(llm, "_get_litellm", lambda: fake_litellm)
-    monkeypatch.setattr("engram.core.config.ensure_openai_api_key", lambda: "key")
-
-    result = asyncio.run(llm.complete(prompt="test", model="openai/gpt-4o-mini"))
-    assert result == "hello"
-    assert captured_kwargs.get("num_retries") == 2
+    first, second = asyncio.run(two_lookups())
+    assert first is second
+    assert first.max_retries == 2
 
 
 def test_recall_context_prompt_mode_smoke():

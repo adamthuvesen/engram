@@ -355,7 +355,7 @@ def _check_config(issues: list[DoctorIssue]) -> None:
                 severity="error",
                 category="config",
                 message="ENGRAM_LLM_MODEL is empty.",
-                repair="Set ENGRAM_LLM_MODEL to a litellm-supported model.",
+                repair="Set ENGRAM_LLM_MODEL to an OpenAI model such as openai/gpt-6-luna.",
             )
         )
 
