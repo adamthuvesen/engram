@@ -17,18 +17,41 @@ class Settings(BaseSettings):
     data_dir: Path = Path.home() / ".engram" / "data"
 
     # LLM for extraction and recall
-    llm_model: str = "openai/gpt-5.6-luna"
+    llm_model: str = "openai/gpt-6-luna"
     llm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = (
         "medium"
     )
     llm_temperature: float = 0.0
+    # OpenAI processing tier: "fast" (priority, ~2x price, lowest latency),
+    # "default", or "" to omit the parameter. Ignored for Anthropic models.
+    llm_service_tier: str = "fast"
+    # Recall sits on the agent's critical path; extraction and upkeep can think
+    # harder than recall does.
+    recall_reasoning_effort: Literal[
+        "none", "low", "medium", "high", "xhigh", "max"
+    ] = "low"
 
     # Retrieval
-    max_facts_per_agent: int = 200
+    max_facts_per_agent: int = 40
     retrieval_timeout: float = 15.0
-    # Tier-2 requires at least this many strictly-positive-scored prefilter
-    # matches. Set to 0 to disable the small-corpus cap.
-    tier2_min_prefilter_count: int = 11
+
+    # Lifecycle: ephemeral memories without an explicit expiry get this TTL.
+    ephemeral_ttl_days: int = 45
+
+    # Upkeep: background consolidation, anchor verification, and project
+    # briefs inside the MCP server. Runs only when an LLM key is available.
+    maintenance_enabled: bool = True
+    maintenance_interval: float = 6 * 3600.0
+    maintenance_concurrency: int = 4
+    # Where upkeep looks for a project's git checkout when no working
+    # directory has been recorded for it yet.
+    repo_search_roots: list[Path] = [
+        Path.home() / "dev",
+        Path.home() / "code",
+        Path.home() / "src",
+        Path.home() / "projects",
+        Path.home(),
+    ]
 
     # Claude Code integration
     claude_projects_dir: Path = Path.home() / ".claude" / "projects"
@@ -146,3 +169,6 @@ def configure_logging() -> None:
         level=getattr(logging, log_level.upper()),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    # LiteLLM logs every completion at INFO; upkeep makes hundreds of calls.
+    for name in ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy", "httpx"):
+        logging.getLogger(name).setLevel(logging.WARNING)

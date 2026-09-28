@@ -1,7 +1,7 @@
 # AGENTS.md - Engram
 
 Engram is structured, cross-project memory for coding agents, served over MCP.
-It uses LLM-powered extraction and tiered retrieval over an append-only event
+It uses LLM-powered extraction, BM25 recall, and self-maintaining upkeep over an append-only event
 log. There are no embeddings and no vector DB.
 
 User-level guidance (tone, principles, git etiquette) lives in
@@ -16,11 +16,11 @@ src/engram/
 ├── cli.py          `engram` console-script command surface
 ├── operations.py   shared operation layer behind the MCP tools and CLI
 ├── core/           domain models, agent-facing contracts, config
-├── storage/        append-only event-log store + AsyncFactStore + git sync
+├── storage/        event-log store, BM25 search index, git sync
 ├── llm/            litellm wrapper
-├── extraction/     natural language to structured facts
-├── recall/         tiered retrieval + recall@k eval harness
-├── maintenance/    audit / doctor upkeep
+├── extraction/     single-call extract + reconcile (ingest)
+├── recall/         BM25 card recall + answer mode + eval harness
+├── maintenance/    upkeep (verify, consolidate, briefs), audit, doctor
 └── dashboard/      Textual TUI (`engram-dash`)
 
 tests/              pytest suite + eval datasets and runners

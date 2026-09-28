@@ -1,9 +1,9 @@
 """Recall provenance and trace data structures.
 
 These models describe *how* a recall result was produced — what facts the
-prefilter matched, which tier was selected, what facts ended up cited in the
-final answer, what warnings apply (stale/superseded/forgotten/conflicting),
-and what the call cost in time and tokens.
+search matched, which tier ran, which facts were delivered (cards shown or
+answer citations), what warnings apply (conflicting/suspect/provider), and
+what the call cost in time and tokens.
 
 Provenance is computed from artifacts the retriever already produces; building
 it must not add additional default LLM calls. Trace adds bounded prompt
@@ -25,13 +25,17 @@ from engram.core.interfaces import EnvelopeWarning
 # so agents can call it without flooding their context window.
 DEFAULT_PROMPT_EXCERPT_CHARS = 2000
 DEFAULT_OUTPUT_EXCERPT_CHARS = 2000
-DEFAULT_MAX_SOURCES = 25
+DEFAULT_MAX_SOURCES = 10
 DEFAULT_MAX_PREFILTER_MATCHES = 50
 
 
 class PrefilterMatch(BaseModel):
+    """One search hit. ``above_floor`` means it cleared the relevance bar."""
+
     id: str
-    score: int
+    score: float
+    # Share of the query's IDF mass this fact matched (0..1).
+    coverage: float
     above_floor: bool
 
 
@@ -44,7 +48,7 @@ class SourceSummary(BaseModel):
     confidence: float
     updated_at: datetime
     content_excerpt: str = ""
-    score: int | None = None
+    score: float | None = None
     cited: bool = False
     superseded_by: str | None = None
     stale: bool = False
@@ -56,11 +60,9 @@ class TierDecision(BaseModel):
     tier: int
     rules: str
     relevant_count: int
-    top_score: int | None = None
-    gap_ratio: float | None = None
-    cap_applied: bool = False
-    # True when a zero-relevant tier-0 decision was escalated to the tier-1
-    # LLM search because the corpus is non-empty and an LLM key is configured.
+    top_score: float | None = None
+    # True when no hit cleared the relevance bar and the top hits went to one
+    # LLM call instead (selection in cards mode, synthesis in answer mode).
     zero_hit_escalation: bool = False
 
 

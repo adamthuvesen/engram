@@ -1,13 +1,22 @@
-"""Retriever — tiered agentic memory retrieval with quality observability."""
+"""Retriever: lexical memory cards by default, one LLM call when asked.
+
+Recall ranks recallable facts with the BM25 search index, keeps the hits that
+clear a deterministic relevance bar, and returns them as dated memory cards
+with zero LLM calls. ``mode="answer"`` spends one LLM call to synthesize an
+answer over those cards. When nothing clears the bar but the search still
+found weak candidates, one LLM call picks the relevant ones (paraphrases and
+synonyms the lexical pass cannot judge).
+"""
 
 import asyncio
 import logging
 import re
 import time
+from dataclasses import dataclass, field
+from typing import Literal
 
-from engram.core.config import ensure_openai_api_key, get_settings
+from engram.core.config import Settings, ensure_openai_api_key, get_settings
 from engram.core.interfaces import EnvelopeWarning, WarningCode
-from engram.llm import Completion, complete_with_usage
 from engram.core.models import Fact, RecallRecord
 from engram.core.provenance import (
     DEFAULT_MAX_PREFILTER_MATCHES,
@@ -23,72 +32,63 @@ from engram.core.provenance import (
     UsageSummary,
     excerpt,
 )
-from engram.storage.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.core.structured_outputs import StructuredOutput
+from engram.llm import complete_model, complete_with_usage
+from engram.storage.search import SearchHit
+from engram.storage.store import (
+    AsyncFactStore,
+    FactStore,
+    format_fact_line,
+    format_facts_for_llm,
+)
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Search system prompts
-# ---------------------------------------------------------------------------
+RecallMode = Literal["cards", "answer"]
 
-SINGLE_AGENT_SYSTEM = """You are a memory search and synthesis agent. Given a query and stored facts,
-find the most relevant facts and produce a clear, concise answer.
+ANSWER_SYSTEM = """You are a memory search and synthesis agent. Given a query and stored
+facts, answer the query from the facts that bear on it, as if briefing a colleague.
+Keep it concise but complete.
 
-1. Identify facts that directly answer the query
-2. Note any useful context or background
-3. Flag contradictions or stale information
-4. Cite fact IDs for traceability — copy each ID exactly (12 hex characters) from its
-   `id:` marker; never invent, merge, or truncate an ID. Omit a citation rather than guess one.
-
-Write naturally, as if briefing someone. Keep it concise but complete.
-
-At the very end of your answer, on a new line, add a quality rating in the format:
-[quality: high|medium|low|none]"""
-
-TIER2_SINGLE_SYSTEM = """You are a memory search and synthesis agent. Given a broad query and stored facts,
-reason through the evidence from three perspectives before answering:
-
-- Direct: facts that directly answer the query
-- Contextual: useful background, related preferences, and connected facts
-- Temporal: current vs. stale information, supersessions, contradictions, and timelines
-
-Do the perspective work internally, then write only the final concise answer.
-Cite fact IDs for traceability — copy each ID exactly (12 hex characters) from its `id:`
-marker; never invent, merge, or truncate an ID. Omit a citation rather than guess one.
-Prefer newer, non-expired facts when evidence conflicts.
-If the evidence is weak or contradictory, say so instead of guessing.
+- Every fact carries the date it was observed. When facts about the same thing
+  conflict, prefer the newer one and say that it replaced the older one.
+- Facts flagged `time-bound`, `expires ...`, or `unverified: ...` may be out of date;
+  say so when you rely on one.
+- Cite fact IDs for traceability: copy each ID exactly (12 hex characters) from its
+  `id:` marker; never invent, merge, or truncate an ID. Omit a citation rather than
+  guess one.
+- If the facts do not answer the query, say so instead of guessing.
 
 At the very end of your answer, on a new line, add a quality rating in the format:
 [quality: high|medium|low|none]"""
 
-# ---------------------------------------------------------------------------
-# Tier thresholds
-# ---------------------------------------------------------------------------
+SELECT_SYSTEM = """You pick stored memory facts that are relevant to a query.
+The facts matched the query only weakly by keywords, so judge meaning, not word
+overlap: a fact is relevant when it answers or directly informs the query.
+Return the IDs of the relevant facts, most relevant first, copied exactly from their
+`id:` markers. Return an empty list when none are relevant."""
 
-# Minimum score to count as a "real" match (filters out recency/confidence noise)
-RELEVANCE_FLOOR = 5
+# Relevance bar for lexical hits. A hit counts when it covers enough of the
+# query's IDF mass AND scores close enough to the best hit. Calibrated against
+# ~1.8k real recall-log queries over a 5.6k-fact store: these values keep the
+# typical card set at 1-10 facts with the right card first, and send roughly
+# a third of queries (mostly vague keyword bags) to LLM selection instead.
+MIN_COVERAGE = 0.3
+RELATIVE_CUTOFF = 0.4
+# Top-card coverage at or above this reports quality "high".
+HIGH_QUALITY_COVERAGE = 0.6
 
-# Tier 0: trivial — very few matches, answer is obvious.
-TIER_0_MAX_RELEVANT = 4
-TIER_0_MIN_SCORE = 10
+# When nothing clears the relevance bar, at most this many top hits go to one
+# LLM call (selection in cards mode, synthesis in answer mode).
+ZERO_HIT_MAX_CANDIDATES = 30
 
-# Tier 1: focused — moderate matches with a concentrated top cluster.
-TIER_1_MAX_RELEVANT = 20
-TIER_1_MIN_TOP_SCORE = 8
-TIER_1_MIN_GAP = 1.5  # top score must be ≥1.5x the 5th score
+# v4 = BM25 search with coverage/relative relevance and card output.
+SELECTOR_VERSION = "v4"
 
-# Zero-hit escalation: when no fact clears RELEVANCE_FLOOR but the corpus is
-# non-empty, the tier-1 LLM search runs over the top raw-scored candidates
-# instead of answering "no relevant memories" without looking. Bounded so a
-# large corpus doesn't blow up the prompt.
-ZERO_HIT_MAX_CANDIDATES = 50
-
-# v3 = the v2 thresholds plus zero-hit escalation, so recall_stats can split
-# tier mixes recorded before and after escalation shipped.
-SELECTOR_VERSION = "v3"
+NO_RELEVANT_MEMORIES = "No relevant memories found for this query."
 
 # Fact-ID extraction from LLM responses. Fact IDs are 12-hex strings emitted in
-# `(id: <hex>)` form by ``format_facts_for_llm``.
+# `(id: <hex>)` form by ``format_fact_line``.
 _CITED_ID_RE = re.compile(r"\b([0-9a-f]{12})\b")
 
 # ID-like hex runs in answer text. Runs shorter than 8 chars collide with
@@ -106,95 +106,10 @@ _CITATION_TIDY_RULES = [
 ]
 
 
-def _tier_decision(
-    tier: int,
-    *,
-    relevant_count: int,
-    top_score: int | None,
-    gap_ratio: float | None,
-    cap_applied: bool = False,
-) -> TierDecision:
-    return TierDecision(
-        tier=tier,
-        rules=SELECTOR_VERSION,
-        relevant_count=relevant_count,
-        top_score=top_score,
-        gap_ratio=gap_ratio,
-        cap_applied=cap_applied,
-    )
+class RecallSelection(StructuredOutput):
+    """LLM response for zero-hit selection: IDs of the relevant candidates."""
 
-
-def _relevance_gap(relevant_scores: list[int]) -> float:
-    top = relevant_scores[0]
-    comparison = relevant_scores[-1] if len(relevant_scores) < 5 else relevant_scores[4]
-    return top / comparison if comparison > 0 else float("inf")
-
-
-def _reported_gap(gap: float) -> float | None:
-    return gap if gap != float("inf") else None
-
-
-def _select_tier_with_decision(
-    scored_facts: list[tuple[int, Fact]],
-    min_prefilter_for_tier2: int = 0,
-) -> TierDecision:
-    """Select retrieval tier and return the decision with its inputs.
-
-    See :func:`_select_tier` for the tier semantics. This wrapper exists so
-    provenance can capture the threshold inputs that drove the choice.
-    """
-    if not scored_facts:
-        return _tier_decision(
-            0,
-            relevant_count=0,
-            top_score=None,
-            gap_ratio=None,
-        )
-
-    relevant = [s for s, _ in scored_facts if s >= RELEVANCE_FLOOR]
-
-    if not relevant:
-        return _tier_decision(
-            0,
-            relevant_count=0,
-            top_score=scored_facts[0][0] if scored_facts else None,
-            gap_ratio=None,
-        )
-
-    top = relevant[0]
-    gap = _relevance_gap(relevant)
-
-    if len(relevant) <= TIER_0_MAX_RELEVANT and top >= TIER_0_MIN_SCORE:
-        return _tier_decision(
-            0,
-            relevant_count=len(relevant),
-            top_score=top,
-            gap_ratio=_reported_gap(gap),
-        )
-
-    if top >= 15 and gap >= TIER_1_MIN_GAP:
-        return _tier_decision(
-            1,
-            relevant_count=len(relevant),
-            top_score=top,
-            gap_ratio=_reported_gap(gap),
-        )
-
-    chosen = 2
-    cap_applied = False
-    if min_prefilter_for_tier2 > 0:
-        positive = sum(1 for s, _ in scored_facts if s > 0)
-        if positive < min_prefilter_for_tier2:
-            chosen = 1
-            cap_applied = True
-
-    return _tier_decision(
-        chosen,
-        relevant_count=len(relevant),
-        top_score=top,
-        gap_ratio=_reported_gap(gap),
-        cap_applied=cap_applied,
-    )
+    relevant_ids: list[str]
 
 
 def _llm_available() -> bool:
@@ -202,76 +117,28 @@ def _llm_available() -> bool:
     return ensure_openai_api_key() is not None
 
 
-def _escalate_zero_hit(
-    decision: TierDecision,
-    scored_facts: list[tuple[int, Fact]],
-) -> TierDecision:
-    """Escalate a zero-relevant tier-0 decision to the tier-1 LLM search.
-
-    A paraphrased or synonym query can share zero tokens with a stored fact,
-    so the keyword prefilter alone cannot rule out a match. When the corpus
-    is non-empty and an LLM key is configured, the top raw-scored candidates
-    (even below ``RELEVANCE_FLOOR``) go to tier 1 instead of hard-stopping at
-    "no relevant memories". Without a key the decision is returned unchanged,
-    keeping recall zero-LLM and crash-free.
-    """
-    if decision.tier != 0 or decision.relevant_count > 0 or not scored_facts:
-        return decision
-    if not _llm_available():
-        return decision
-    return TierDecision(
-        tier=1,
-        rules=SELECTOR_VERSION,
-        relevant_count=0,
-        top_score=scored_facts[0][0],
-        gap_ratio=None,
-        zero_hit_escalation=True,
-    )
+def _relevant_hits(hits: list[SearchHit]) -> list[SearchHit]:
+    """Hits that clear the coverage floor and the relative score cutoff."""
+    if not hits:
+        return []
+    floor = RELATIVE_CUTOFF * hits[0].score
+    return [hit for hit in hits if hit.coverage >= MIN_COVERAGE and hit.score >= floor]
 
 
-def _select_tier(
-    scored_facts: list[tuple[int, Fact]],
-    min_prefilter_for_tier2: int = 0,
-) -> int:
-    """Select retrieval tier based on score distribution shape.
-
-    Uses both the count of relevant matches AND the gap ratio (how much
-    the top results stand out from the pack) to decide:
-
-    Tier 0: Few matches with a clear standout → direct return, no LLM.
-    Tier 1: Focused matches with concentrated signal → one LLM call.
-    Tier 2: Many matches or flat distribution → one broad LLM call.
-
-    Zero relevant matches → Tier 0 (direct) here; ``recall_with_provenance``
-    escalates that case to tier 1 via :func:`_escalate_zero_hit` when the
-    corpus is non-empty and an LLM key is configured.
-
-    When ``min_prefilter_for_tier2 > 0``, an additional cap applies: queries
-    whose prefilter produced fewer than ``min_prefilter_for_tier2``
-    strictly-positive-scored facts are downgraded from tier-2 to tier-1.
-    Tier-0 decisions are never touched by the cap.
-    """
-    return _select_tier_with_decision(
-        scored_facts, min_prefilter_for_tier2=min_prefilter_for_tier2
-    ).tier
-
-
-def _format_direct(scored_facts: list[tuple[int, Fact]], query: str) -> str:
-    """Tier 0: Format high-confidence facts directly without LLM."""
-    if not scored_facts:
-        return "No memories stored yet. Use `remember` to add some."
-    facts = [f for score, f in scored_facts if score >= RELEVANCE_FLOOR]
+def _format_cards(facts: list[Fact], total: int, project: str | None) -> str:
+    """Card output: a header line, then one dated fact line per card."""
     if not facts:
-        return "No relevant memories found for this query."
-
-    lines = []
-    for fact in facts[:10]:
-        meta = f"[{fact.category.value}]"
-        if fact.project:
-            meta += f" [{fact.project}]"
-        lines.append(f"- {meta} {fact.content} (id: {fact.id})")
-
+        return NO_RELEVANT_MEMORIES
+    scope = f", project {project}" if project else ""
+    lines = [f"Memory ({len(facts)} of {total} matches{scope}):"]
+    lines.extend(f"- {format_fact_line(fact)}" for fact in facts)
     return "\n".join(lines)
+
+
+def _cards_quality(cards: list[SearchHit]) -> str:
+    if not cards:
+        return "none"
+    return "high" if cards[0].coverage >= HIGH_QUALITY_COVERAGE else "medium"
 
 
 def _extract_quality(text: str) -> tuple[str, str]:
@@ -325,189 +192,180 @@ def _scrub_invalid_citations(text: str, candidate_ids: set[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Provenance assembly helpers
+# Warnings
 # ---------------------------------------------------------------------------
 
 
-def _content_excerpt(text: str, limit: int = 240) -> str:
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "…"
+def _provider_unavailable(message: str) -> EnvelopeWarning:
+    return EnvelopeWarning(code=WarningCode.provider_unavailable, message=message)
 
 
-def _build_source_summaries(
-    scored_facts: list[tuple[int, Fact]],
-    cited_ids: set[str],
-    max_sources: int = DEFAULT_MAX_SOURCES,
-) -> list[SourceSummary]:
-    """Build compact per-source summaries for provenance.
+def _delivery_warnings(delivered: list[Fact]) -> list[EnvelopeWarning]:
+    """Advisories about the facts handed back to the caller.
 
-    Caps at ``max_sources``; cited facts always come first so we never drop
-    citations to the truncation cap.
+    ``conflicting_facts`` fires when two delivered facts claim the same
+    (project, memory_key) slot; ``suspect_fact`` when upkeep flagged a
+    delivered fact as possibly outdated.
     """
-    cited: list[SourceSummary] = []
-    rest: list[SourceSummary] = []
-    for score, fact in scored_facts:
-        summary = SourceSummary(
-            id=fact.id,
-            project=fact.project,
-            category=fact.category.value,
-            confidence=fact.confidence,
-            updated_at=fact.updated_at,
-            content_excerpt=_content_excerpt(fact.content),
-            score=score,
-            cited=fact.id in cited_ids,
-            superseded_by=None,
-            stale=fact.stale,
-            forgotten=fact.confidence == 0.0,
-        )
-        if summary.cited:
-            cited.append(summary)
-        else:
-            rest.append(summary)
-    return (cited + rest)[:max_sources]
-
-
-def _build_warnings(
-    scored_facts: list[tuple[int, Fact]],
-    all_facts: list[Fact],
-    cited_ids: set[str],
-) -> list[EnvelopeWarning]:
-    """Build provenance warnings from the prefilter and full fact set.
-
-    Detects:
-    - ``stale_fact``: facts marked stale that still appeared in matches.
-    - ``superseded_fact``: matched facts whose IDs are in another active fact's
-      ``supersedes`` chain.
-    - ``forgotten_fact``: matched facts whose confidence is 0.
-    - ``conflicting_facts``: two cited facts in the same project+category.
-    """
-    superseded_by = _superseded_by_map(all_facts)
-    stale_ids, superseded_ids, forgotten_ids = _warning_id_groups(
-        scored_facts,
-        superseded_by,
-    )
-    warnings = _state_warnings(
-        stale_ids,
-        superseded_ids,
-        forgotten_ids,
-        superseded_by,
-    )
-    warnings.extend(_conflict_warnings(scored_facts, cited_ids))
-    return warnings
-
-
-def _superseded_by_map(facts: list[Fact]) -> dict[str, str]:
-    return {fact.supersedes: fact.id for fact in facts if fact.supersedes}
-
-
-def _warning_id_groups(
-    scored_facts: list[tuple[int, Fact]],
-    superseded_by: dict[str, str],
-) -> tuple[list[str], list[str], list[str]]:
-    stale_ids: list[str] = []
-    superseded_ids: list[str] = []
-    forgotten_ids: list[str] = []
-    for _, fact in scored_facts:
-        if fact.stale:
-            stale_ids.append(fact.id)
-        if fact.id in superseded_by:
-            superseded_ids.append(fact.id)
-        if fact.supersedes:
-            superseded_ids.append(fact.supersedes)
-        if fact.confidence == 0.0:
-            forgotten_ids.append(fact.id)
-    return stale_ids, superseded_ids, forgotten_ids
-
-
-def _state_warnings(
-    stale_ids: list[str],
-    superseded_ids: list[str],
-    forgotten_ids: list[str],
-    superseded_by: dict[str, str],
-) -> list[EnvelopeWarning]:
     warnings: list[EnvelopeWarning] = []
-    if stale_ids:
-        warnings.append(
-            EnvelopeWarning(
-                code=WarningCode.stale_fact,
-                message="Stale facts matched the query and were excluded from active recall.",
-                ids=sorted(set(stale_ids)),
-            )
-        )
-    if superseded_ids:
-        warnings.append(
-            EnvelopeWarning(
-                code=WarningCode.superseded_fact,
-                message="One or more matched facts have a newer active replacement.",
-                ids=sorted(set(superseded_ids)),
-                details={"superseded_by": superseded_by},
-            )
-        )
-    if forgotten_ids:
-        warnings.append(
-            EnvelopeWarning(
-                code=WarningCode.forgotten_fact,
-                message="Forgotten facts appeared in the prefilter and were not used.",
-                ids=sorted(set(forgotten_ids)),
-            )
-        )
-    return warnings
-
-
-def _conflict_warnings(
-    scored_facts: list[tuple[int, Fact]],
-    cited_ids: set[str],
-) -> list[EnvelopeWarning]:
-    cited_facts = [fact for _, fact in scored_facts if fact.id in cited_ids]
     buckets: dict[tuple[str | None, str], list[str]] = {}
-    for fact in cited_facts:
-        buckets.setdefault((fact.project, fact.category.value), []).append(fact.id)
-    warnings: list[EnvelopeWarning] = []
-    for (project, category), ids in buckets.items():
+    for fact in delivered:
+        if fact.memory_key:
+            buckets.setdefault((fact.project, fact.memory_key), []).append(fact.id)
+    for (project, memory_key), ids in buckets.items():
         if len(ids) >= 2:
             warnings.append(
                 EnvelopeWarning(
                     code=WarningCode.conflicting_facts,
                     message=(
-                        f"Multiple active facts in {project or '(global)'}/"
-                        f"{category} were cited; verify they agree."
+                        f"Multiple active facts share {project or '(global)'}/"
+                        f"{memory_key}; verify they agree."
                     ),
                     ids=sorted(ids),
-                    details={"project": project, "category": category},
+                    details={"project": project, "memory_key": memory_key},
                 )
             )
+    suspect = {
+        fact.id: fact.suspect_reason for fact in delivered if fact.suspect_reason
+    }
+    if suspect:
+        warnings.append(
+            EnvelopeWarning(
+                code=WarningCode.suspect_fact,
+                message="Some returned facts may be outdated; verify before relying on them.",
+                ids=sorted(suspect),
+                details={"reasons": suspect},
+            )
+        )
     return warnings
 
 
-def _usage_from_totals(totals: dict[str, int | None]) -> UsageSummary:
-    input_tokens = totals.get("input_tokens")
-    cached_tokens = totals.get("cached_tokens")
-    ratio: float | None = None
-    if input_tokens is not None and input_tokens > 0 and cached_tokens is not None:
-        ratio = cached_tokens / input_tokens
-    return UsageSummary(
-        llm_calls=totals.get("llm_calls"),
-        input_tokens=input_tokens,
-        cached_tokens=cached_tokens,
-        output_tokens=totals.get("output_tokens"),
-        cache_hit_ratio=ratio,
+# ---------------------------------------------------------------------------
+# LLM calls
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Outcome:
+    """What one recall path produced, before provenance assembly."""
+
+    text: str
+    quality: str
+    delivered: list[Fact]
+    llm_calls: int = 0
+    input_tokens: int | None = None
+    cached_tokens: int | None = None
+    calls: list[LLMCallTrace] = field(default_factory=list)
+    truncated: bool = False
+    warnings: list[EnvelopeWarning] = field(default_factory=list)
+
+
+def _candidates_prompt(query: str, facts: list[Fact]) -> str:
+    return f"QUERY: {query}\n\nSTORED FACTS:\n{format_facts_for_llm(facts)}"
+
+
+async def _select_relevant(
+    query: str,
+    candidates: list[SearchHit],
+    settings: Settings,
+    *,
+    with_trace: bool,
+    excerpt_chars: int,
+    output_chars: int,
+) -> tuple[list[SearchHit], LLMCallTrace | None, bool]:
+    """One structured LLM call choosing the relevant candidates by ID."""
+    prompt = _candidates_prompt(query, [hit.fact for hit in candidates])
+    t_call = time.monotonic()
+    selection = await asyncio.wait_for(
+        complete_model(
+            prompt=prompt,
+            system=SELECT_SYSTEM,
+            response_model=RecallSelection,
+            reasoning_effort=settings.recall_reasoning_effort,
+        ),
+        timeout=settings.retrieval_timeout,
     )
+    elapsed_ms = (time.monotonic() - t_call) * 1000
+    by_id = {hit.fact.id: hit for hit in candidates}
+    selected = [
+        by_id[fid] for fid in dict.fromkeys(selection.relevant_ids) if fid in by_id
+    ]
+    if not with_trace:
+        return selected, None, False
+    trace, truncated = _call_trace(
+        name="select",
+        system=SELECT_SYSTEM,
+        prompt=prompt,
+        output=selection.model_dump_json(),
+        elapsed_ms=elapsed_ms,
+        excerpt_chars=excerpt_chars,
+        output_chars=output_chars,
+    )
+    return selected, trace, truncated
 
 
-def _completion_trace(
+async def _answer(
+    query: str,
+    facts: list[Fact],
+    settings: Settings,
+    *,
+    with_trace: bool,
+    excerpt_chars: int,
+    output_chars: int,
+) -> _Outcome:
+    """One LLM call synthesizing an answer over ``facts``."""
+    prompt = _candidates_prompt(query, facts)
+    t_call = time.monotonic()
+    completion = await asyncio.wait_for(
+        complete_with_usage(
+            prompt=prompt,
+            system=ANSWER_SYSTEM,
+            reasoning_effort=settings.recall_reasoning_effort,
+        ),
+        timeout=settings.retrieval_timeout,
+    )
+    elapsed_ms = (time.monotonic() - t_call) * 1000
+    answer, quality = _extract_quality(completion.text)
+    candidate_ids = {fact.id for fact in facts}
+    cited = set(_extract_cited_ids(completion.text, candidate_ids))
+    outcome = _Outcome(
+        _scrub_invalid_citations(answer, candidate_ids),
+        quality,
+        [fact for fact in facts if fact.id in cited],
+        llm_calls=1,
+        input_tokens=completion.input_tokens,
+        cached_tokens=completion.cached_tokens,
+    )
+    if with_trace:
+        trace, outcome.truncated = _call_trace(
+            name="answer",
+            system=ANSWER_SYSTEM,
+            prompt=prompt,
+            output=completion.text,
+            elapsed_ms=elapsed_ms,
+            excerpt_chars=excerpt_chars,
+            output_chars=output_chars,
+            input_tokens=completion.input_tokens,
+            cached_tokens=completion.cached_tokens,
+        )
+        outcome.calls.append(trace)
+    return outcome
+
+
+def _call_trace(
     *,
     name: str,
     system: str,
     prompt: str,
-    completion: Completion,
+    output: str,
     elapsed_ms: float,
     excerpt_chars: int,
     output_chars: int,
+    input_tokens: int | None = None,
+    cached_tokens: int | None = None,
 ) -> tuple[LLMCallTrace, bool]:
     prompt_excerpt, prompt_truncated = excerpt(prompt, excerpt_chars)
-    output_excerpt, output_truncated = excerpt(completion.text, output_chars)
+    output_excerpt, output_truncated = excerpt(output, output_chars)
     return (
         LLMCallTrace(
             name=name,
@@ -515,8 +373,8 @@ def _completion_trace(
             prompt_excerpt=prompt_excerpt,
             output_excerpt=output_excerpt,
             elapsed_ms=elapsed_ms,
-            input_tokens=completion.input_tokens,
-            cached_tokens=completion.cached_tokens,
+            input_tokens=input_tokens,
+            cached_tokens=cached_tokens,
         ),
         prompt_truncated or output_truncated,
     )
@@ -531,16 +389,13 @@ async def recall(
     query: str,
     project: str | None = None,
     store: FactStore | AsyncFactStore | None = None,
+    mode: RecallMode = "cards",
 ) -> str:
-    """Tiered agentic retrieval — text answer.
-
-    This is the existing concise-answer entry point. Returns plain text so
-    existing MCP/CLI callers see no behavior change.
-    """
-    answer, _quality, _provenance, _trace = await recall_with_provenance(
-        query, project=project, store=store, with_trace=False
+    """Recall as plain text: memory cards by default, or an LLM answer."""
+    text, _quality, _provenance, _trace = await recall_with_provenance(
+        query, project=project, store=store, mode=mode
     )
-    return answer
+    return text
 
 
 async def recall_with_provenance(
@@ -548,256 +403,115 @@ async def recall_with_provenance(
     project: str | None = None,
     store: FactStore | AsyncFactStore | None = None,
     *,
+    mode: RecallMode = "cards",
     with_trace: bool = False,
     verbose_trace: bool = False,
     max_sources: int = DEFAULT_MAX_SOURCES,
     max_prefilter_matches: int = DEFAULT_MAX_PREFILTER_MATCHES,
 ) -> tuple[str, str, RecallProvenance, RecallTrace | None]:
-    """Tiered recall returning answer plus structured provenance.
+    """Recall returning ``(text, quality, provenance, trace_or_none)``.
 
-    Returns ``(answer, quality, provenance, trace_or_none)``. Tiers 1 and 2
-    each issue one LLM call; provenance is assembled from that call's output
-    and from the deterministic prefilter, so enabling provenance does not add
-    model work.
+    ``mode="cards"`` returns up to ``max_sources`` relevant facts with no LLM
+    call; only a query whose hits all miss the relevance bar spends one LLM
+    call to select among them. ``mode="answer"`` spends one LLM call to
+    synthesize an answer. Provider failures degrade to cards (or to "no
+    relevant memories") with a ``provider_unavailable`` warning, never raise.
 
-    ``with_trace=True`` populates the ``RecallTrace`` with bounded prompt
-    and output excerpts. ``verbose_trace=True`` widens the per-field char
-    limits for callers that opt in.
+    ``with_trace=True`` populates the ``RecallTrace`` with bounded prompt and
+    output excerpts; ``verbose_trace=True`` widens those limits.
     """
     store = store or FactStore()
     settings = get_settings()
     t0 = time.monotonic()
+    scale = 4 if verbose_trace else 1
+    excerpt_chars = DEFAULT_PROMPT_EXCERPT_CHARS * scale
+    output_chars = DEFAULT_OUTPUT_EXCERPT_CHARS * scale
 
-    scored_facts = await _prefilter_facts(
+    hits = await _search(
         store,
-        query=query,
-        project=project,
-        limit=settings.max_facts_per_agent,
-    )
-
-    decision = _select_tier_with_decision(
-        scored_facts,
-        min_prefilter_for_tier2=settings.tier2_min_prefilter_count,
-    )
-    decision = _escalate_zero_hit(decision, scored_facts)
-    tier = decision.tier
-    prefilter_count = len([s for s, _ in scored_facts if s > 0])
-    llm_facts = (
-        scored_facts[:ZERO_HIT_MAX_CANDIDATES]
-        if decision.zero_hit_escalation
-        else scored_facts
-    )
-
-    excerpt_chars = (
-        DEFAULT_PROMPT_EXCERPT_CHARS * 4
-        if verbose_trace
-        else DEFAULT_PROMPT_EXCERPT_CHARS
-    )
-    output_chars = (
-        DEFAULT_OUTPUT_EXCERPT_CHARS * 4
-        if verbose_trace
-        else DEFAULT_OUTPUT_EXCERPT_CHARS
-    )
-
-    (
-        answer,
-        quality,
-        usage_totals,
-        cited_ids,
-        call_traces,
-        truncated_any,
-    ) = await _run_recall_tier(
-        tier,
-        llm_facts,
         query,
-        settings,
-        prefilter_count=prefilter_count,
-        with_trace=with_trace,
-        excerpt_chars=excerpt_chars,
-        output_chars=output_chars,
+        project,
+        limit=max(settings.max_facts_per_agent, ZERO_HIT_MAX_CANDIDATES),
     )
+    relevant = _relevant_hits(hits)
+    zero_hit = not relevant and bool(hits)
+    use_llm = bool(hits) and (mode == "answer" or zero_hit) and _llm_available()
+    cards = relevant[:max_sources]
+    outcome = _Outcome(
+        _format_cards([hit.fact for hit in cards], len(relevant), project),
+        _cards_quality(cards),
+        [hit.fact for hit in cards],
+    )
+    if mode == "answer" and hits and not use_llm:
+        outcome.warnings.append(
+            _provider_unavailable("No LLM key configured; returned memory cards.")
+        )
+
+    if use_llm:
+        pool = relevant or hits[:ZERO_HIT_MAX_CANDIDATES]
+        try:
+            if mode == "answer":
+                outcome = await _answer(
+                    query,
+                    [hit.fact for hit in pool[: settings.max_facts_per_agent]],
+                    settings,
+                    with_trace=with_trace,
+                    excerpt_chars=excerpt_chars,
+                    output_chars=output_chars,
+                )
+            else:
+                selected, trace, truncated = await _select_relevant(
+                    query,
+                    pool,
+                    settings,
+                    with_trace=with_trace,
+                    excerpt_chars=excerpt_chars,
+                    output_chars=output_chars,
+                )
+                shown = selected[:max_sources]
+                outcome = _Outcome(
+                    _format_cards([hit.fact for hit in shown], len(selected), project),
+                    _cards_quality(shown),
+                    [hit.fact for hit in shown],
+                    llm_calls=1,
+                    calls=[trace] if trace else [],
+                    truncated=truncated,
+                )
+        except Exception as exc:
+            logger.warning("Recall LLM call failed: %s", exc, exc_info=True)
+            outcome.warnings.append(
+                _provider_unavailable(
+                    f"LLM recall failed ({type(exc).__name__}); returned memory cards."
+                )
+            )
 
     latency_ms = (time.monotonic() - t0) * 1000
-
-    provenance = await _build_recall_provenance(
-        store,
+    tier = 1 if outcome.llm_calls else 0
+    delivered_ids = [fact.id for fact in outcome.delivered]
+    provenance = _build_provenance(
         query=query,
         project=project,
         tier=tier,
-        quality=quality,
-        decision=decision,
-        scored_facts=scored_facts,
-        cited_ids=cited_ids,
-        usage_totals=usage_totals,
+        outcome=outcome,
+        hits=hits,
+        relevant=relevant,
+        zero_hit=zero_hit and use_llm,
         latency_ms=latency_ms,
-        prefilter_count=prefilter_count,
         max_prefilter_matches=max_prefilter_matches,
         max_sources=max_sources,
     )
-    trace_obj = _trace_for_recall(
-        with_trace=with_trace,
-        provenance=provenance,
-        call_traces=call_traces,
-        excerpt_chars=excerpt_chars,
-        truncated_any=truncated_any,
-        verbose_trace=verbose_trace,
-    )
-
-    await _record_recall_observation(
-        store,
-        query=query,
-        project=project,
-        tier=tier,
-        prefilter_count=prefilter_count,
-        latency_ms=latency_ms,
-        quality=quality,
-        usage_totals=usage_totals,
-    )
-
-    logger.info(
-        "recall tier=%d prefilter=%d latency=%.0fms quality=%s calls=%s input=%s cached=%s",
-        tier,
-        prefilter_count,
-        latency_ms,
-        quality,
-        usage_totals.get("llm_calls"),
-        usage_totals.get("input_tokens"),
-        usage_totals.get("cached_tokens"),
-    )
-    return answer, quality, provenance, trace_obj
-
-
-async def _run_recall_tier(
-    tier: int,
-    scored_facts: list[tuple[int, Fact]],
-    query: str,
-    settings,
-    *,
-    prefilter_count: int,
-    with_trace: bool,
-    excerpt_chars: int,
-    output_chars: int,
-) -> tuple[str, str, dict[str, int | None], list[str], list[LLMCallTrace], bool]:
-    if tier == 0:
-        usage_totals: dict[str, int | None] = {
-            "llm_calls": 0,
-            "input_tokens": None,
-            "cached_tokens": None,
-            "output_tokens": None,
-        }
-        answer = _format_direct(scored_facts, query)
-        if any(score >= RELEVANCE_FLOOR for score, _ in scored_facts):
-            quality = "high"
-            cited_ids = [
-                fact.id for score, fact in scored_facts if score >= RELEVANCE_FLOOR
-            ][:10]
-        elif prefilter_count > 0:
-            quality = "low"
-            cited_ids = []
-        else:
-            quality = "none"
-            cited_ids = []
-        return answer, quality, usage_totals, cited_ids, [], False
-
-    if tier == 1:
-        return await _single_call_recall(
-            scored_facts,
-            query,
-            settings,
-            system=SINGLE_AGENT_SYSTEM,
-            trace_name="single_agent",
-            with_trace=with_trace,
+    trace_obj = (
+        RecallTrace(
+            provenance=provenance,
+            calls=outcome.calls,
             excerpt_chars=excerpt_chars,
-            output_chars=output_chars,
+            truncated=outcome.truncated,
+            verbose=verbose_trace,
         )
-
-    return await _single_call_recall(
-        scored_facts,
-        query,
-        settings,
-        system=TIER2_SINGLE_SYSTEM,
-        trace_name="tier2_single",
-        prompt_suffix="\n\nAnswer the query using the stored facts.",
-        with_trace=with_trace,
-        excerpt_chars=excerpt_chars,
-        output_chars=output_chars,
+        if with_trace
+        else None
     )
 
-
-async def _build_recall_provenance(
-    store: FactStore | AsyncFactStore,
-    *,
-    query: str,
-    project: str | None,
-    tier: int,
-    quality: str,
-    decision: TierDecision,
-    scored_facts: list[tuple[int, Fact]],
-    cited_ids: list[str],
-    usage_totals: dict[str, int | None],
-    latency_ms: float,
-    prefilter_count: int,
-    max_prefilter_matches: int,
-    max_sources: int,
-) -> RecallProvenance:
-    cited_set = set(cited_ids)
-    prefilter_matches = [
-        PrefilterMatch(id=fact.id, score=score, above_floor=score >= RELEVANCE_FLOOR)
-        for score, fact in scored_facts[:max_prefilter_matches]
-    ]
-    all_facts = await _load_all_facts(store)
-    return RecallProvenance(
-        query=query,
-        project=project,
-        tier=tier,
-        quality=quality,
-        selected_decision=decision,
-        prefilter_count=prefilter_count,
-        prefilter_matches=prefilter_matches,
-        source_fact_ids=[match.id for match in prefilter_matches if match.above_floor],
-        sources=_build_source_summaries(
-            scored_facts,
-            cited_set,
-            max_sources=max_sources,
-        ),
-        cited_fact_ids=list(cited_ids),
-        warnings=_build_warnings(scored_facts, all_facts, cited_set),
-        usage=_usage_from_totals(usage_totals),
-        latency_ms=latency_ms,
-    )
-
-
-def _trace_for_recall(
-    *,
-    with_trace: bool,
-    provenance: RecallProvenance,
-    call_traces: list[LLMCallTrace],
-    excerpt_chars: int,
-    truncated_any: bool,
-    verbose_trace: bool,
-) -> RecallTrace | None:
-    if not with_trace:
-        return None
-    return RecallTrace(
-        provenance=provenance,
-        calls=call_traces,
-        excerpt_chars=excerpt_chars,
-        truncated=truncated_any,
-        verbose=verbose_trace,
-    )
-
-
-async def _record_recall_observation(
-    store: FactStore | AsyncFactStore,
-    *,
-    query: str,
-    project: str | None,
-    tier: int,
-    prefilter_count: int,
-    latency_ms: float,
-    quality: str,
-    usage_totals: dict[str, int | None],
-) -> None:
     try:
         await _log_recall(
             store,
@@ -805,34 +519,117 @@ async def _record_recall_observation(
                 query=query,
                 project=project,
                 tier=tier,
-                prefilter_count=prefilter_count,
+                prefilter_count=len(hits),
                 latency_ms=latency_ms,
-                quality=quality,
-                llm_calls=usage_totals.get("llm_calls"),
-                input_tokens=usage_totals.get("input_tokens"),
-                cached_tokens=usage_totals.get("cached_tokens"),
+                quality=outcome.quality,
+                llm_calls=outcome.llm_calls,
+                input_tokens=outcome.input_tokens,
+                cached_tokens=outcome.cached_tokens,
                 selector_version=SELECTOR_VERSION,
+                mode=mode,
+                delivered_ids=delivered_ids,
             ),
         )
     except Exception:
         logger.debug("Failed to log recall record", exc_info=True)
 
+    logger.info(
+        "recall mode=%s tier=%d hits=%d relevant=%d delivered=%d latency=%.0fms "
+        "quality=%s calls=%d",
+        mode,
+        tier,
+        len(hits),
+        len(relevant),
+        len(delivered_ids),
+        latency_ms,
+        outcome.quality,
+        outcome.llm_calls,
+    )
+    return outcome.text, outcome.quality, provenance, trace_obj
 
-async def _prefilter_facts(
+
+def _build_provenance(
+    *,
+    query: str,
+    project: str | None,
+    tier: int,
+    outcome: _Outcome,
+    hits: list[SearchHit],
+    relevant: list[SearchHit],
+    zero_hit: bool,
+    latency_ms: float,
+    max_prefilter_matches: int,
+    max_sources: int,
+) -> RecallProvenance:
+    relevant_ids = {hit.fact.id for hit in relevant}
+    delivered_ids = [fact.id for fact in outcome.delivered]
+    delivered_set = set(delivered_ids)
+    # Delivered facts first so the source cap never drops what the caller got.
+    ordered = sorted(hits, key=lambda hit: hit.fact.id not in delivered_set)
+    input_tokens = outcome.input_tokens
+    cached_tokens = outcome.cached_tokens
+    return RecallProvenance(
+        query=query,
+        project=project,
+        tier=tier,
+        quality=outcome.quality,
+        selected_decision=TierDecision(
+            tier=tier,
+            rules=SELECTOR_VERSION,
+            relevant_count=len(relevant),
+            top_score=hits[0].score if hits else None,
+            zero_hit_escalation=zero_hit,
+        ),
+        prefilter_count=len(hits),
+        prefilter_matches=[
+            PrefilterMatch(
+                id=hit.fact.id,
+                score=hit.score,
+                coverage=hit.coverage,
+                above_floor=hit.fact.id in relevant_ids,
+            )
+            for hit in hits[:max_prefilter_matches]
+        ],
+        source_fact_ids=[hit.fact.id for hit in relevant],
+        sources=[
+            SourceSummary(
+                id=hit.fact.id,
+                project=hit.fact.project,
+                category=hit.fact.category.value,
+                confidence=hit.fact.confidence,
+                updated_at=hit.fact.updated_at,
+                content_excerpt=excerpt(hit.fact.content.strip(), 240)[0],
+                score=hit.score,
+                cited=hit.fact.id in delivered_set,
+            )
+            for hit in ordered[:max_sources]
+        ],
+        cited_fact_ids=delivered_ids,
+        warnings=[*outcome.warnings, *_delivery_warnings(outcome.delivered)],
+        usage=UsageSummary(
+            llm_calls=outcome.llm_calls,
+            input_tokens=input_tokens,
+            cached_tokens=cached_tokens,
+            cache_hit_ratio=(
+                cached_tokens / input_tokens
+                if input_tokens and cached_tokens is not None
+                else None
+            ),
+        ),
+        latency_ms=latency_ms,
+    )
+
+
+async def _search(
     store: FactStore | AsyncFactStore,
     query: str,
     project: str | None,
+    *,
     limit: int,
-) -> list[tuple[int, Fact]]:
+) -> list[SearchHit]:
     if isinstance(store, AsyncFactStore):
-        return await store.prefilter_facts(query=query, project=project, limit=limit)
-    return store.prefilter_facts(query=query, project=project, limit=limit)
-
-
-async def _load_all_facts(store: FactStore | AsyncFactStore) -> list[Fact]:
-    if isinstance(store, AsyncFactStore):
-        return await store.load_facts()
-    return store.load_facts()
+        return await store.search_facts(query, project, limit=limit)
+    return store.search_facts(query, project, limit=limit)
 
 
 async def _log_recall(
@@ -845,84 +642,12 @@ async def _log_recall(
         store.log_recall(record)
 
 
-def _accumulate(totals: dict[str, int | None], completion: Completion) -> None:
-    """Fold a Completion's usage into the running totals dict in-place."""
-    totals["llm_calls"] = (totals.get("llm_calls") or 0) + 1
-    if completion.input_tokens is not None:
-        totals["input_tokens"] = (
-            totals.get("input_tokens") or 0
-        ) + completion.input_tokens
-    if completion.cached_tokens is not None:
-        totals["cached_tokens"] = (
-            totals.get("cached_tokens") or 0
-        ) + completion.cached_tokens
-
-
-async def _single_call_recall(
-    scored_facts: list[tuple[int, Fact]],
-    query: str,
-    settings,
-    *,
-    system: str,
-    trace_name: str,
-    prompt_suffix: str = "",
-    with_trace: bool = False,
-    excerpt_chars: int = DEFAULT_PROMPT_EXCERPT_CHARS,
-    output_chars: int = DEFAULT_OUTPUT_EXCERPT_CHARS,
-) -> tuple[str, str, dict[str, int | None], list[str], list[LLMCallTrace], bool]:
-    """One LLM call over the prefiltered facts. Handles tier 1 and tier 2.
-
-    ``system`` and ``prompt_suffix`` differ per tier; ``trace_name`` labels the
-    call in the trace. Since recall makes one call, there's no prompt prefix to
-    cache across calls.
-    """
-    facts = [f for _, f in scored_facts]
-    facts_text = format_facts_for_llm(facts)
-    prompt = f"QUERY: {query}\n\nSTORED FACTS:\n{facts_text}{prompt_suffix}"
-
-    totals: dict[str, int | None] = {
-        "llm_calls": 0,
-        "input_tokens": None,
-        "cached_tokens": None,
-        "output_tokens": None,
-    }
-    t_call = time.monotonic()
-    completion = await asyncio.wait_for(
-        complete_with_usage(prompt=prompt, system=system),
-        timeout=settings.retrieval_timeout,
-    )
-    elapsed_ms = (time.monotonic() - t_call) * 1000
-    _accumulate(totals, completion)
-    answer, quality = _extract_quality(completion.text)
-
-    candidate_ids = {f.id for f in facts}
-    cited_ids = _extract_cited_ids(completion.text, candidate_ids)
-    answer = _scrub_invalid_citations(answer, candidate_ids)
-
-    traces: list[LLMCallTrace] = []
-    truncated_any = False
-    if with_trace:
-        trace, truncated_any = _completion_trace(
-            name=trace_name,
-            system=system,
-            prompt=prompt,
-            completion=completion,
-            elapsed_ms=elapsed_ms,
-            excerpt_chars=excerpt_chars,
-            output_chars=output_chars,
-        )
-        traces.append(trace)
-    return answer, quality, totals, cited_ids, traces, truncated_any
-
-
 __all__ = [
+    "ANSWER_SYSTEM",
+    "MIN_COVERAGE",
+    "RELATIVE_CUTOFF",
+    "RecallMode",
+    "ZERO_HIT_MAX_CANDIDATES",
     "recall",
     "recall_with_provenance",
-    "_extract_quality",
-    "_extract_cited_ids",
-    "_scrub_invalid_citations",
-    "_format_direct",
-    "_select_tier",
-    "_select_tier_with_decision",
-    "TIER2_SINGLE_SYSTEM",
 ]

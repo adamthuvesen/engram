@@ -14,7 +14,10 @@ from engram.core.config import (
     configure_logging,
 )
 from engram.core.interfaces import Envelope, storage_error, validation_error
+from engram.maintenance.upkeep import ALL_STEPS
 from engram.operations import (
+    RECALL_CONTEXT_MODES,
+    RECALL_MODES,
     EXIT_DOCTOR_ERROR,
     EXIT_NOT_FOUND,
     EXIT_OK,
@@ -44,6 +47,7 @@ from engram.operations import (
     suggest_memories as op_suggest_memories,
     sync as op_sync,
     unmark_stale as op_unmark_stale,
+    upkeep as op_upkeep,
 )
 from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
 
@@ -75,6 +79,7 @@ CANONICAL_COMMANDS = frozenset(
         "memory-stats",
         "recall-stats",
         "sync",
+        "upkeep",
     }
 )
 
@@ -161,6 +166,7 @@ async def cmd_recall(args: argparse.Namespace) -> OperationResult:
     return await op_recall(
         args.query,
         project=args.project,
+        mode=args.mode,
         format="json" if args.json else "text",
         with_provenance=args.with_provenance,
         max_sources=args.max_sources,
@@ -172,6 +178,7 @@ async def cmd_recall_trace(args: argparse.Namespace) -> OperationResult:
     return await op_recall_trace(
         args.query,
         project=args.project,
+        mode=args.mode,
         verbose=args.verbose,
         max_sources=args.max_sources,
         max_prefilter_matches=args.max_prefilter_matches,
@@ -288,6 +295,15 @@ async def cmd_recall_stats(args: argparse.Namespace) -> OperationResult:
     )
 
 
+async def cmd_upkeep(args: argparse.Namespace) -> OperationResult:
+    return await op_upkeep(
+        project=args.project,
+        steps=args.steps,
+        dry_run=args.dry_run,
+        full=args.full,
+    )
+
+
 async def cmd_sync(args: argparse.Namespace) -> OperationResult:
     return await op_sync(timeout=args.timeout)
 
@@ -316,6 +332,7 @@ HANDLERS: dict[str, CommandHandler] = {
     "memory-stats": cmd_memory_stats,
     "recall-stats": cmd_recall_stats,
     "sync": cmd_sync,
+    "upkeep": cmd_upkeep,
     "trace": cmd_recall_trace,
     "correct": cmd_correct_memory,
     "merge": cmd_merge_memories,
@@ -334,6 +351,7 @@ def _add_remember_args(parser: argparse.ArgumentParser) -> None:
 def _add_trace_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("query")
     parser.add_argument("--project", default=None)
+    parser.add_argument("--mode", choices=RECALL_MODES, default="cards")
     parser.add_argument(
         "--limit",
         "--max-sources",
@@ -415,6 +433,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_recall = sub.add_parser("recall", help="Recall memory")
     p_recall.add_argument("query")
     p_recall.add_argument("--project", default=None)
+    p_recall.add_argument("--mode", choices=RECALL_MODES, default="cards")
     p_recall.add_argument("--with-provenance", action="store_true")
     p_recall.add_argument("--max-sources", type=int, default=DEFAULT_MAX_SOURCES)
     p_recall.add_argument(
@@ -427,10 +446,12 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_trace_args(sub.add_parser("recall-trace", help="Run recall debug trace"))
     _add_trace_args(sub.add_parser("trace", help="Alias for recall-trace"))
 
-    p_context = sub.add_parser("recall-context", help="Recall as answer or prompt")
-    p_context.add_argument("query")
+    p_context = sub.add_parser(
+        "recall-context", help="Recall cards, an answer, or a project brief"
+    )
+    p_context.add_argument("query", nargs="?", default="")
     p_context.add_argument("--project", default=None)
-    p_context.add_argument("--mode", default="answer")
+    p_context.add_argument("--mode", choices=RECALL_CONTEXT_MODES, default="cards")
     _add_json_flag(p_context)
 
     p_forget = sub.add_parser("forget", help="Soft-delete a fact")
@@ -500,6 +521,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p_recall_stats.add_argument("--since", default=None)
     p_recall_stats.add_argument("--include-records", action="store_true")
     _add_json_flag(p_recall_stats)
+
+    p_upkeep = sub.add_parser(
+        "upkeep", help="Consolidate, verify, and brief memories now"
+    )
+    p_upkeep.add_argument("--project", default=None)
+    p_upkeep.add_argument(
+        "--step",
+        dest="steps",
+        action="append",
+        choices=[step.value for step in ALL_STEPS],
+        help="Run only this step (repeatable). Default: all steps.",
+    )
+    p_upkeep.add_argument("--dry-run", action="store_true")
+    p_upkeep.add_argument(
+        "--full", action="store_true", help="Reconsider every fact, not just new ones"
+    )
+    _add_json_flag(p_upkeep)
 
     p_sync = sub.add_parser("sync", help="Git-backed sync of the data directory")
     p_sync.add_argument(

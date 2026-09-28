@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from engram.core.config import get_settings
+from engram.core.projects import canonical_project, register_project
 from engram.maintenance.doctor import check_provider, repair_store, run_doctor
 from engram.extraction.importer import import_claude_code_memories
 from engram.core.interfaces import (
@@ -29,17 +30,20 @@ from engram.core.models import (
     MemoryCandidate,
     RecallRecord,
 )
-from engram.extraction.observer import (
-    extract_facts,
-    suggest_memories as _suggest_memories,
-)
+from engram.extraction.observer import IngestResult, ingest
 from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
+from engram.maintenance.upkeep import (
+    ALL_STEPS,
+    UpkeepStep,
+    format_upkeep_report,
+    project_brief,
+    run_upkeep,
+)
 from engram.recall.retriever import (
-    RELEVANCE_FLOOR,
-    recall as _recall,
+    RecallMode,
     recall_with_provenance as _recall_with_provenance,
 )
-from engram.storage.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.storage.store import AsyncFactStore, FactStore, format_fact_line
 from engram.storage.sync import (
     DEFAULT_GIT_TIMEOUT_SECONDS,
     SyncError,
@@ -153,6 +157,11 @@ def fact_payload(fact: FactBase) -> dict:
         "tags": fact.tags,
         "retrieval_hints": fact.retrieval_hints,
         "source_group_id": fact.source_group_id,
+        "durability": fact.durability.value,
+        "anchors": fact.anchors,
+        "suspect_reason": fact.suspect_reason,
+        "expires_at": fact.expires_at.isoformat() if fact.expires_at else None,
+        "observed_at": fact.observed_at.isoformat(),
         "created_at": fact.created_at.isoformat(),
         "updated_at": fact.updated_at.isoformat(),
     }
@@ -164,8 +173,45 @@ def candidate_payload(candidate: MemoryCandidate) -> dict:
         status=candidate.status.value,
         review_note=candidate.review_note,
         why_store=candidate.why_store,
+        replaces=candidate.replaces,
     )
     return data
+
+
+async def scope_project(store: AsyncFactStore, project: str | None) -> str | None:
+    """Canonicalize a caller's project (name or working directory path).
+
+    A path also records its repository root so upkeep can verify anchors.
+    """
+    if project is None:
+        return None
+    return await asyncio.to_thread(register_project, store.data_dir, project)
+
+
+def _ingest_lines(result: IngestResult) -> list[str]:
+    lines: list[str] = []
+    replaced_by: dict[str, list[str]] = {}
+    for old_id, new_id in result.superseded.items():
+        replaced_by.setdefault(new_id, []).append(old_id)
+    if result.created:
+        lines.append(f"Stored {len(result.created)} memory card(s):")
+        for fact in result.created:
+            line = f"- [{fact.category.value}] {fact.content} (id: {fact.id})"
+            if fact.id in replaced_by:
+                line += f" — replaces {', '.join(replaced_by[fact.id])}"
+            lines.append(line)
+    if result.retired:
+        lines.append("Retired as no longer true:")
+        lines.extend(
+            f"- {fact_id}: {reason}" for fact_id, reason in result.retired.items()
+        )
+    if result.duplicates:
+        lines.append(f"Already known: {', '.join(result.duplicates)}")
+    if not lines:
+        lines.append("Nothing new worth storing in the input.")
+    if result.excluded:
+        lines.append(f"Skipped {len(result.excluded)} non-durable claim(s).")
+    return lines
 
 
 async def remember(
@@ -175,12 +221,15 @@ async def remember(
     project: str | None = None,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
+    store_obj = async_store(store)
+    if not content.strip():
+        return validation_result("content must not be empty")
     try:
-        facts = await extract_facts(
+        result = await ingest(
             content,
             source=source,
-            project=project,
-            store=async_store(store),
+            project=await scope_project(store_obj, project),
+            store=store_obj,
         )
     except Exception as exc:
         return failure_result(
@@ -191,19 +240,16 @@ async def remember(
             text=f"Memory extraction failed: {exc}",
         )
 
-    if not facts:
-        text = "No structured facts could be extracted from the input."
-        return OperationResult(
-            envelope=Envelope.success(data={"facts": [], "message": text}),
-            text=text,
-        )
-
-    lines = [f"Stored {len(facts)} fact(s):\n"]
-    for fact in facts:
-        lines.append(f"- [{fact.category.value}] {fact.content} (id: {fact.id})")
+    data = {
+        "facts": [fact_payload(fact) for fact in result.created],
+        "superseded": result.superseded,
+        "retired": result.retired,
+        "duplicates": result.duplicates,
+        "excluded": [claim.model_dump() for claim in result.excluded],
+    }
     return OperationResult(
-        envelope=Envelope.success(data={"facts": [fact_payload(f) for f in facts]}),
-        text="\n".join(lines),
+        envelope=Envelope.success(data=data),
+        text="\n".join(_ingest_lines(result)),
     )
 
 
@@ -214,12 +260,16 @@ async def suggest_memories(
     project: str | None = None,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
+    store_obj = async_store(store)
+    if not content.strip():
+        return validation_result("content must not be empty")
     try:
-        candidates = await _suggest_memories(
+        result = await ingest(
             content,
             source=source,
-            project=project,
-            store=async_store(store),
+            project=await scope_project(store_obj, project),
+            store=store_obj,
+            queue_for_review=True,
         )
     except Exception as exc:
         return failure_result(
@@ -230,6 +280,7 @@ async def suggest_memories(
             text=f"Memory suggestion failed: {exc}",
         )
 
+    candidates = result.candidates
     if not candidates:
         text = "No memory candidates were proposed from the input."
         return OperationResult(
@@ -240,10 +291,13 @@ async def suggest_memories(
     lines = [f"Queued {len(candidates)} memory candidate(s):\n"]
     for candidate in candidates:
         why = candidate.why_store or "useful future context"
-        lines.append(
+        line = (
             f"- [{candidate.category.value}] {candidate.content} "
             f"(id: {candidate.id}, why: {why})"
         )
+        if candidate.replaces:
+            line += f" — would replace {', '.join(candidate.replaces)}"
+        lines.append(line)
     return OperationResult(
         envelope=Envelope.success(
             data={"candidates": [candidate_payload(c) for c in candidates]}
@@ -274,6 +328,7 @@ async def list_candidates(
         )
 
     store_obj = async_store(store)
+    project = await asyncio.to_thread(canonical_project, project)
     all_candidates = await store_obj.load_candidates(
         status=candidate_status,
         project=project,
@@ -380,10 +435,16 @@ async def reject_candidates(
     )
 
 
+def _invalid_mode_result(value: str, valid: tuple[str, ...]) -> OperationResult:
+    message = f"Unsupported mode: {value}. Use one of: {', '.join(valid)}."
+    return validation_result(message, details={"parameter": "mode", "value": value})
+
+
 async def recall(
     query: str,
     *,
     project: str | None = None,
+    mode: str = "cards",
     format: str = "text",
     with_provenance: bool = False,
     max_sources: int = DEFAULT_MAX_SOURCES,
@@ -398,25 +459,37 @@ async def recall(
         return invalid_positive_int_result("max_sources")
     if max_prefilter_matches < 1:
         return invalid_positive_int_result("max_prefilter_matches")
+    if mode not in RECALL_MODES:
+        return _invalid_mode_result(mode, RECALL_MODES)
 
     store_obj = async_store(store)
     answer, quality, provenance, _ = await _recall_with_provenance(
         query,
-        project=project,
+        project=await scope_project(store_obj, project),
         store=store_obj,
+        mode=_recall_mode(mode),
         max_sources=max_sources,
         max_prefilter_matches=max_prefilter_matches,
     )
     if format == "text":
         return OperationResult(
-            envelope=Envelope.success(data={"answer": answer}),
+            envelope=Envelope.success(
+                data={"answer": answer}, warnings=provenance.warnings
+            ),
             text=answer,
         )
 
+    delivered = set(provenance.cited_fact_ids)
     data: dict = {
         "answer": answer,
+        "mode": mode,
         "quality": quality,
         "tier": provenance.tier,
+        "facts": [
+            source.model_dump(mode="json")
+            for source in provenance.sources
+            if source.id in delivered
+        ],
         "source_fact_ids": provenance.source_fact_ids,
         "cited_fact_ids": provenance.cited_fact_ids,
         "usage": provenance.usage.model_dump(),
@@ -425,16 +498,14 @@ async def recall(
     if with_provenance:
         data["provenance"] = provenance.model_dump(mode="json")
 
-    truncated = (
-        len(provenance.sources) >= max_sources
-        or len(provenance.prefilter_matches) >= max_prefilter_matches
-    )
+    relevant = provenance.selected_decision.relevant_count
+    truncated = relevant > len(delivered)
     meta = EnvelopeMeta(
         limit=max_sources,
-        returned=len(provenance.sources),
-        total=provenance.prefilter_count,
+        returned=len(delivered),
+        total=relevant,
         truncated=truncated,
-        truncation_reason="max_sources_or_max_matches" if truncated else None,
+        truncation_reason="max_sources" if truncated else None,
     )
     return OperationResult(
         envelope=Envelope.success(data=data, warnings=provenance.warnings, meta=meta),
@@ -447,6 +518,7 @@ async def recall_trace(
     *,
     project: str | None = None,
     verbose: bool = False,
+    mode: str = "cards",
     max_sources: int = DEFAULT_MAX_SOURCES,
     max_prefilter_matches: int = DEFAULT_MAX_PREFILTER_MATCHES,
     store: FactStore | AsyncFactStore | None = None,
@@ -456,11 +528,15 @@ async def recall_trace(
     if max_prefilter_matches < 1:
         return invalid_positive_int_result("max_prefilter_matches")
 
+    if mode not in RECALL_MODES:
+        return _invalid_mode_result(mode, RECALL_MODES)
+    store_obj = async_store(store)
     try:
         answer, quality, provenance, trace = await _recall_with_provenance(
             query,
-            project=project,
-            store=async_store(store),
+            project=await scope_project(store_obj, project),
+            store=store_obj,
+            mode=_recall_mode(mode),
             with_trace=True,
             verbose_trace=verbose,
             max_sources=max_sources,
@@ -502,51 +578,90 @@ async def recall_trace(
     )
 
 
+RECALL_MODES = ("cards", "answer")
+RECALL_CONTEXT_MODES = ("cards", "prompt", "answer", "brief")
+
+
+def _recall_mode(mode: str) -> RecallMode:
+    return "answer" if mode == "answer" else "cards"
+
+
 async def recall_context(
-    query: str,
+    query: str = "",
     *,
     project: str | None = None,
-    mode: str = "answer",
+    mode: str = "cards",
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
+    """Context for an agent: dated cards, a synthesized answer, or a brief.
+
+    ``prompt`` is the older name for ``cards``. ``brief`` returns the
+    project's synthesized brief (session-start orientation).
+    """
+    if mode not in RECALL_CONTEXT_MODES:
+        return _invalid_mode_result(mode, RECALL_CONTEXT_MODES)
     store_obj = async_store(store)
-    if mode == "answer":
-        answer = await _recall(query, project=project, store=store_obj)
-        return OperationResult(
-            envelope=Envelope.success(data={"answer": answer, "mode": mode}),
-            text=answer,
-        )
+    scope = await scope_project(store_obj, project)
 
-    if mode != "prompt":
-        return validation_result(
-            f"Unsupported mode: {mode}. Use 'answer' or 'prompt'.",
-            text=f"Unsupported mode: {mode}. Use 'answer' or 'prompt'.",
-            details={"parameter": "mode", "value": mode},
-        )
+    if mode == "brief":
+        return await _project_brief_result(store_obj, scope)
 
-    settings = get_settings()
-    scored = await store_obj.prefilter_facts(
-        query=query,
-        project=project,
-        limit=settings.max_facts_per_agent,
+    if not query.strip():
+        return validation_result("query must not be empty unless mode is 'brief'")
+    answer, _quality, provenance, _ = await _recall_with_provenance(
+        query, project=scope, store=store_obj, mode=_recall_mode(mode)
     )
-    facts = [f for score, f in scored if score >= RELEVANCE_FLOOR]
-    if not facts:
-        text = "No relevant memories found for this query."
+    return OperationResult(
+        envelope=Envelope.success(
+            data={
+                "answer": answer,
+                "mode": mode,
+                "fact_ids": provenance.cited_fact_ids,
+            },
+            warnings=provenance.warnings,
+        ),
+        text=answer,
+    )
+
+
+async def _project_brief_result(
+    store: AsyncFactStore, project: str | None
+) -> OperationResult:
+    if project is None:
+        return validation_result("mode 'brief' requires a project")
+    brief = await project_brief(store, project)
+    if brief is not None:
+        text = f"# {project} brief ({brief.observed_at.date().isoformat()})\n\n{brief.content}"
         return OperationResult(
             envelope=Envelope.success(
-                data={"facts": [], "mode": mode, "message": text}
+                data={"mode": "brief", "brief": fact_payload(brief)}
             ),
             text=text,
         )
 
-    text = "# Memory Context\n\n" + format_facts_for_llm(facts)
+    # No brief synthesized yet: fall back to the project's newest durable cards.
+    facts = [
+        fact
+        for fact in await store.load_active_facts(project=project, include_global=False)
+        if fact.durability.value != "ephemeral"
+    ][:BRIEF_FALLBACK_CARDS]
+    if not facts:
+        text = f"No memories stored for project {project!r} yet."
+        return OperationResult(
+            envelope=Envelope.success(data={"mode": "brief", "facts": []}),
+            text=text,
+        )
+    lines = [f"# {project}: no brief yet — {len(facts)} most recent cards"]
+    lines.extend(f"- {format_fact_line(fact)}" for fact in facts)
     return OperationResult(
         envelope=Envelope.success(
-            data={"facts": [fact_payload(f) for f in facts], "mode": mode}
+            data={"mode": "brief", "facts": [fact_payload(f) for f in facts]}
         ),
-        text=text,
+        text="\n".join(lines),
     )
+
+
+BRIEF_FALLBACK_CARDS = 15
 
 
 async def forget(
@@ -594,7 +709,7 @@ async def edit_fact(
     if retrieval_hints is not None:
         updates["retrieval_hints"] = retrieval_hints
     if project is not None:
-        updates["project"] = project
+        updates["project"] = await asyncio.to_thread(canonical_project, project)
 
     if not updates:
         return validation_result("No changes specified.")
@@ -649,6 +764,7 @@ async def inspect(
     if category and cat is None:
         return invalid_category_result(category)
 
+    project = await asyncio.to_thread(canonical_project, project)
     facts = await async_store(store).load_active_facts(
         category=cat,
         project=project,
@@ -699,6 +815,7 @@ async def correct_memory(
     if category and cat is None:
         return invalid_category_result(category)
 
+    project = await asyncio.to_thread(canonical_project, project)
     new_fact = await async_store(store).correct_fact(
         fact_id,
         new_content,
@@ -757,6 +874,7 @@ async def merge_memories(
     if category and cat is None:
         return invalid_category_result(category)
 
+    project = await asyncio.to_thread(canonical_project, project)
     result = await async_store(store).merge_facts(
         source_ids,
         merged_content,
@@ -908,7 +1026,10 @@ async def audit_memories(
     project: str | None = None,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    result = await _audit_memory_store(project=project, store=async_store(store))
+    result = await _audit_memory_store(
+        project=await asyncio.to_thread(canonical_project, project),
+        store=async_store(store),
+    )
     data = result.model_dump(mode="json")
     data.update(
         {
@@ -1202,6 +1323,36 @@ async def recall_stats(
             ),
         ),
         text="\n".join(lines),
+    )
+
+
+async def upkeep(
+    *,
+    project: str | None = None,
+    steps: list[str] | None = None,
+    dry_run: bool = False,
+    full: bool = False,
+    store: FactStore | AsyncFactStore | None = None,
+) -> OperationResult:
+    valid = [step.value for step in ALL_STEPS]
+    requested = steps or valid
+    unknown = [step for step in requested if step not in valid]
+    if unknown:
+        return validation_result(
+            f"Unknown upkeep step(s): {', '.join(unknown)}. Use: {', '.join(valid)}.",
+            details={"parameter": "steps", "valid": valid},
+        )
+    store_obj = async_store(store)
+    report = await run_upkeep(
+        store_obj,
+        project=await scope_project(store_obj, project),
+        steps=[UpkeepStep(step) for step in requested],
+        dry_run=dry_run,
+        full=full,
+    )
+    return OperationResult(
+        envelope=Envelope.success(data=report.model_dump(mode="json")),
+        text=format_upkeep_report(report),
     )
 
 

@@ -28,3 +28,9 @@ idempotent.
 `merge=union`. Same-fact concurrent edits resolve by event timestamp on read,
 with both events kept in the log for audit. `engram doctor` surfaces sync
 state under the `counts.sync` group.
+
+`projects.local.json` (repo roots) and `upkeep.lock` stay per machine.
+`maintenance_state.jsonl` syncs with `merge=union`. The upkeep lock does not span
+machines, so run background upkeep on one machine and set
+`ENGRAM_MAINTENANCE_ENABLED=false` on the others; otherwise both may
+consolidate the same new cards before they sync.

@@ -40,9 +40,19 @@ def _is_anthropic_model(model: str) -> bool:
     return lower.startswith("anthropic/") or "claude" in lower
 
 
-def _is_gpt_5_6_model(model: str) -> bool:
-    """Detect GPT-5.6 model names with or without a LiteLLM provider prefix."""
-    return any(part.startswith("gpt-5.6") for part in model.lower().split("/"))
+def _accepts_reasoning_effort(model: str) -> bool:
+    """OpenAI-family reasoning models take ``reasoning_effort``, not temperature.
+
+    Capability comes from LiteLLM's model map. Anthropic models keep the
+    temperature path: there LiteLLM maps ``reasoning_effort`` onto extended
+    thinking, which this client does not opt into.
+    """
+    if _is_anthropic_model(model):
+        return False
+    try:
+        return bool(importlib.import_module("litellm").supports_reasoning(model=model))
+    except Exception:  # noqa: BLE001 - unknown models fall back to temperature
+        return False
 
 
 def _build_user_content(prompt: str, cache_prefix: str | None, model: str):
@@ -99,6 +109,7 @@ async def complete(
     temperature: float | None = None,
     response_format: dict | None = None,
     cache_prefix: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Make an async LLM completion call via litellm.
 
@@ -115,6 +126,7 @@ async def complete(
         temperature=temperature,
         response_format=response_format,
         cache_prefix=cache_prefix,
+        reasoning_effort=reasoning_effort,
     )
     return result.text
 
@@ -124,6 +136,7 @@ async def complete_model(
     system: str,
     response_model: type[T],
     model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> T:
     """Make an LLM call expecting JSON matching a Pydantic model."""
     raw = await complete(
@@ -131,6 +144,7 @@ async def complete_model(
         system=system,
         model=model,
         response_format=_response_format_for_model(response_model),
+        reasoning_effort=reasoning_effort,
     )
     return response_model.model_validate_json(raw or "")
 
@@ -177,8 +191,13 @@ async def complete_with_usage(
     temperature: float | None = None,
     response_format: dict | None = None,
     cache_prefix: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> Completion:
-    """Like `complete`, but also returns reported token usage."""
+    """Like `complete`, but also returns reported token usage.
+
+    ``reasoning_effort`` overrides ``ENGRAM_LLM_REASONING_EFFORT`` for this
+    call (reasoning models only).
+    """
     litellm = _get_litellm()
     ensure_openai_api_key()
     settings = get_settings()
@@ -197,10 +216,12 @@ async def complete_with_usage(
         "messages": messages,
         "num_retries": 2,
     }
-    if _is_gpt_5_6_model(model):
-        kwargs["reasoning_effort"] = settings.llm_reasoning_effort
+    if _accepts_reasoning_effort(model):
+        kwargs["reasoning_effort"] = reasoning_effort or settings.llm_reasoning_effort
     else:
         kwargs["temperature"] = temperature
+    if settings.llm_service_tier and not _is_anthropic_model(model):
+        kwargs["service_tier"] = settings.llm_service_tier
     if response_format:
         kwargs["response_format"] = response_format
 

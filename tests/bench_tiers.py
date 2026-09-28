@@ -1,15 +1,12 @@
-"""Benchmark: tier-routing distribution across realistic queries.
+"""Benchmark: how recall's relevance bar sizes the card set on realistic queries.
 
-Seeds a store with cross-project facts, then runs queries of varying complexity
-and reports how the deterministic tier selector routes them:
-- Which tier each query lands in
-- Prefilter score distributions
-- Whether each query lands in a hand-labeled *acceptable* tier bucket
+Seeds a store with cross-project facts, runs queries of varying complexity,
+and reports for each one how many search hits it got, how many cleared the
+relevance bar (the cards), the top score and coverage, and whether it would
+spend an LLM selection call when a key is configured (no hit cleared the bar).
 
-This is a routing-distribution sanity check, NOT a retrieval-accuracy metric:
-the IDEAL_TIER buckets below are wide (several accept every tier), so the
-"match" count says nothing about whether the right facts were recalled. For a
-real, deterministic recall number see ``tests/run_evals.py``.
+This is a card-set sizing sanity check, NOT a retrieval-accuracy metric. For
+a real, deterministic recall number see ``tests/run_evals.py``.
 
 Run: uv run python tests/bench_tiers.py
 """
@@ -19,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from engram.core.models import Fact, FactCategory
-from engram.recall.retriever import _select_tier
+from engram.recall.retriever import _relevant_hits
 from engram.storage.store import FactStore
 
 # ---------------------------------------------------------------------------
@@ -527,25 +524,21 @@ FACTS = [
 
 
 # ---------------------------------------------------------------------------
-# Query scenarios with expected complexity
+# Query scenarios by complexity
 # ---------------------------------------------------------------------------
 
 QUERIES = [
-    # TRIVIAL — should be Tier 0 (direct lookup, 1-3 strong matches)
     ("What team does Alex Chen work on?", "trivial"),
     ("What is Alex Chen's role?", "trivial"),
     ("Who is Alex Chen's manager?", "trivial"),
-    # SIMPLE — should be Tier 0 or 1 (focused, few matches)
     ("What dataframe library does the user prefer?", "simple"),
     ("What Python formatter does the user use?", "simple"),
     ("What terminal does the user prefer?", "simple"),
     ("What testing framework for TypeScript?", "simple"),
-    # MODERATE — should be Tier 1 (needs synthesis but focused)
     ("How should commit messages be formatted?", "moderate"),
     ("What are the Python conventions in this codebase?", "moderate"),
     ("How do I run tests for engram?", "moderate"),
     ("What storage does engram use and why?", "moderate"),
-    # COMPLEX — should be Tier 2 (cross-cutting, multiple perspectives)
     ("What are all the architectural decisions made for engram?", "complex"),
     (
         "Tell me about the acme-dw project — architecture, conventions, pitfalls",
@@ -555,39 +548,17 @@ QUERIES = [
     ("What's the user's Python development setup and preferences?", "complex"),
     ("What tooling and workflows does the team use?", "complex"),
     ("What pitfalls should I watch out for across all projects?", "complex"),
-    # BROAD — should definitely be Tier 2 (vague, wide scope)
     ("What do you know about the user?", "broad"),
     ("Give me all context about this user's projects", "broad"),
     ("What's the current state of everything?", "broad"),
-    # CROSS-PROJECT — should be Tier 2
     ("How does the user's data stack work end-to-end?", "cross-project"),
     ("What decisions has the user made about data tooling?", "cross-project"),
-    # TEMPORAL — should be Tier 2 (needs temporal reasoning)
     ("What happened recently?", "temporal"),
     ("What events and releases have occurred?", "temporal"),
-    # EDGE CASES
     ("xyzzy gibberish nonexistent topic", "no-match"),
     ("snowflake", "single-word"),
     ("python testing conventions pitfalls", "multi-topic"),
 ]
-
-
-# ---------------------------------------------------------------------------
-# Which tier is ideal for each complexity level?
-# ---------------------------------------------------------------------------
-
-IDEAL_TIER = {
-    "trivial": {0, 1},  # 0 ideal, 1 acceptable
-    "simple": {0, 1, 2},  # depends on score distribution — flat=2 is fine
-    "moderate": {1, 2},  # 1 ideal, 2 acceptable
-    "complex": {2},  # must be 2
-    "broad": {2},  # must be 2
-    "cross-project": {2},  # must be 2
-    "temporal": {0, 2},  # 2 ideal, but 0 is ok if nothing matches
-    "no-match": {0},  # nothing found, no point using LLM
-    "single-word": {0, 1, 2},  # could go either way
-    "multi-topic": {1, 2},  # probably needs synthesis
-}
 
 
 def main():
@@ -598,88 +569,30 @@ def main():
         f"Seeded store with {len(FACTS)} facts across "
         f"{len(set(f.project for f in FACTS if f.project))} projects\n"
     )
+    print(
+        f"{'Query':<62} {'Type':<14} {'Hits':>4} {'Cards':>5} {'Top':>6} "
+        f"{'Cov':>5}  LLM"
+    )
+    print("-" * 104)
 
-    from engram.recall.retriever import RELEVANCE_FLOOR
-
-    # Run all queries
-    results = []
+    selection_calls = 0
     for query, complexity in QUERIES:
-        scored = store.prefilter_facts(query, limit=200)
-        tier = _select_tier(scored)
-
-        all_scores = [s for s, _ in scored if s > 0]
-        relevant_scores = [s for s in all_scores if s >= RELEVANCE_FLOOR]
-        ideal = IDEAL_TIER[complexity]
-        ok = tier in ideal
-
-        # Score gap: ratio of top score to 5th score (signal concentration)
-        top = relevant_scores[0] if relevant_scores else 0
-        fifth = relevant_scores[4] if len(relevant_scores) > 4 else 0
-        gap_ratio = top / fifth if fifth > 0 else float("inf") if top > 0 else 0
-
-        results.append(
-            {
-                "query": query,
-                "complexity": complexity,
-                "tier": tier,
-                "ideal": ideal,
-                "ok": ok,
-                "n_total": len(all_scores),
-                "n_relevant": len(relevant_scores),
-                "top_score": top,
-                "gap_ratio": gap_ratio,
-                "scores": relevant_scores[:8],
-            }
-        )
-
-    # Print results
-    print(
-        f"{'Query':<55} {'Type':<14} {'Tier':>4} {'OK':>4} {'#Rel':>5} {'Top':>4} {'Gap':>5}  Relevant scores"
-    )
-    print("-" * 145)
-
-    correct = 0
-    total = len(results)
-    tier_counts = {0: 0, 1: 0, 2: 0}
-
-    for r in results:
-        mark = "  ✓" if r["ok"] else "  ✗"
-        gap_str = f"{r['gap_ratio']:.1f}" if r["gap_ratio"] != float("inf") else " inf"
-        scores_str = str(r["scores"][:6])
+        hits = store.search_facts(query, limit=40)
+        cards = _relevant_hits(hits)
+        needs_llm = bool(hits) and not cards
+        selection_calls += needs_llm
+        top = f"{hits[0].score:6.1f}" if hits else f"{'-':>6}"
+        cov = f"{hits[0].coverage:5.2f}" if hits else f"{'-':>5}"
         print(
-            f"{r['query']:<55} {r['complexity']:<14} T{r['tier']:>2} {mark}  {r['n_relevant']:>4} {r['top_score']:>4} {gap_str:>5}  {scores_str}"
+            f"{query[:62]:<62} {complexity:<14} {len(hits):>4} {len(cards):>5} "
+            f"{top} {cov}  {'select' if needs_llm else ''}"
         )
-        if r["ok"]:
-            correct += 1
-        tier_counts[r["tier"]] += 1
 
-    print("-" * 145)
+    print("-" * 104)
     print(
-        f"\nTier-routing match (landed in an acceptable bucket): {correct}/{total} "
-        f"({correct / total * 100:.0f}%)  —  routing distribution, NOT recall accuracy."
+        f"\n{selection_calls}/{len(QUERIES)} queries would spend one LLM selection "
+        "call with a key configured; the rest return cards with zero LLM calls."
     )
-    print("See tests/run_evals.py for the deterministic recall@k number.")
-    print("\nTier distribution:")
-    for t in (0, 1, 2):
-        pct = tier_counts[t] / total * 100
-        print(f"  Tier {t}: {tier_counts[t]:>3} ({pct:.0f}%)")
-
-    # Flag problems
-    bad = [r for r in results if not r["ok"]]
-    if bad:
-        print(f"\n⚠ {len(bad)} queries routed outside their acceptable tier bucket:")
-        for r in bad:
-            gap_str = (
-                f"{r['gap_ratio']:.1f}" if r["gap_ratio"] != float("inf") else "inf"
-            )
-            print(
-                f'  - [{r["complexity"]}] "{r["query"]}" → Tier {r["tier"]} (want {r["ideal"]})'
-            )
-            print(
-                f"    {r['n_relevant']} relevant, top={r['top_score']}, gap={gap_str}, scores={r['scores'][:5]}"
-            )
-
-    return results
 
 
 if __name__ == "__main__":

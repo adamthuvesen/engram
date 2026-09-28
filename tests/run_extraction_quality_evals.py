@@ -6,7 +6,7 @@ Run directly:
     uv run python tests/run_extraction_quality_evals.py
 
 The default run scores committed gold cards and never calls an LLM provider.
-Pass ``--live`` to run the configured provider through extraction and dedup, or
+Pass ``--live`` to run the configured provider through ingest, or
 pass provider-produced cards to ``evaluate`` to reuse the labels and gates.
 """
 
@@ -24,7 +24,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from engram.core.models import Fact, FactCategory
-from engram.extraction.observer import extract_facts
+from engram.extraction.observer import ingest
 from engram.storage.store import FactStore
 
 DATASET_PATH = Path(__file__).parent / "extraction_quality_eval_dataset.json"
@@ -196,7 +196,7 @@ def evaluate(
 async def extract_live_provider_outputs(
     dataset_path: Path = DATASET_PATH,
 ) -> dict[str, list[ExtractedCard]]:
-    """Run the real extraction and dedup path with the configured provider."""
+    """Run the real ingest path with the configured provider."""
     dataset = load_dataset(dataset_path)
     outputs: dict[str, list[ExtractedCard]] = {}
 
@@ -217,7 +217,7 @@ async def extract_live_provider_outputs(
                         ]
                     )
 
-            facts = await extract_facts(case.raw_input, store=store)
+            result = await ingest(case.raw_input, store=store)
             outputs[case.id] = [
                 ExtractedCard(
                     memory_key=fact.memory_key,
@@ -226,7 +226,7 @@ async def extract_live_provider_outputs(
                     project=fact.project,
                     supersedes=fact.supersedes,
                 )
-                for fact in facts
+                for fact in result.created
             ]
 
     return outputs
@@ -360,7 +360,7 @@ def main(*, live: bool = False) -> int:
             print(f"Live extraction eval failed: {exc}", file=sys.stderr)
             return 2
         summary = evaluate(extracted_cards_by_case=outputs)
-        run_label = "Live configured provider through extraction and dedup"
+        run_label = "Live configured provider through ingest"
     else:
         summary = evaluate()
         run_label = "Deterministic contract fixture, no provider call, no API key"
@@ -429,7 +429,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--live",
         action="store_true",
-        help="Run extraction and dedup with the configured LLM provider",
+        help="Run ingest with the configured LLM provider",
     )
     args = parser.parse_args()
     sys.exit(main(live=args.live))

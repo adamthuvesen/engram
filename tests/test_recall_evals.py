@@ -1,10 +1,10 @@
-"""CI guard for the deterministic prefilter recall numbers.
+"""CI guard for the deterministic lexical recall numbers.
 
 Runs the labeled dataset through ``tests/run_evals.py`` and asserts the recall
-floors, the tier-0 (zero-LLM) cost floor, the no-match behavior, the per-kind
-division of labor, and dataset integrity. Fully deterministic — no LLM calls,
-no API keys — so this is safe to run in CI on every push. If the prefilter
-scorer regresses, the floors here trip.
+floors, the zero-LLM cost floor, the no-match behavior, the per-kind division
+of labor, and dataset integrity. Fully deterministic — no LLM calls, no API
+keys — so this is safe to run in CI on every push. If search ranking or the
+relevance bar regresses, the floors here trip.
 """
 
 from __future__ import annotations
@@ -13,13 +13,14 @@ import json
 
 import pytest
 
+from engram.recall.evals import EvalFixture, run_fixture_sync
 from tests.run_evals import (
     DATASET_PATH,
     MIN_HIT_RATE,
     MIN_MRR,
     MIN_RECALL_AT_1,
     MIN_RECALL_AT_5,
-    MIN_TIER0_FRACTION,
+    MIN_LEXICAL_FRACTION,
     evaluate,
 )
 
@@ -35,14 +36,16 @@ def dataset():
 
 
 def test_no_match_returns_nothing(summary):
-    # The off-domain query must surface nothing above the relevance floor.
+    # Off-domain queries must return no cards.
     assert summary.nomatch_ok
 
 
-def test_tier0_cost_floor(summary):
-    # A representative query mix must resolve a real share at tier-0 (no LLM).
-    assert summary.tier0_fraction >= MIN_TIER0_FRACTION, (
-        f"tier-0 share {summary.tier0_fraction:.2f} below floor {MIN_TIER0_FRACTION}"
+def test_lexical_cost_floor(summary):
+    # Most of a representative query mix must resolve with no LLM call, even
+    # when a key is configured.
+    assert summary.lexical_fraction >= MIN_LEXICAL_FRACTION, (
+        f"lexical share {summary.lexical_fraction:.2f} below floor "
+        f"{MIN_LEXICAL_FRACTION}"
     )
 
 
@@ -59,7 +62,8 @@ def test_recall_at_5_meets_floor(summary):
 
 
 def test_candidate_recall_meets_floor(summary):
-    # Hit-rate is the prefilter's candidate-recall job: keep the answer in pool.
+    # Hit-rate: the answer is reachable by the path recall takes (cards, or the
+    # zero-hit LLM selection pool).
     assert summary.hit_rate >= MIN_HIT_RATE, (
         f"candidate recall {summary.hit_rate:.2f} below floor {MIN_HIT_RATE}"
     )
@@ -69,12 +73,14 @@ def test_mrr_meets_floor(summary):
     assert summary.mrr >= MIN_MRR, f"MRR {summary.mrr:.2f} below floor {MIN_MRR}"
 
 
-def test_literal_queries_are_a_prefilter_win(summary):
-    # The whole point: the deterministic keyword pass nails literal/exact-term
-    # queries on its own. If this drops, the cost story no longer holds.
-    hits, total = summary.recall1_by_kind["literal"]
+@pytest.mark.parametrize("kind", ["literal", "paraphrase"])
+def test_worded_queries_are_a_lexical_win(summary, kind):
+    # The whole point: lexical cards nail queries that use the fact's own terms
+    # (literal) or a natural rewording of them. If this drops, the zero-LLM
+    # default no longer holds.
+    hits, total = summary.recall1_by_kind[kind]
     assert total >= 15
-    assert hits / total >= 0.9, f"literal recall@1 {hits}/{total} too low"
+    assert hits / total >= 0.9, f"{kind} recall@1 {hits}/{total} too low"
 
 
 def test_all_metrics_reported(summary):
@@ -107,3 +113,24 @@ def test_dataset_is_well_formed(dataset):
     for q in answerable:
         for fid in q["expected"]:
             assert fid in known, f"query labels unknown fact id: {fid}"
+
+
+KNOWLEDGE_UPDATE_PATH = DATASET_PATH.parent / "knowledge_update_eval_fixtures.json"
+
+
+def _knowledge_update_fixtures() -> list[EvalFixture]:
+    raw = json.loads(KNOWLEDGE_UPDATE_PATH.read_text())
+    return [EvalFixture.model_validate(item) for item in raw["fixtures"]]
+
+
+def test_knowledge_update_set_is_large_enough():
+    assert len(_knowledge_update_fixtures()) >= 6
+
+
+@pytest.mark.parametrize(
+    "fixture", _knowledge_update_fixtures(), ids=lambda fixture: fixture.name
+)
+def test_knowledge_update_fixture(fixture):
+    result = run_fixture_sync(fixture)
+    failed = [check for check in result.checks if not check.passed]
+    assert result.passed, failed

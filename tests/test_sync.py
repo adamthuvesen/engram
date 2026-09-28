@@ -464,3 +464,26 @@ async def test_auto_sync_loop_reports_unexpected_errors(tmp_path: Path, monkeypa
 
     assert isinstance(results[0], SyncError)
     assert results[0].code == "unexpected"
+
+
+def test_managed_block_gains_newly_managed_lines(tmp_path: Path):
+    from engram.storage.sync import GITIGNORE_MARKER, _ensure_managed_repo_setup
+
+    bare = _make_bare_repo(tmp_path)
+    clone = _init_clone(tmp_path, "alice", bare)
+    # A block written by an older engram, before projects.local.json existed.
+    (clone / ".gitignore").write_text(f"{GITIGNORE_MARKER}\n*.lock\n")
+    (clone / "projects.local.json").write_text("{}\n")
+    _git("add", ".gitignore", "projects.local.json", cwd=clone)
+    _git("commit", "-m", "old managed block", cwd=clone)
+
+    assert _ensure_managed_repo_setup(clone, timeout=5.0) is True
+
+    ignored = (clone / ".gitignore").read_text().splitlines()
+    assert ignored.count("*.lock") == 1
+    assert "projects.local.json" in ignored
+    assert _git("ls-files", "projects.local.json", cwd=clone) == ""
+    assert (
+        "maintenance_state.jsonl merge=union" in (clone / ".gitattributes").read_text()
+    )
+    assert _ensure_managed_repo_setup(clone, timeout=5.0) is False

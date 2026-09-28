@@ -1,5 +1,5 @@
 """Tests for the hardening changes: locking, fsync, batched approvals,
-LLM resilience, dedup correctness, prefilter cache, config, importer."""
+LLM resilience, dedup correctness, search index cache, config, importer."""
 
 import asyncio
 import json
@@ -405,7 +405,7 @@ def test_recall_context_prompt_mode_smoke():
     )
 
     text = str(result)
-    assert "# Memory Context" in text
+    assert "Memory (1 of 1 matches, project engram)" in text
     assert "Alex prefers concise terminal summaries" in text
 
 
@@ -647,86 +647,11 @@ def test_mcp_tools_return_text_and_structured_content():
 
 
 # ---------------------------------------------------------------------------
-# 5.4 Dedup collision: two candidates targeting same ancestor, only best kept
+# 6.4 Search index cache: built once, rebuilt when the event log changes
 # ---------------------------------------------------------------------------
 
 
-def test_dedup_collision_keeps_best_candidate(monkeypatch):
-    """Two candidates superseding the same ancestor → only higher-confidence kept."""
-    from engram.extraction.observer import _dedup
-
-    old_fact = _make_fact(id="ancestor", content="Old fact about Python")
-    existing = [old_fact]
-
-    low_conf = _make_fact(content="New Python fact low", confidence=0.6)
-    high_conf = _make_fact(content="New Python fact high", confidence=0.9)
-    candidates = [low_conf, high_conf]
-
-    update_fact_calls = []
-
-    async def fake_complete_model(prompt, system, response_model, **kwargs):
-        return response_model.model_validate(
-            {
-                "new": [],
-                "updates": [
-                    {"new_idx": 0, "existing_id": "ancestor"},
-                    {"new_idx": 1, "existing_id": "ancestor"},
-                ],
-                "duplicates": [],
-            }
-        )
-
-    fake_store = MagicMock()
-    fake_store.update_fact = MagicMock(
-        side_effect=lambda fid, **kw: update_fact_calls.append(fid)
-    )
-
-    monkeypatch.setattr(
-        "engram.extraction.observer.complete_model", fake_complete_model
-    )
-
-    with patch("engram.extraction.observer._find_near_matches", return_value=existing):
-        kept = asyncio.run(_dedup(candidates, existing, store=fake_store))
-
-    assert len(kept) == 1
-    assert kept[0].confidence == 0.9
-    assert update_fact_calls.count("ancestor") == 1
-
-
-# ---------------------------------------------------------------------------
-# 5.5 Short 2-token existing fact does not over-match long candidate
-# ---------------------------------------------------------------------------
-
-
-def test_near_match_short_fact_does_not_over_match():
-    """A 2-token generic fact with 1 incidental overlap does not pass Jaccard ≥0.3."""
-    from engram.extraction.observer import _find_near_matches
-
-    # 2-token existing fact
-    short_fact = _make_fact(content="python libraries")
-
-    # 20-token candidate with only 1 incidental overlap ("python")
-    long_candidate = _make_fact(
-        content=(
-            "The deployment pipeline uses docker compose with nginx reverse proxy "
-            "for staging environments and kubernetes for production python"
-        )
-    )
-
-    near = _find_near_matches([long_candidate], [short_fact])
-    # Jaccard: shared=1 (python), union=large → << 0.3
-    assert short_fact not in near, (
-        "Short generic fact should not near-match a long unrelated candidate via Jaccard"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 6.4 Prefilter cache: tokenize each fact once across two recalls
-# ---------------------------------------------------------------------------
-
-
-def test_prefilter_tokenization_cached():
-    """Fact tokenization is cached — second prefilter run tokenizes facts 0 times."""
+def test_search_index_cached_across_searches():
     store = _make_store()
     store.append_facts(
         [
@@ -735,93 +660,24 @@ def test_prefilter_tokenization_cached():
         ]
     )
 
-    call_count = [0]
-    original = store._tokenize_extended
-
-    def counting_tokenize(text):
-        call_count[0] += 1
-        return original(text)
-
-    store._tokenize_extended = counting_tokenize
-
-    # First prefilter tokenizes the query plus content and hints for each fact.
-    store.prefilter_facts("polars dataframe library")
-    after_first = call_count[0]
-
-    # Second prefilter: tokenizes query (1) only; facts hit cache
-    store.prefilter_facts("polars dataframe library")
-    after_second = call_count[0]
-
-    calls_first_run = after_first
-    calls_second_run = after_second - after_first  # should be 1 (query only)
-
-    assert calls_first_run > calls_second_run, (
-        f"Expected fewer tokenization calls on second run due to caching, "
-        f"but first={calls_first_run}, second={calls_second_run}"
-    )
-    # Second run should only tokenize the query (1 call), not the facts (0)
-    assert calls_second_run == 1, (
-        f"Expected exactly 1 tokenization call on second run (query only), got {calls_second_run}"
-    )
+    first = store.search_index()
+    store.search_facts("polars dataframe library")
+    assert store.search_index() is first
 
 
-# ---------------------------------------------------------------------------
-# 6.5 Updating a fact invalidates its cache entry
-# ---------------------------------------------------------------------------
-
-
-def test_prefilter_cache_invalidated_on_fact_update():
-    """After updating a fact, the next prefilter re-tokenizes it."""
+def test_search_index_rebuilt_after_update_and_purge():
     store = _make_store()
-    fact = _make_fact(content="Original content about TypeScript")
+    fact = _make_fact(content="Original content about TypeScript", confidence=1.0)
     store.append_facts([fact])
+    assert [h.fact.id for h in store.search_facts("TypeScript")] == [fact.id]
 
-    call_count = [0]
-    original = store._tokenize_extended
-
-    def counting_tokenize(text):
-        call_count[0] += 1
-        return original(text)
-
-    store._tokenize_extended = counting_tokenize
-
-    store.prefilter_facts("TypeScript content")
-    count_after_first = call_count[0]
-
-    # Update the fact — should invalidate cache
     store.update_fact(fact.id, content="Updated content about JavaScript")
+    assert store.search_facts("TypeScript") == []
+    assert [h.fact.id for h in store.search_facts("JavaScript")] == [fact.id]
 
-    store.prefilter_facts("TypeScript content")
-    count_after_second = call_count[0]
-
-    assert count_after_second > count_after_first, (
-        "Expected re-tokenization after fact update, but tokenize was not called again"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 6.3 Cache entries for purged facts are evicted
-# ---------------------------------------------------------------------------
-
-
-def test_prefilter_cache_evicted_on_purge():
-    """After a fact is purged, its cache entry is gone."""
-    store = _make_store()
-    fact = _make_fact(content="Fact that will be purged", confidence=1.0)
-    store.append_facts([fact])
-
-    # Warm the cache
-    store.prefilter_facts("purged fact content")
-    assert fact.id in store._tok_cache, "Cache should be populated after prefilter"
-
-    # Forget the fact (sets confidence=0.0) then purge
     store.forget(fact.id)
     store.purge()
-
-    # Cache entry must be gone
-    assert fact.id not in store._tok_cache, (
-        "Cache entry for purged fact should have been evicted after _rewrite"
-    )
+    assert store.search_facts("JavaScript") == []
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml>=6.0.0",
     "textual>=1.0.0",
     "textual-plotext>=1.0.0",
+    "snowballstemmer>=3.1.1",
 ]
 
 [project.scripts]

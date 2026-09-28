@@ -4,14 +4,14 @@ import asyncio
 import fcntl
 import logging
 import os
-import re
 import sys
 import tempfile
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 
@@ -21,7 +21,10 @@ from pydantic import BaseModel, ValidationError
 
 from engram.core.config import get_settings
 from engram.core.models import (
+    BRIEF_MEMORY_KEY,
+    EDITABLE_FACT_FIELDS,
     CandidateStatus,
+    Durability,
     EVENT_LOG_META_VERSION,
     EventLogMeta,
     EventType,
@@ -36,171 +39,15 @@ from engram.core.models import (
     materialize_events,
 )
 
+from engram.storage.search import TOKEN_RE, SearchHit, SearchIndex
+
 logger = logging.getLogger(__name__)
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _THREAD_LOCKS: dict[Path, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
 _STORE_LOCK_DEPTHS = threading.local()
 P = ParamSpec("P")
 R = TypeVar("R")
 ModelT = TypeVar("ModelT", bound=BaseModel)
-
-# Lightweight suffix-stripping stemmer (no NLTK dependency)
-_STEM_SUFFIXES = (
-    "tion",
-    "sion",
-    "ment",
-    "ness",
-    "ible",
-    "able",
-    "ing",
-    "ies",
-    "ous",
-    "ive",
-    "ers",
-    "ed",
-    "ly",
-    "es",
-    "er",
-    "al",
-    "s",
-)
-
-# English function words dropped from prefilter unigrams. Without this, a query
-# like "what is the warehouse?" scores a full unigram hit on every fact
-# containing "the"/"is", burying the real match and inflating the relevant-match
-# count so focused queries never reach the zero-LLM tier-0 fast path. Only
-# unambiguous function words are listed — domain-meaningful verbs ("run", "use",
-# "set") are deliberately kept.
-_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "the",
-        "this",
-        "that",
-        "these",
-        "those",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "been",
-        "being",
-        "do",
-        "does",
-        "did",
-        "done",
-        "has",
-        "have",
-        "had",
-        "will",
-        "would",
-        "should",
-        "shall",
-        "can",
-        "could",
-        "may",
-        "might",
-        "must",
-        "of",
-        "for",
-        "to",
-        "in",
-        "on",
-        "at",
-        "by",
-        "with",
-        "from",
-        "into",
-        "as",
-        "than",
-        "and",
-        "or",
-        "but",
-        "if",
-        "not",
-        "no",
-        "what",
-        "which",
-        "who",
-        "whom",
-        "whose",
-        "where",
-        "when",
-        "why",
-        "how",
-        "i",
-        "you",
-        "they",
-        "them",
-        "their",
-        "there",
-        "we",
-        "us",
-        "our",
-        "my",
-        "me",
-        "your",
-        "its",
-        "about",
-    }
-)
-
-_QUERY_TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
-    "credential": ("secret",),
-    "credentials": ("secret",),
-    "database": ("warehouse", "snowflake", "storage", "embedding"),
-    "db": ("database", "warehouse"),
-    "dedupe": ("deduplicate", "deduplication", "hash"),
-    "dependencies": ("package", "uv"),
-    "dependency": ("package", "uv"),
-    "duplicate": ("deduplicate", "dedup", "hash"),
-    "duplicates": ("deduplicate", "dedup", "hash"),
-    "engine": ("library",),
-    "browser": ("frontend", "typescript"),
-    "checker": ("validation", "pydantic"),
-    "approves": ("manager",),
-    "approve": ("manager",),
-    "chats": ("structured", "extraction"),
-    "install": ("package", "uv"),
-    "installs": ("package", "uv"),
-    "framework": ("api", "fastapi"),
-    "memories": ("fact",),
-    "memory": ("fact",),
-    "organization": ("domain", "architecture"),
-    "organized": ("domain", "architecture"),
-    "organize": ("domain", "architecture"),
-    "processing": ("dataframe", "polars"),
-    "shell": ("terminal",),
-    "squad": ("team",),
-    "theme": ("dark", "terminal"),
-    "ui": ("frontend", "typescript"),
-    "worker": ("agent", "parallel"),
-}
-
-
-def _stem(word: str) -> str:
-    """Cheap suffix strip — good enough for prefilter scoring.
-
-    Regular plurals are normalized first so a singular and its plural converge
-    to the same stem. The suffix loop alone stripped ``-es`` as a unit, which
-    left ``"dataframe"`` and ``"dataframes"`` (and ``image``/``images``) with
-    different stems, so a query word never matched its plural in the corpus.
-    """
-    if len(word) <= 4:
-        return word
-    if word.endswith("ies") and len(word) > 4:
-        word = word[:-3] + "y"
-    elif word.endswith(("ches", "shes", "sses", "xes", "zes")):
-        word = word[:-2]
-    elif word.endswith("s") and not word.endswith("ss"):
-        word = word[:-1]
-    for suffix in _STEM_SUFFIXES:
-        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
-            return word[: -len(suffix)]
-    return word
 
 
 def _content_hash(text: str) -> str:
@@ -227,9 +74,7 @@ def _is_active_fact(
 
 
 def _normalized_project_text(value: str) -> str:
-    return " ".join(
-        _TOKEN_RE.findall(value.lower().replace("_", " ").replace("-", " "))
-    )
+    return " ".join(TOKEN_RE.findall(value.lower().replace("_", " ").replace("-", " ")))
 
 
 def _infer_project_from_query(facts: list[Fact], query: str) -> str | None:
@@ -295,24 +140,43 @@ def _load_jsonl_records(
     return records, corrupt
 
 
+def fact_flags(fact: Fact) -> list[str]:
+    """Short lifecycle labels shown next to a fact in recall output."""
+    flags: list[str] = []
+    if fact.durability is Durability.ephemeral:
+        flags.append("time-bound")
+    if fact.expires_at is not None:
+        flags.append(f"expires {fact.expires_at.date().isoformat()}")
+    if fact.suspect_reason:
+        flags.append(f"unverified: {fact.suspect_reason}")
+    return flags
+
+
+def format_fact_line(fact: Fact) -> str:
+    """One dated card line: ``[category · project · YYYY-MM-DD] content (id: …)``."""
+    meta = [fact.category.value]
+    if fact.project:
+        meta.append(fact.project)
+    meta.append(fact.observed_at.date().isoformat())
+    line = f"[{' · '.join(meta)}] {fact.content}"
+    flags = fact_flags(fact)
+    if flags:
+        line += f" ({'; '.join(flags)})"
+    return f"{line} (id: {fact.id})"
+
+
 def format_facts_for_llm(facts: list[Fact]) -> str:
-    """Format facts as a numbered list for LLM context."""
+    """Format facts as a numbered, dated list for LLM context."""
     if not facts:
         return "(no facts stored)"
     lines = []
     for i, fact in enumerate(facts, 1):
-        meta = f"[{fact.category.value}]"
-        if fact.project:
-            meta += f" [{fact.project}]"
+        extra = ""
         if fact.memory_key:
-            meta += f" [key: {fact.memory_key}]"
-        if fact.confidence < 1.0:
-            meta += f" [confidence: {fact.confidence:.1f}]"
-        if fact.source_ref:
-            meta += f" [source: {fact.source_ref}]"
+            extra += f" [key: {fact.memory_key}]"
         if fact.supersedes:
-            meta += f" [supersedes: {fact.supersedes}]"
-        lines.append(f"{i}. {meta} {fact.content} (id: {fact.id})")
+            extra += f" [supersedes: {fact.supersedes}]"
+        lines.append(f"{i}.{extra} {format_fact_line(fact)}")
     return "\n".join(lines)
 
 
@@ -430,17 +294,51 @@ def _locked_store(data_dir: Path):
             lock_fd.close()
 
 
+@dataclass
+class ChangeSet:
+    """A batch of fact mutations appended to the event log atomically.
+
+    ``supersede`` maps an existing fact ID to the ID of the fact replacing it
+    (usually one of ``new_facts``). ``stale`` maps IDs to a retirement reason.
+    ``edits`` maps IDs to editable-field updates. ``expected`` maps target IDs
+    to the ``updated_at`` the caller based its decision on; a target changed
+    since then (edited, marked stale, ...) is skipped.
+    """
+
+    new_facts: list[Fact] = field(default_factory=list)
+    supersede: dict[str, str] = field(default_factory=dict)
+    stale: dict[str, str] = field(default_factory=dict)
+    edits: dict[str, dict] = field(default_factory=dict)
+    expected: dict[str, datetime] = field(default_factory=dict)
+    reason: str = ""
+    actor: str = "engram"
+
+
+@dataclass
+class ChangeResult:
+    created: list[Fact] = field(default_factory=list)
+    superseded: dict[str, str] = field(default_factory=dict)
+    staled: dict[str, str] = field(default_factory=dict)
+    edited: list[str] = field(default_factory=list)
+    # Target ID -> why the change was not applied.
+    skipped: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def applied(self) -> bool:
+        return bool(self.created or self.superseded or self.staled or self.edited)
+
+
 class FactStore:
     """Read/write/filter operations on the JSONL fact store."""
 
     def __init__(self, data_dir: Path | None = None):
         self.data_dir = data_dir or get_settings().data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        # Cache: fact.id -> updated_at plus content and retrieval token sets.
-        self._tok_cache: dict[
-            str,
-            tuple[str, set[str], set[str], set[str], set[str]],
-        ] = {}
+        # Materialized-state cache keyed on the event log's (inode, size, mtime),
+        # so repeated reads skip replaying an unchanged log.
+        self._cache_lock = threading.Lock()
+        self._facts_cache: tuple[tuple[int, int, int], list[Fact]] | None = None
+        self._index_cache: tuple[tuple[int, int, int], SearchIndex] | None = None
         self.recover_transactions()
 
     @property
@@ -478,17 +376,38 @@ class FactStore:
         _, events, _ = self._validated_event_log_records()
         return events
 
+    def _log_signature(self) -> tuple[int, int, int] | None:
+        try:
+            stat = self.facts_path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
     def load_facts(self) -> list[Fact]:
-        """Load all facts from JSONL.
+        """Load all facts from the event log.
 
         Events are replayed into materialized facts; forgotten or superseded
         facts surface as ``confidence == 0`` Facts to preserve the existing
-        "confidence-zero means inactive" contract used by callers.
+        "confidence-zero means inactive" contract used by callers. The result
+        is cached until the log changes; treat returned facts as read-only.
 
         Corrupt lines are skipped with a warning.
         """
-        if not self.facts_path.exists():
+        signature = self._log_signature()
+        if signature is None:
             return []
+        cached = self._facts_cache
+        if cached is not None and cached[0] == signature:
+            return list(cached[1])
+        with self._cache_lock:
+            cached = self._facts_cache
+            if cached is not None and cached[0] == signature:
+                return list(cached[1])
+            facts = self._replay_facts()
+            self._facts_cache = (signature, facts)
+            return list(facts)
+
+    def _replay_facts(self) -> list[Fact]:
         if not self._is_event_log_format():
             logger.warning(
                 "%s is missing a valid event-log sentinel; restore it from "
@@ -567,104 +486,51 @@ class FactStore:
             facts = facts[:limit]
         return facts
 
-    def prefilter_facts(
+    def search_index(self) -> SearchIndex:
+        """BM25 index over recallable facts (active, current, not superseded).
+
+        Project briefs are excluded: they summarize other cards and are served
+        on their own, so they would crowd search results and ingest neighbors.
+        """
+        signature = self._log_signature()
+        cached = self._index_cache
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        facts = [
+            fact
+            for fact in _exclude_superseded_facts(self.load_active_facts())
+            if fact.memory_key != BRIEF_MEMORY_KEY
+        ]
+        index = SearchIndex(facts)
+        if signature is not None:
+            self._index_cache = (signature, index)
+        return index
+
+    def search_facts(
         self,
         query: str,
         project: str | None = None,
         limit: int | None = None,
-    ) -> list[tuple[int, Fact]]:
-        """Prefilter facts deterministically before agentic retrieval.
-
-        Returns list of (score, Fact) tuples sorted by score descending.
-        Score is included so the retriever can use it for tier selection.
-        """
-        facts = self.load_active_facts(project=project)
-        if project is None:
-            inferred_project = _infer_project_from_query(facts, query)
-            if inferred_project:
-                facts = [
-                    fact
-                    for fact in facts
-                    if fact.project == inferred_project or fact.project is None
-                ]
-        facts = _exclude_superseded_facts(facts)
-        if not facts:
-            return []
-
-        query_unigrams, query_bigrams = self._tokenize_query(query)
-        if not query_unigrams:
-            return [(0, f) for f in (facts[:limit] if limit else facts)]
-
-        now = datetime.now(timezone.utc)
-        recency_cutoff = now - timedelta(days=7)
-        query_lower = query.lower()
-
-        scored: list[tuple[int, Fact]] = []
-        for fact in facts:
-            score, evidence_score = self._prefilter_score(
-                fact,
-                query_lower=query_lower,
-                query_unigrams=query_unigrams,
-                query_bigrams=query_bigrams,
-                recency_cutoff=recency_cutoff,
-            )
-            if evidence_score > 0:
-                scored.append((score, fact))
-
-        if not scored:
-            return [(0, f) for f in (facts[:limit] if limit else facts)]
-
-        scored.sort(
-            key=lambda item: (item[0], item[1].updated_at.timestamp()),
-            reverse=True,
-        )
-        if limit and len(scored) < limit:
-            seen_ids = {fact.id for _, fact in scored}
-            scored.extend((0, fact) for fact in facts if fact.id not in seen_ids)
-        return scored[:limit] if limit else scored
-
-    def _prefilter_score(
-        self,
-        fact: Fact,
         *,
-        query_lower: str,
-        query_unigrams: set[str],
-        query_bigrams: set[str],
-        recency_cutoff: datetime,
-    ) -> tuple[int, int]:
-        evidence_score = 0
-        (
-            content_unigrams,
-            content_bigrams,
-            hint_unigrams,
-            hint_bigrams,
-        ) = self._get_cached_tokens(fact)
+        include_global: bool = True,
+    ) -> list[SearchHit]:
+        """Rank recallable facts for ``query`` within a project scope.
 
-        evidence_score += len(query_unigrams & content_unigrams) * 5
-        evidence_score += len(query_bigrams & content_bigrams) * 3
+        With ``project`` set, the scope is that project plus global facts.
+        Without it, a query that names exactly one known project is scoped to
+        that project; otherwise every project is searched.
+        """
+        index = self.search_index()
+        scope = project
+        if scope is None:
+            scope = _infer_project_from_query(index.facts, query)
 
-        tag_set = {_stem(tag) for tag in fact.tags}
-        evidence_score += len(query_unigrams & tag_set) * 4
+        def in_scope(fact: Fact) -> bool:
+            if scope is None:
+                return True
+            return fact.project == scope or (include_global and fact.project is None)
 
-        evidence_score += len(query_unigrams & hint_unigrams) * 4
-        evidence_score += len(query_bigrams & hint_bigrams) * 2
-
-        if fact.project and fact.project in query_lower:
-            evidence_score += 6
-        if any(token in fact.category.value for token in query_unigrams):
-            evidence_score += 3
-
-        score = evidence_score
-        if fact.supersedes:
-            score += 1
-        if fact.expires_at:
-            score += 1
-        if fact.updated_at >= recency_cutoff:
-            score += 2
-        if fact.confidence > 0.8:
-            score += 1
-
-        return score, evidence_score
+        return index.search(query, accept=in_scope, limit=limit)
 
     def _ensure_event_log_header(self) -> None:
         """Write the meta sentinel as the first line if the file is brand-new."""
@@ -713,9 +579,6 @@ class FactStore:
             for fact in facts
         ]
         self.append_events(events)
-        # Evict any stale token-cache entries for re-created ids.
-        for fact in facts:
-            self._tok_cache.pop(fact.id, None)
         logger.info("Appended %d facts to store", len(facts))
 
     def append_candidates(self, candidates: list[MemoryCandidate]) -> None:
@@ -780,7 +643,6 @@ class FactStore:
                 )
             ]
         )
-        self._tok_cache.pop(fact_id, None)
 
     def update_fact(self, fact_id: str, **updates) -> Fact | None:
         """Update a fact by appending an ``edited`` event to the log.
@@ -800,7 +662,6 @@ class FactStore:
             now = datetime.now(timezone.utc)
             event, updated = self._event_and_result_for_update(existing, updates, now)
             self.append_events([event])
-            self._tok_cache.pop(fact_id, None)
             return updated
 
     def update_candidate(self, candidate_id: str, **updates) -> MemoryCandidate | None:
@@ -840,8 +701,6 @@ class FactStore:
             fact_count = len(events)
             if events:
                 self.append_events(events)
-                for event in events:
-                    self._tok_cache.pop(event.fact_id, None)
                 logger.info(
                     "Renamed project %s → %s for %d fact(s)",
                     old_project,
@@ -902,8 +761,6 @@ class FactStore:
 
             if events:
                 self.append_events(events)
-                for event in events:
-                    self._tok_cache.pop(event.fact_id, None)
                 logger.info(
                     "Batch-updated %d facts via %d event(s)",
                     len(updated_facts),
@@ -1062,7 +919,6 @@ class FactStore:
                     ),
                 ]
             )
-            self._tok_cache.pop(fact_id, None)
 
         logger.info("Corrected fact %s -> %s: %s", fact_id, new_fact.id, reason)
         return new_fact
@@ -1209,11 +1065,100 @@ class FactStore:
                 now=now,
             )
             self.append_events(events)
-            for src in sources:
-                self._tok_cache.pop(src.id, None)
 
         logger.info("Merged %d facts -> %s: %s", len(unique_ids), new_fact.id, reason)
         return new_fact, unique_ids
+
+    def apply_changes(
+        self, changes: ChangeSet, *, all_or_nothing: bool = False
+    ) -> ChangeResult:
+        """Append a batch of creations, supersessions, retirements, and edits.
+
+        Every event lands in one append under the store lock, so readers never
+        see a replacement without its retirement. Targets that are no longer
+        active are skipped; with ``all_or_nothing`` any skip aborts the batch
+        (upkeep uses this so a concurrently changed cluster is left alone).
+        """
+        with _locked_store(self.data_dir):
+            facts_by_id = self._facts_by_id()
+            result = ChangeResult()
+            new_ids = {fact.id for fact in changes.new_facts}
+
+            def active(fact_id: str) -> bool:
+                fact = facts_by_id.get(fact_id)
+                return fact is not None and fact.confidence > 0.0
+
+            targets = [*changes.supersede, *changes.stale, *changes.edits]
+            for fact_id in targets:
+                if not active(fact_id):
+                    result.skipped[fact_id] = "not an active fact"
+                    continue
+                seen = changes.expected.get(fact_id)
+                if seen is not None and facts_by_id[fact_id].updated_at != seen:
+                    result.skipped[fact_id] = "changed since it was read"
+            for old_id, new_id in changes.supersede.items():
+                if new_id not in new_ids and not active(new_id):
+                    result.skipped[old_id] = f"replacement {new_id} is not active"
+            for fact_id, fields in changes.edits.items():
+                bad = set(fields) - EDITABLE_FACT_FIELDS
+                if bad:
+                    result.skipped[fact_id] = f"non-editable fields: {sorted(bad)}"
+            if all_or_nothing and result.skipped:
+                return result
+
+            now = datetime.now(timezone.utc)
+            events: list[FactEvent] = [
+                FactEvent(
+                    event_type=EventType.created,
+                    fact_id=fact.id,
+                    timestamp=now,
+                    actor=changes.actor,
+                    payload=fact.model_dump(),
+                )
+                for fact in changes.new_facts
+            ]
+            for old_id, new_id in changes.supersede.items():
+                if old_id in result.skipped:
+                    continue
+                events.append(
+                    FactEvent(
+                        event_type=EventType.superseded,
+                        fact_id=old_id,
+                        timestamp=now,
+                        actor=changes.actor,
+                        payload={"superseded_by": new_id, "reason": changes.reason},
+                    )
+                )
+                result.superseded[old_id] = new_id
+            for fact_id, reason in changes.stale.items():
+                if fact_id in result.skipped or fact_id in result.superseded:
+                    continue
+                events.append(
+                    FactEvent(
+                        event_type=EventType.stale,
+                        fact_id=fact_id,
+                        timestamp=now,
+                        actor=changes.actor,
+                        payload={"reason": reason},
+                    )
+                )
+                result.staled[fact_id] = reason
+            for fact_id, fields in changes.edits.items():
+                if fact_id in result.skipped or fact_id in result.superseded:
+                    continue
+                events.append(
+                    FactEvent(
+                        event_type=EventType.edited,
+                        fact_id=fact_id,
+                        timestamp=now,
+                        actor=changes.actor,
+                        payload=fields,
+                    )
+                )
+                result.edited.append(fact_id)
+            self.append_events(events)
+            result.created = list(changes.new_facts)
+        return result
 
     def mark_stale(self, fact_id: str, reason: str = "") -> Fact | None:
         """Mark a fact stale by appending a ``stale`` event."""
@@ -1301,6 +1246,7 @@ class FactStore:
         }
 
         fact_updates: dict[str, dict] = {}
+        supersessions: dict[str, str] = {}
         candidate_updates: dict[str, dict] = {}
         new_facts: list[Fact] = []
         now = datetime.now(timezone.utc)
@@ -1319,12 +1265,15 @@ class FactStore:
 
             candidate_updates[candidate_id] = {"status": CandidateStatus.approved}
 
-            if candidate.supersedes:
-                fact_updates[candidate.supersedes] = {"confidence": 0.0}
-
-            data = candidate.model_dump(exclude={"status", "review_note"})
+            data = candidate.model_dump(exclude={"status", "review_note", "replaces"})
             data.update(id=uuid4().hex[:12], created_at=now, updated_at=now)
-            new_facts.append(Fact(**data))
+            new_fact = Fact(**data)
+            new_facts.append(new_fact)
+            replaced = candidate.replaces or (
+                [candidate.supersedes] if candidate.supersedes else []
+            )
+            for old_id in replaced:
+                supersessions[old_id] = new_fact.id
 
         if not new_facts:
             return None
@@ -1334,6 +1283,7 @@ class FactStore:
             status=TransactionStatus.prepared,
             candidate_ids=selected_ids,
             fact_updates=fact_updates,
+            supersessions=supersessions,
             candidate_updates=candidate_updates,
             new_facts=new_facts,
             created_at=now,
@@ -1353,6 +1303,14 @@ class FactStore:
         missing_facts = self._missing_facts(transaction.new_facts)
         if missing_facts:
             self.append_facts(missing_facts)
+        if transaction.supersessions:
+            # Re-running a recovered transaction skips already-superseded facts.
+            self.apply_changes(
+                ChangeSet(
+                    supersede=dict(transaction.supersessions),
+                    reason="approved candidate replaces this memory",
+                )
+            )
         if transaction.fact_updates:
             self.batch_update_facts(transaction.fact_updates)
         if transaction.candidate_updates:
@@ -1485,7 +1443,6 @@ class FactStore:
                     EventLogMeta(created_at=now),
                     [_compaction_created_event(fact.id, fact) for fact in kept],
                 )
-                self._evict_token_cache_except({fact.id for fact in kept})
                 logger.info("Purged %d facts (%d retained)", purged, len(kept))
 
             return {"purged": purged, "retained": len(kept)}
@@ -1679,7 +1636,6 @@ class FactStore:
                 EventLogMeta(),
                 [_compaction_created_event(fact.id, fact) for fact in facts],
             )
-            self._evict_token_cache_except({fact.id for fact in facts})
             return
 
         parent = target_path.parent
@@ -1704,58 +1660,6 @@ class FactStore:
             finally:
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
-
-    def _evict_token_cache_except(self, kept_ids: set[str]) -> None:
-        # Recall threads insert into the cache without the store lock, so
-        # snapshot the keys (one atomic C call) instead of iterating the live dict.
-        for stale_id in list(self._tok_cache):
-            if stale_id not in kept_ids:
-                self._tok_cache.pop(stale_id, None)
-
-    def _get_cached_tokens(
-        self, fact: Fact
-    ) -> tuple[set[str], set[str], set[str], set[str]]:
-        """Return cached content and retrieval-metadata token sets."""
-        updated_iso = fact.updated_at.isoformat()
-        cached = self._tok_cache.get(fact.id)
-        if cached and cached[0] == updated_iso:
-            return cached[1], cached[2], cached[3], cached[4]
-        unigrams, bigrams = self._tokenize_extended(fact.content)
-        hint_text = " ".join([fact.memory_key, *fact.retrieval_hints])
-        hint_unigrams, hint_bigrams = self._tokenize_extended(hint_text)
-        self._tok_cache[fact.id] = (
-            updated_iso,
-            unigrams,
-            bigrams,
-            hint_unigrams,
-            hint_bigrams,
-        )
-        return unigrams, bigrams, hint_unigrams, hint_bigrams
-
-    def _tokenize_extended(self, text: str) -> tuple[set[str], set[str]]:
-        """Tokenize text into stemmed unigrams and bigrams.
-
-        Normalizes underscore/hyphen so "fact_store" and "fact-store" both
-        produce the same tokens as "fact store".
-        """
-        normalized = text.lower().replace("_", " ").replace("-", " ")
-        raw = _TOKEN_RE.findall(normalized)
-        unigrams = {_stem(t) for t in raw if t not in _STOPWORDS}
-        bigrams = {f"{raw[i]}_{raw[i + 1]}" for i in range(len(raw) - 1)}
-        return unigrams, bigrams
-
-    def _tokenize_query(self, text: str) -> tuple[set[str], set[str]]:
-        """Tokenize a query and add common aliases used in memory lookups."""
-        unigrams, bigrams = self._tokenize_extended(text)
-        normalized = text.lower().replace("_", " ").replace("-", " ")
-        raw = _TOKEN_RE.findall(normalized)
-
-        alias_terms: set[str] = set()
-        for token in raw:
-            alias_terms.update(_QUERY_TOKEN_ALIASES.get(token, ()))
-            alias_terms.update(_QUERY_TOKEN_ALIASES.get(_stem(token), ()))
-        unigrams.update(_stem(t) for t in alias_terms if t not in _STOPWORDS)
-        return unigrams, bigrams
 
 
 class AsyncFactStore:
@@ -1817,13 +1721,31 @@ class AsyncFactStore:
             include_stale,
         )
 
-    async def prefilter_facts(
+    async def search_facts(
         self,
         query: str,
         project: str | None = None,
         limit: int | None = None,
-    ) -> list[tuple[int, Fact]]:
-        return await self._run(self.sync_store.prefilter_facts, query, project, limit)
+        *,
+        include_global: bool = True,
+    ) -> list[SearchHit]:
+        return await self._run(
+            self.sync_store.search_facts,
+            query,
+            project,
+            limit,
+            include_global=include_global,
+        )
+
+    async def search_index(self) -> SearchIndex:
+        return await self._run(self.sync_store.search_index)
+
+    async def apply_changes(
+        self, changes: ChangeSet, *, all_or_nothing: bool = False
+    ) -> ChangeResult:
+        return await self._run(
+            self.sync_store.apply_changes, changes, all_or_nothing=all_or_nothing
+        )
 
     async def append_facts(self, facts: list[Fact]) -> None:
         await self._run(self.sync_store.append_facts, facts)

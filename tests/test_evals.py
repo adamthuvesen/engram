@@ -12,6 +12,7 @@ from engram.recall.evals import (
     representative_fixtures,
     run_fixture_sync,
 )
+from engram.core.interfaces import WarningCode
 from engram.core.models import FactCategory
 
 
@@ -87,55 +88,85 @@ def test_eval_fails_on_excluded_source_present():
 # ---------------------------------------------------------------------------
 
 
-def test_eval_fails_on_tier_budget_exceeded(monkeypatch):
-    """Force tier-2 by seeding a flat distribution and capping max_tier=0."""
-    fixture = EvalFixture(
-        name="tier_budget",
-        query="retrieval",
+def _answer_mode_fixture(name: str, budget: EvalBudget) -> EvalFixture:
+    """Answer mode spends one mocked LLM call, which lands at tier 1."""
+    return EvalFixture(
+        name=name,
+        query="retrieval note",
+        recall_mode="answer",
         facts=[
             EvalFactSpec(
-                id=f"f{i:02d}aaaaaaaa",
+                id=f"f{i:02d}aaaaaaaaa",
                 category=FactCategory.preference,
                 content=f"retrieval note {i}",
             )
-            for i in range(15)
+            for i in range(5)
         ],
-        budget=EvalBudget(max_tier=0),
-        mocked_responses=[
-            (
-                "## DIRECT\n(none)\n## CONTEXTUAL\n(none)\n## TEMPORAL\n(none)\n",
-                100,
-                0,
-            ),
-            ("ok\n[quality: low]", 100, 0),
-        ],
+        budget=budget,
+        mocked_responses=[("ok (id: f00aaaaaaaaa)\n[quality: low]", 100, 0)],
     )
-    result = run_fixture_sync(fixture)
+
+
+def test_eval_fails_on_tier_budget_exceeded():
+    result = run_fixture_sync(
+        _answer_mode_fixture("tier_budget", EvalBudget(max_tier=0))
+    )
     assert result.passed is False
     tier_check = next(c for c in result.checks if c.name == "max_tier")
     assert tier_check.passed is False
+    assert tier_check.actual == 1
 
 
-def test_eval_fails_on_llm_call_budget(monkeypatch):
-    fixture = EvalFixture(
-        name="llm_budget",
-        query="retrieval",
-        facts=[
-            EvalFactSpec(
-                id=f"f{i:02d}aaaaaaaa",
-                category=FactCategory.preference,
-                content=f"retrieval note {i}",
-            )
-            for i in range(15)
-        ],
-        budget=EvalBudget(max_llm_calls=0),
-        mocked_responses=[("ok\n[quality: low]", 100, 0)],
+def test_eval_fails_on_llm_call_budget():
+    result = run_fixture_sync(
+        _answer_mode_fixture("llm_budget", EvalBudget(max_llm_calls=0))
     )
-    result = run_fixture_sync(fixture)
     assert result.passed is False
     call_check = next(c for c in result.checks if c.name == "max_llm_calls")
     assert call_check.passed is False
     assert call_check.actual == 1
+    assert result.cited_fact_ids == ["f00aaaaaaaaa"]
+
+
+def test_deterministic_eval_without_mocks_never_calls_llm(monkeypatch):
+    """No mocked output means the LLM counts as unavailable, even with a key."""
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    fixture = EvalFixture(
+        name="hermetic",
+        query="retrieval note",
+        recall_mode="answer",
+        facts=[
+            EvalFactSpec(
+                id="aaaaaaaaaaaa",
+                category=FactCategory.preference,
+                content="retrieval note",
+            )
+        ],
+        expected_source_ids=["aaaaaaaaaaaa"],
+        expected_warnings=[WarningCode.provider_unavailable],
+        budget=EvalBudget(max_llm_calls=0),
+    )
+    result = run_fixture_sync(fixture)
+    assert result.passed is True, result.checks
+
+
+def test_eval_checks_expected_top_and_warnings():
+    fixture = EvalFixture(
+        name="top_and_warning",
+        query="zagblort xylophone",
+        facts=[
+            EvalFactSpec(
+                id="aaaaaaaaaaaa",
+                category=FactCategory.preference,
+                content="zagblort xylophone preference",
+            )
+        ],
+        expected_top="bbbbbbbbbbbb",
+        expected_warnings=[WarningCode.suspect_fact],
+    )
+    result = run_fixture_sync(fixture)
+    failed = {c.name for c in result.checks if not c.passed}
+    assert failed == {"expected_top", "expected_warning:suspect_fact"}
 
 
 # ---------------------------------------------------------------------------

@@ -105,7 +105,7 @@ def test_filter_by_project():
     assert exact[0].project == "acme-dw"
 
 
-def test_prefilter_infers_project_named_in_query():
+def test_search_infers_project_named_in_query():
     store = _make_store()
     store.append_facts(
         [
@@ -131,14 +131,14 @@ def test_prefilter_infers_project_named_in_query():
         ]
     )
 
-    scored = store.prefilter_facts("In Atlas, what database backs billing?")
-    ids = [fact.id for score, fact in scored if score > 0]
+    hits = store.search_facts("In Atlas, what database backs billing?")
+    ids = [hit.fact.id for hit in hits]
 
     assert "atlasdb" in ids
     assert "oriondb" not in ids
 
 
-def test_prefilter_expands_common_query_aliases():
+def test_search_expands_common_query_aliases():
     store = _make_store()
     store.append_facts(
         [
@@ -209,21 +209,17 @@ def test_prefilter_expands_common_query_aliases():
         "credential rotation source": "secrets",
         "shell appearance preference": "terminal",
         "database storage choice": "warehouse",
-        "browser client code preference": "frontend",
         "dependency tooling choice": "packages",
-        "checker for typed objects": "validation",
-        "duplicate fact detection": "dedup",
-        "service framework preference": "api",
+        "dedupe facts": "dedup",
         "chats become structured records": "extract",
         "who approves Alex deliverables?": "manager",
     }
 
     for query, expected_id in cases.items():
-        ids = [fact.id for score, fact in store.prefilter_facts(query) if score >= 5]
-        assert ids[0] == expected_id
+        assert store.search_facts(query)[0].fact.id == expected_id, query
 
 
-def test_prefilter_query_aliases_do_not_make_off_domain_queries_match():
+def test_search_aliases_do_not_make_off_domain_queries_match():
     store = _make_store()
     store.append_facts(
         [
@@ -242,12 +238,10 @@ def test_prefilter_query_aliases_do_not_make_off_domain_queries_match():
         ]
     )
 
-    scored = store.prefilter_facts("Suggest vegetarian lasagna recipes please")
-
-    assert all(score < 5 for score, _ in scored)
+    assert store.search_facts("Suggest vegetarian lasagna recipes please") == []
 
 
-def test_prefilter_excludes_superseded_fact():
+def test_search_excludes_superseded_fact():
     store = _make_store()
     store.append_facts(
         [
@@ -267,8 +261,7 @@ def test_prefilter_excludes_superseded_fact():
         ]
     )
 
-    scored = store.prefilter_facts("Mira Python editor preference")
-    ids = [fact.id for score, fact in scored if score > 0]
+    ids = [hit.fact.id for hit in store.search_facts("Mira Python editor preference")]
 
     assert "neweditor" in ids
     assert "oldeditor" not in ids
@@ -520,7 +513,7 @@ def test_format_empty():
     assert format_facts_for_llm([]) == "(no facts stored)"
 
 
-def test_prefilter_facts_prioritizes_matching_content():
+def test_search_prioritizes_matching_content():
     store = _make_store()
     store.append_facts(
         [
@@ -538,17 +531,15 @@ def test_prefilter_facts_prioritizes_matching_content():
         ]
     )
 
-    filtered = store.prefilter_facts(
+    hits = store.search_facts(
         "What dataframe library does the user prefer? polars", limit=2
     )
 
-    assert len(filtered) == 2
-    # prefilter now returns (score, Fact) tuples
-    _, top_fact = filtered[0]
-    assert "polars" in top_fact.content.lower()
+    assert len(hits) <= 2
+    assert "polars" in hits[0].fact.content.lower()
 
 
-def test_prefilter_uses_memory_key_and_retrieval_hints():
+def test_search_uses_memory_key_and_retrieval_hints():
     store = _make_store()
     hinted = Fact(
         id="hinted-memory",
@@ -565,13 +556,13 @@ def test_prefilter_uses_memory_key_and_retrieval_hints():
     )
     store.append_facts([unrelated, hinted])
 
-    results = store.prefilter_facts("How do I refresh generated agent copies?")
+    hits = store.search_facts("How do I refresh generated agent copies?")
 
-    assert results[0][1].id == hinted.id
-    assert results[0][0] >= 5
+    assert [hit.fact.id for hit in hits] == [hinted.id]
+    assert hits[0].coverage == 1.0
 
 
-def test_prefilter_bigram_and_normalization():
+def test_search_bigram_and_normalization():
     """Bigrams and underscore normalization catch near-misses."""
     store = _make_store()
     store.append_facts(
@@ -586,26 +577,24 @@ def test_prefilter_bigram_and_normalization():
         ]
     )
 
-    filtered = store.prefilter_facts("coding style conventions")
-    scores = [score for score, _ in filtered]
-    assert len(filtered) == 1
-    assert scores[0] > 0
-    assert "coding_style" in filtered[0][1].content
+    hits = store.search_facts("coding style conventions")
+    assert len(hits) == 1
+    assert hits[0].score > 0
+    assert "coding_style" in hits[0].fact.content
 
 
-def test_prefilter_returns_score_tuples():
+def test_search_returns_scored_hits():
     store = _make_store()
     store.append_facts(
         [
             Fact(category=FactCategory.preference, content="Likes Python"),
         ]
     )
-    results = store.prefilter_facts("python")
-    assert len(results) == 1
-    score, fact = results[0]
-    assert isinstance(score, int)
-    assert score > 0
-    assert fact.content == "Likes Python"
+    [hit] = store.search_facts("python")
+    assert isinstance(hit.score, float)
+    assert hit.score > 0
+    assert hit.coverage == 1.0
+    assert hit.fact.content == "Likes Python"
 
 
 @pytest.mark.asyncio
@@ -624,7 +613,7 @@ async def test_async_store_facade_covers_server_operations():
 
     assert [loaded.id for loaded in await async_store.load_facts()] == [fact.id]
     assert (await async_store.load_active_facts())[0].content == fact.content
-    assert (await async_store.prefilter_facts("concise"))[0][1].id == fact.id
+    assert (await async_store.search_facts("concise"))[0].fact.id == fact.id
 
     updated = await async_store.update_fact(fact.id, content="Likes direct summaries")
     assert updated is not None

@@ -15,7 +15,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from engram.core.models import Fact, MIN_ACTIVE_CONFIDENCE
-from engram.storage.store import AsyncFactStore, FactStore, _STOPWORDS, _TOKEN_RE, _stem
+from engram.storage.search import term_set
+from engram.storage.store import AsyncFactStore, FactStore
 
 SuggestionKind = Literal["duplicate", "stale", "contradiction"]
 SuggestionAction = Literal["merge_memories", "mark_stale", "review_contradiction"]
@@ -430,12 +431,7 @@ def _contexts_compatible(
 
 
 def _tokens(content: str) -> set[str]:
-    normalized = content.lower().replace("_", " ").replace("-", " ")
-    return {
-        _stem(token)
-        for token in _TOKEN_RE.findall(normalized)
-        if token not in _STOPWORDS and len(token) > 1
-    }
+    return term_set(content)
 
 
 def _normalized_content(content: str) -> str:

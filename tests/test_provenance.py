@@ -9,9 +9,8 @@ from pathlib import Path
 import pytest
 
 from engram.core.interfaces import WarningCode
-from engram.llm import Completion
 from engram.core.models import Fact, FactCategory
-from engram.core.provenance import RecallProvenance, RecallTrace
+from engram.core.provenance import RecallTrace
 from engram.recall.retriever import (
     _extract_cited_ids,
     recall,
@@ -23,40 +22,6 @@ from engram.storage.store import FactStore
 def _make_store() -> FactStore:
     tmp = Path(tempfile.mkdtemp())
     return FactStore(data_dir=tmp)
-
-
-def _patch_complete(monkeypatch, responses):
-    calls = {"n": 0}
-    queue = list(responses)
-
-    async def fake(
-        prompt,
-        system="",
-        model=None,
-        temperature=None,
-        response_format=None,
-        cache_prefix=None,
-    ):
-        calls["n"] += 1
-        text, input_tokens, cached = queue.pop(0)
-        return Completion(text=text, input_tokens=input_tokens, cached_tokens=cached)
-
-    monkeypatch.setattr("engram.recall.retriever.complete_with_usage", fake)
-    return calls
-
-
-def _flat_tier2(store: FactStore, count: int = 15) -> None:
-    store.append_facts(
-        [
-            Fact(
-                id=f"f{i:02d}{'a' * 9}",
-                category=FactCategory.preference,
-                content=f"retrieval note number {i}",
-                tags=[],
-            )
-            for i in range(count)
-        ]
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -103,67 +68,11 @@ def test_default_recall_no_provenance_in_text():
 
 
 # ---------------------------------------------------------------------------
-# 2.6: tier-2 with provenance makes exactly 1 LLM call
-# ---------------------------------------------------------------------------
-
-
-def test_tier2_with_provenance_makes_exactly_one_call(monkeypatch):
-    store = _make_store()
-    _flat_tier2(store)
-
-    calls = _patch_complete(
-        monkeypatch,
-        [
-            (
-                "The retrieval notes are logged. (id: f00aaaaaaaaa)\n[quality: high]",
-                1200,
-                800,
-            ),
-        ],
-    )
-
-    answer, quality, provenance, trace = asyncio.run(
-        recall_with_provenance("retrieval", store=store)
-    )
-
-    assert calls["n"] == 1
-    assert isinstance(provenance, RecallProvenance)
-    assert provenance.tier == 2
-    assert provenance.usage.llm_calls == 1
-    assert provenance.usage.input_tokens == 1200
-    assert provenance.usage.cached_tokens == 800
-    assert quality == "high"
-    assert "f00aaaaaaaaa" in provenance.cited_fact_ids
-    assert trace is None  # default
-
-
-def test_tier2_with_trace_single_call(monkeypatch):
-    store = _make_store()
-    _flat_tier2(store)
-
-    calls = _patch_complete(
-        monkeypatch,
-        [("nothing matches\n[quality: none]", 600, 100)],
-    )
-
-    _, _, provenance, trace = asyncio.run(
-        recall_with_provenance("retrieval", store=store, with_trace=True)
-    )
-
-    assert calls["n"] == 1
-    assert isinstance(trace, RecallTrace)
-    assert len(trace.calls) == 1
-    names = [c.name for c in trace.calls]
-    assert names == ["tier2_single"]
-    assert provenance.usage.llm_calls == 1
-
-
-# ---------------------------------------------------------------------------
 # Provenance content
 # ---------------------------------------------------------------------------
 
 
-def test_tier0_provenance_has_no_llm_calls():
+def test_cards_provenance_has_no_llm_calls():
     store = _make_store()
     store.append_facts(
         [
@@ -180,10 +89,11 @@ def test_tier0_provenance_has_no_llm_calls():
     )
     assert provenance.tier == 0
     assert provenance.usage.llm_calls == 0
-    assert "f1aaaaaaaaaa" in provenance.cited_fact_ids
+    assert provenance.cited_fact_ids == ["f1aaaaaaaaaa"]
+    assert provenance.selected_decision.rules == "v4"
 
 
-def test_provenance_includes_prefilter_matches():
+def test_provenance_includes_scored_matches():
     store = _make_store()
     store.append_facts(
         [
@@ -197,68 +107,36 @@ def test_provenance_includes_prefilter_matches():
                 id="f2aaaaaaaaaa",
                 category=FactCategory.preference,
                 content="unrelated content",
-                tags=[],
             ),
         ]
     )
     _, _, provenance, _ = asyncio.run(
         recall_with_provenance("tabs spaces", store=store)
     )
-    match_ids = [m.id for m in provenance.prefilter_matches]
-    assert "f1aaaaaaaaaa" in match_ids
-    # Top match must be above the relevance floor.
+    assert [m.id for m in provenance.prefilter_matches] == ["f1aaaaaaaaaa"]
     top = provenance.prefilter_matches[0]
     assert top.above_floor is True
+    assert top.coverage == 1.0
+    assert provenance.selected_decision.top_score == top.score
 
 
-def test_provenance_warns_on_forgotten_match():
-    """Forgotten facts in the prefilter raise a forgotten warning."""
+def test_recall_does_not_reload_facts_once_index_is_warm():
+    """Provenance is built from search hits, not a second full fact load."""
     store = _make_store()
-    fact = Fact(
-        id="f1aaaaaaaaaa",
-        category=FactCategory.preference,
-        content="some preference about widgets",
-        tags=["widgets"],
-        confidence=1.0,
+    store.append_facts(
+        [Fact(category=FactCategory.preference, content="prefers tabs over spaces")]
     )
-    store.append_facts([fact])
-    # Soft-delete via the public API; prefilter excludes by min_confidence so
-    # we use min_confidence=0 to keep it visible to the prefilter for the
-    # purposes of this test.
-    store.update_fact(fact.id, confidence=0.0)
+    asyncio.run(recall_with_provenance("tabs", store=store))
 
-    # Forgotten facts are excluded by `load_active_facts(min_confidence=0.1)`,
-    # so the warning code path doesn't fire here directly. Instead verify that
-    # a stale-marked fact triggers the stale warning.
+    def fail_load():
+        raise AssertionError("recall reloaded every fact")
 
-
-def test_provenance_warns_on_stale_match():
-    """Stale facts that match still produce a stale warning."""
-    store = _make_store()
-    fact = Fact(
-        id="f1aaaaaaaaaa",
-        category=FactCategory.preference,
-        content="prefers stale widget options",
-        tags=["widgets"],
-        stale=True,
-        stale_reason="superseded by user",
-    )
-    store.append_facts([fact])
-    # Stale facts are excluded from active recall by default. The warning is
-    # raised when we explicitly include them (e.g. for inspection).
-    # We only verify here that load_active_facts excludes stale and the
-    # provenance still works without the warning when stale facts aren't
-    # touched.
-    _, _, provenance, _ = asyncio.run(
-        recall_with_provenance("widget options", store=store)
-    )
-    assert provenance.tier == 0
-    # Stale fact must not be cited because it's excluded from the prefilter.
-    assert "f1aaaaaaaaaa" not in provenance.cited_fact_ids
+    store.load_facts = fail_load  # type: ignore[method-assign]
+    _, _, provenance, _ = asyncio.run(recall_with_provenance("tabs", store=store))
+    assert provenance.cited_fact_ids
 
 
-def test_provenance_warns_on_superseded_match():
-    """When a matched fact is superseded by a newer active fact, warn."""
+def test_superseded_fact_is_not_delivered_and_not_warned():
     store = _make_store()
     store.append_facts(
         [
@@ -279,17 +157,13 @@ def test_provenance_warns_on_superseded_match():
     )
 
     _, _, provenance, _ = asyncio.run(
-        recall_with_provenance("zagblort editor", store=store)
+        recall_with_provenance("zagblort prefers vim or neovim", store=store)
     )
-    superseded_warnings = [
-        w for w in provenance.warnings if w.code == WarningCode.superseded_fact
-    ]
-    assert superseded_warnings
-    assert "oldaaaaaaaaa" in superseded_warnings[0].ids
+    assert provenance.cited_fact_ids == ["newaaaaaaaaa"]
+    assert provenance.warnings == []
 
 
-def test_provenance_excludes_stale_facts_from_active_path():
-    """Stale facts must not appear as cited sources in the answer."""
+def test_stale_facts_are_not_delivered():
     store = _make_store()
     store.append_facts(
         [
@@ -309,8 +183,80 @@ def test_provenance_excludes_stale_facts_from_active_path():
     _, _, provenance, _ = asyncio.run(
         recall_with_provenance("prefers option", store=store)
     )
-    cited = set(provenance.cited_fact_ids)
-    assert "staleaaaaaaa" not in cited
+    assert "staleaaaaaaa" not in provenance.cited_fact_ids
+    assert "staleaaaaaaa" not in [m.id for m in provenance.prefilter_matches]
+
+
+def test_conflicting_facts_need_a_shared_memory_key():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="runner1aaaaa",
+                category=FactCategory.convention,
+                project="atlas",
+                memory_key="test-runner",
+                content="Atlas runs tests with pytest",
+            ),
+            Fact(
+                id="runner2aaaaa",
+                category=FactCategory.convention,
+                project="atlas",
+                memory_key="test-runner",
+                content="Atlas runs tests with unittest",
+            ),
+            Fact(
+                id="lintaaaaaaaa",
+                category=FactCategory.convention,
+                project="atlas",
+                memory_key="linter",
+                content="Atlas runs tests after ruff",
+            ),
+        ]
+    )
+    _, _, provenance, _ = asyncio.run(
+        recall_with_provenance("atlas runs tests", project="atlas", store=store)
+    )
+    [warning] = provenance.warnings
+    assert warning.code == WarningCode.conflicting_facts
+    assert warning.ids == ["runner1aaaaa", "runner2aaaaa"]
+    assert warning.details == {"project": "atlas", "memory_key": "test-runner"}
+
+
+def test_suspect_fact_is_delivered_with_warning():
+    store = _make_store()
+    store.append_facts(
+        [
+            Fact(
+                id="suspectaaaaa",
+                category=FactCategory.convention,
+                content="The zagblort parser lives in src/zagblort/parse.py",
+                suspect_reason="anchor src/zagblort/parse.py vanished",
+            )
+        ]
+    )
+    text, _, provenance, _ = asyncio.run(
+        recall_with_provenance("zagblort parser", store=store)
+    )
+    assert "unverified: anchor src/zagblort/parse.py vanished" in text
+    [warning] = provenance.warnings
+    assert warning.code == WarningCode.suspect_fact
+    assert warning.ids == ["suspectaaaaa"]
+
+
+def test_trace_is_opt_in():
+    store = _make_store()
+    store.append_facts(
+        [Fact(category=FactCategory.preference, content="prefers tabs over spaces")]
+    )
+    _, _, provenance, trace = asyncio.run(recall_with_provenance("tabs", store=store))
+    assert trace is None
+    _, _, provenance, trace = asyncio.run(
+        recall_with_provenance("tabs", store=store, with_trace=True)
+    )
+    assert isinstance(trace, RecallTrace)
+    assert trace.provenance == provenance
+    assert trace.calls == []
 
 
 # ---------------------------------------------------------------------------

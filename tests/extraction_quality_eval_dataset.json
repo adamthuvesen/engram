@@ -254,6 +254,43 @@
           "supersedes": null
         }
       ]
+    },
+    {
+      "id": "pitfall-with-bookkeeping",
+      "kind": "bookkeeping-exclusion",
+      "policy_regression": false,
+      "raw_input": "In the Vega repo, ran make check and all 158 tests are green. Built this on branch alex/feat-exporter and opened PR #42. Pitfall: the Vega exporter silently drops rows with null timestamps, so filter nulls before calling it.",
+      "canonical_memory_units": [
+        {
+          "id": "vega-exporter-null-timestamps",
+          "label": "Vega exporter drops null-timestamp rows",
+          "project": "vega",
+          "required_durable_claims": [
+            "the Vega exporter silently drops rows with null timestamps",
+            "filter nulls before calling it"
+          ],
+          "future_recall_queries": [
+            "Why is the Vega exporter missing rows?"
+          ]
+        }
+      ],
+      "forbidden_transient_claims": [
+        "158 tests",
+        "alex/feat-exporter",
+        "PR #42"
+      ],
+      "fixture_extracted_cards": [
+        {
+          "memory_key": "vega-exporter-null-timestamps",
+          "content": "Pitfall: the Vega exporter silently drops rows with null timestamps, so filter nulls before calling it.",
+          "retrieval_hints": [
+            "Vega exporter missing rows",
+            "null timestamps"
+          ],
+          "project": "vega",
+          "supersedes": null
+        }
+      ]
     }
   ]
 }

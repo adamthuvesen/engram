@@ -18,7 +18,7 @@ import logging
 import os
 import subprocess
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 from engram.core.config import get_settings
 from engram.core.models import (
     CandidateStatus,
+    Durability,
     EVENT_LOG_META_VERSION,
     EventLogMeta,
     Fact,
@@ -572,6 +573,38 @@ def _doctor_counts(
     }
 
 
+_VOLUME_TOP_PROJECTS = 10
+_DELIVERY_WINDOW_DAYS = 90
+
+
+def _volume_counts(
+    facts: list[Fact], recalls: list[RecallRecord], now: datetime
+) -> dict[str, Any]:
+    """How big memory is, where it sits, and how much of it recall never uses."""
+    active = [fact for fact in facts if _is_active_fact(fact, now)]
+    per_project = Counter(fact.project or "(global)" for fact in active)
+    since = now - timedelta(days=_DELIVERY_WINDOW_DAYS)
+    recent = [record for record in recalls if record.timestamp >= since]
+    delivered = {fact_id for record in recent for fact_id in record.delivered_ids}
+    return {
+        "active_by_project": dict(per_project.most_common(_VOLUME_TOP_PROJECTS)),
+        "ephemeral_share": (
+            round(
+                sum(fact.durability is Durability.ephemeral for fact in active)
+                / len(active),
+                3,
+            )
+            if active
+            else 0.0
+        ),
+        "suspect_facts": sum(1 for fact in active if fact.suspect_reason),
+        "recalls_with_delivery_90d": sum(
+            1 for record in recent if record.delivered_ids
+        ),
+        "never_delivered_90d": sum(1 for fact in active if fact.id not in delivered),
+    }
+
+
 def run_doctor(
     store: FactStore | AsyncFactStore | None = None,
     *,
@@ -625,6 +658,10 @@ def run_doctor(
         facts_valid=facts_valid,
         candidates_valid=candidates_valid,
         issues=issues,
+    )
+
+    counts["volume"] = _volume_counts(
+        facts, sync_store.load_recall_log(limit=None), datetime.now(timezone.utc)
     )
 
     _check_sync(sync_store, issues, counts=counts)
