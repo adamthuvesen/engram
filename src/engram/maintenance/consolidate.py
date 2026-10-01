@@ -1,8 +1,10 @@
-"""LLM consolidation: rewrite related cards into fewer, coherent ones.
+"""LLM consolidation: rewrite related cards into coherent ones.
 
 Facts in one project scope are partitioned into disjoint clusters of lexical
 neighbours. One LLM call per cluster returns the minimal set of cards that
 preserves every durable, still-true claim, plus the cards to retire as junk.
+Cards about one policy are merged, and a card holding independent claims is
+split, so merging can be undone and no card grows without bound.
 Each cluster's result is applied as one all-or-nothing change set, so a
 cluster touched concurrently (by recall-time writes, another upkeep) is left
 alone rather than half-merged.
@@ -18,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -42,19 +45,31 @@ logger = logging.getLogger(__name__)
 CONSOLIDATE_SOURCE = "engram:consolidate"
 BRIEF_KEY = BRIEF_MEMORY_KEY
 MAX_CLUSTER_SIZE = 25
+# A merge or rewrite may not produce a longer card. Well above the size of a
+# card holding one policy with its coupled clauses, so hitting it means the
+# card bundles claims that should be corrected and expired independently.
+MAX_CARD_CHARS = 1200
 _MAX_HINTS = 5
 _MAX_TAGS = 3
 
-CONSOLIDATE_SYSTEM = """You curate a memory store for coding agents. You receive a
+CONSOLIDATE_SYSTEM = f"""You curate a memory store for coding agents. You receive a
 CLUSTER of related memory cards from one project scope. Rewrite the cluster as the
 minimal set of coherent, self-contained cards that preserves every durable,
 still-true claim.
 
 HOW TO REWRITE
-- Merge cards about the same subject, policy, workflow, or pitfall into one card
-  and carry forward every still-true detail. Keep independent topics as separate
-  cards; never merge cards merely because they share terms.
-- When cards conflict, the newer card (later date) wins; drop the outdated claim.
+- Merge cards that state the same policy, workflow, decision, or pitfall into one
+  card and carry forward every still-true detail. Sharing a subject, tool, or
+  terms is not enough: claims that can be corrected, contradicted, expired, or
+  acted on independently belong in separate cards.
+- Split a card that holds several such independent claims into one card per
+  claim, and list the original card in the source_ids of each. A card longer
+  than {MAX_CARD_CHARS} characters almost always needs splitting.
+- No card you write may be longer than {MAX_CARD_CHARS} characters. The only
+  exception is a single source card copied verbatim that cannot be divided.
+- When cards conflict, the newer claim wins; drop the outdated one. `date` is
+  when a card last took in new information. `oldest_claim`, when present, is
+  how old some of its claims may be.
 - A card that is already coherent and needs no merge: output it with a single
   source id and its content copied VERBATIM. You may still improve its metadata.
 - Self-contained: name the subject explicitly (project, tool, service,
@@ -73,8 +88,10 @@ RETIRE (list in retire with a short reason, not in any card) cards that are:
 - flagged "suspect" (files it names are gone from the repository) when the
   claim depends on those files
 
-COVERAGE: every input id appears exactly once overall: in one card's source_ids or
-in retire. Never both, never twice, never an id that is not in the input.
+COVERAGE: every input id is either kept or retired. A kept id appears in the
+source_ids of one card, or of several cards when that card is being split. A
+retired id appears once in retire. Never both, never an id that is not in the
+input.
 
 FIELDS
 - memory_key: stable lowercase semantic identity; reuse a source card's key when
@@ -201,6 +218,11 @@ def _cluster_prompt(cluster: list[Fact], scope: str) -> str:
         {
             "id": handle,
             "date": fact.observed_at.date().isoformat(),
+            **(
+                {"oldest_claim": fact.oldest_claim_at.date().isoformat()}
+                if fact.oldest_claim_at.date() < fact.observed_at.date()
+                else {}
+            ),
             "category": fact.category.value,
             "durability": fact.durability.value,
             "memory_key": fact.memory_key,
@@ -217,25 +239,79 @@ def _cluster_prompt(cluster: list[Fact], scope: str) -> str:
     )
 
 
-def coverage_problem(cluster: list[Fact], response: ConsolidationResponse) -> str:
-    """Why ``response`` does not account for every input card exactly once."""
-    expected = {fact.id for fact in cluster}
-    seen: list[str] = [
-        source_id for card in response.cards for source_id in card.source_ids
-    ]
-    seen += [retired.id for retired in response.retire]
+def _source_uses(response: ConsolidationResponse) -> Counter[str]:
+    """How many output cards each input id feeds; more than one is a split."""
+    return Counter(
+        source_id for card in response.cards for source_id in set(card.source_ids)
+    )
+
+
+def _is_verbatim(
+    card: ConsolidatedCard, by_id: dict[str, Fact], uses: Counter[str]
+) -> bool:
+    """True when ``card`` is one unsplit source card with its content unchanged."""
+    if len(card.source_ids) != 1 or uses[card.source_ids[0]] != 1:
+        return False
+    source = by_id.get(card.source_ids[0])
+    return source is not None and _same_text(card.content, source.content)
+
+
+def response_problem(cluster: list[Fact], response: ConsolidationResponse) -> str:
+    """Why ``response`` cannot be applied: bad coverage or an oversized card."""
+    by_id = {fact.id: fact for fact in cluster}
+    uses = _source_uses(response)
+    retired = [item.id for item in response.retire]
+    seen = set(uses) | set(retired)
     problems: list[str] = []
-    unknown = sorted(set(seen) - expected)
-    missing = sorted(expected - set(seen))
-    repeated = sorted({fact_id for fact_id in seen if seen.count(fact_id) > 1})
+    unknown = sorted(seen - set(by_id))
+    missing = sorted(set(by_id) - seen)
+    both = sorted(set(uses) & set(retired))
+    twice = sorted(
+        {fact_id for fact_id in retired if retired.count(fact_id) > 1}
+        | {
+            source_id
+            for card in response.cards
+            for source_id in card.source_ids
+            if card.source_ids.count(source_id) > 1
+        }
+    )
     if unknown:
         problems.append(f"ids not in the input: {', '.join(unknown)}")
     if missing:
         problems.append(f"input ids not accounted for: {', '.join(missing)}")
-    if repeated:
-        problems.append(f"ids used more than once: {', '.join(repeated)}")
+    if both:
+        problems.append(f"ids both kept and retired: {', '.join(both)}")
+    if twice:
+        problems.append(f"ids listed twice in one place: {', '.join(twice)}")
     if any(not card.source_ids for card in response.cards):
         problems.append("a card has no source_ids")
+    # A split must divide a card's claims, never repeat them.
+    texts = [" ".join(card.content.split()) for card in response.cards]
+    if len(set(texts)) < len(texts):
+        problems.append("two cards have the same content")
+    copied = sorted(
+        {
+            source_id
+            for card in response.cards
+            for source_id in card.source_ids
+            if uses[source_id] > 1
+            and source_id in by_id
+            and _same_text(card.content, by_id[source_id].content)
+        }
+    )
+    if copied:
+        problems.append(f"split cards repeated whole in one piece: {', '.join(copied)}")
+    too_long = [
+        f"{card.memory_key} ({len(card.content.strip())})"
+        for card in response.cards
+        if len(card.content.strip()) > MAX_CARD_CHARS
+        and not _is_verbatim(card, by_id, uses)
+    ]
+    if too_long:
+        problems.append(
+            f"cards longer than {MAX_CARD_CHARS} characters, split them into "
+            f"independent cards: {', '.join(too_long)}"
+        )
     return "; ".join(problems)
 
 
@@ -252,7 +328,7 @@ async def consolidate_cluster(
         if problem:
             attempt_prompt += (
                 f"\n\nCORRECTION: your previous answer was invalid ({problem}). "
-                "Account for every input id exactly once."
+                "Fix exactly that and keep or retire every input id."
             )
         report.llm_calls += 1
         try:
@@ -267,7 +343,7 @@ async def consolidate_cluster(
             logger.warning("consolidate %s attempt %d: %s", scope, attempt + 1, exc)
             continue
         response = _with_fact_ids(response, handles)
-        problem = coverage_problem(cluster, response)
+        problem = response_problem(cluster, response)
         if not problem:
             return response
     report.errors.append(f"{scope}: skipped cluster of {len(cluster)} ({problem})")
@@ -289,6 +365,8 @@ class ClusterPlan:
     changes: ChangeSet
     merged: int
     rewritten: int
+    # Input cards divided across more than one output card.
+    split: int
 
 
 def plan_cluster_changes(
@@ -303,12 +381,13 @@ def plan_cluster_changes(
     by_id = {fact.id: fact for fact in cluster}
     changes = ChangeSet(reason="upkeep: consolidation", actor=CONSOLIDATE_SOURCE)
     merged = rewritten = 0
+    uses = _source_uses(response)
     for card in response.cards:
         sources = [by_id[source_id] for source_id in card.source_ids]
         hints = _unique(card.retrieval_hints, _MAX_HINTS)
         tags = _unique(card.tags, _MAX_TAGS)
         anchors = _unique(card.anchors, 50)
-        if len(sources) == 1 and _same_text(card.content, sources[0].content):
+        if _is_verbatim(card, by_id, uses):
             source = sources[0]
             fields: dict[str, object] = {
                 "memory_key": card.memory_key,
@@ -331,6 +410,9 @@ def plan_cluster_changes(
 
         primary = sources[0]
         observed_at = max(source.observed_at for source in sources)
+        # The newest source dates the card for conflict resolution, but the
+        # claims it carries forward are only as fresh as the oldest source.
+        oldest_claim_at = min(source.oldest_claim_at for source in sources)
         expires_at = None
         if card.durability is Durability.ephemeral:
             # Keep a stated future expiry; otherwise the TTL starts now, so a
@@ -350,6 +432,9 @@ def plan_cluster_changes(
             created_at=now,
             updated_at=now,
             observed_at=observed_at,
+            first_observed_at=(
+                oldest_claim_at if oldest_claim_at < observed_at else None
+            ),
             expires_at=expires_at,
             tags=tags,
             retrieval_hints=hints,
@@ -370,7 +455,9 @@ def plan_cluster_changes(
         )
         changes.new_facts.append(fact)
         for source in sources:
-            changes.supersede[source.id] = fact.id
+            # A split source is superseded by the first card it feeds; the
+            # others reach it through ``consolidates``.
+            changes.supersede.setdefault(source.id, fact.id)
         if len(sources) > 1:
             merged += 1
         else:
@@ -381,7 +468,8 @@ def plan_cluster_changes(
         fact_id: by_id[fact_id].updated_at
         for fact_id in [*changes.supersede, *changes.stale, *changes.edits]
     }
-    return ClusterPlan(changes=changes, merged=merged, rewritten=rewritten)
+    split = sum(1 for count in uses.values() if count > 1)
+    return ClusterPlan(changes=changes, merged=merged, rewritten=rewritten, split=split)
 
 
 # --- Step --------------------------------------------------------------------
@@ -490,6 +578,7 @@ async def run_consolidation(
         report.bump("cards_out", len(response.cards))
         report.bump("merged_cards", plan.merged)
         report.bump("rewritten_cards", plan.rewritten)
+        report.bump("split_cards", plan.split)
         report.add("created", *applied_created)
         report.add("superseded", *superseded)
         report.add("staled", *staled)

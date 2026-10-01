@@ -162,6 +162,9 @@ def fact_payload(fact: FactBase) -> dict:
         "suspect_reason": fact.suspect_reason,
         "expires_at": fact.expires_at.isoformat() if fact.expires_at else None,
         "observed_at": fact.observed_at.isoformat(),
+        "first_observed_at": (
+            fact.first_observed_at.isoformat() if fact.first_observed_at else None
+        ),
         "created_at": fact.created_at.isoformat(),
         "updated_at": fact.updated_at.isoformat(),
     }

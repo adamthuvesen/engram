@@ -216,6 +216,7 @@ def test_replaces_supersedes_old_fact_atomically(monkeypatch):
                 category=FactCategory.preference,
                 content="The user prefers pandas for dataframes.",
                 consolidates=["ancient"],
+                observed_at=datetime(2026, 3, 22, tzinfo=timezone.utc),
             )
         ]
     )
@@ -244,6 +245,8 @@ def test_replaces_supersedes_old_fact_atomically(monkeypatch):
     new = result.created[0]
     assert new.supersedes == "oldfact"
     assert new.consolidates == ["oldfact", "ancient"]
+    # Details carried forward from the replaced card keep its age.
+    assert new.first_observed_at == datetime(2026, 3, 22, tzinfo=timezone.utc)
     assert result.superseded == {"oldfact": new.id}
     assert appends == [2]
     assert _event_types(store, "oldfact")[-1] == EventType.superseded

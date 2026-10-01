@@ -152,12 +152,25 @@ def fact_flags(fact: Fact) -> list[str]:
     return flags
 
 
+def format_observed(fact: Fact) -> str:
+    """The card's date, as ``oldest..newest`` when it carries older claims."""
+    newest = fact.observed_at.date()
+    oldest = fact.oldest_claim_at.date()
+    if oldest < newest:
+        return f"{oldest.isoformat()}..{newest.isoformat()}"
+    return newest.isoformat()
+
+
 def format_fact_line(fact: Fact) -> str:
-    """One dated card line: ``[category · project · YYYY-MM-DD] content (id: …)``."""
+    """One dated card line: ``[category · project · YYYY-MM-DD] content (id: …)``.
+
+    A card that carries claims older than its latest update shows the range
+    ``YYYY-MM-DD..YYYY-MM-DD``.
+    """
     meta = [fact.category.value]
     if fact.project:
         meta.append(fact.project)
-    meta.append(fact.observed_at.date().isoformat())
+    meta.append(format_observed(fact))
     line = f"[{' · '.join(meta)}] {fact.content}"
     flags = fact_flags(fact)
     if flags:
@@ -889,6 +902,9 @@ class FactStore:
                 created_at=now,
                 updated_at=now,
                 observed_at=now,
+                # A correction to a merged card rarely re-verifies every claim
+                # it carried, so those keep their age.
+                first_observed_at=existing.first_observed_at,
                 project=project if project is not None else existing.project,
                 tags=tags if tags is not None else list(existing.tags),
                 retrieval_hints=(
@@ -959,6 +975,7 @@ class FactStore:
             created_at=now,
             updated_at=now,
             observed_at=now,
+            first_observed_at=min(fact.oldest_claim_at for fact in sources),
             project=project if project is not None else primary.project,
             tags=tags if tags is not None else list(primary.tags),
             retrieval_hints=(

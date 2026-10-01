@@ -17,6 +17,7 @@ from engram.core.models import Durability, Fact, FactCategory
 from engram.core.projects import PROJECT_ROOTS_FILE, record_project_root
 from engram.maintenance import briefs, consolidate
 from engram.maintenance.consolidate import (
+    MAX_CARD_CHARS,
     ConsolidatedCard,
     ConsolidationResponse,
     RetiredInputCard,
@@ -38,7 +39,7 @@ from engram.maintenance.upkeep_state import (
 )
 from engram.maintenance.verify import derive_anchors, normalize_anchor
 from engram.storage.search import SearchIndex
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.store import AsyncFactStore, FactStore, format_fact_line
 
 Responder = Callable[[list[dict]], ConsolidationResponse]
 
@@ -369,6 +370,133 @@ def test_consolidation_merges_and_retires_atomically(tmp_path: Path, llm):
     assert (store.data_dir / STATE_FILE).exists()
 
 
+def _card(source_ids: list[str], key: str, content: str) -> ConsolidatedCard:
+    return ConsolidatedCard(
+        source_ids=source_ids,
+        memory_key=key,
+        content=content,
+        category=FactCategory.workflow,
+        durability=Durability.durable,
+        anchors=[],
+        retrieval_hints=["hint"],
+        tags=["tag"],
+    )
+
+
+def test_consolidation_splits_a_card_holding_independent_claims(tmp_path: Path, llm):
+    _, use = llm
+    store = _store(
+        tmp_path,
+        [
+            _fact(
+                "big",
+                "Widget deploys with make deploy. Widget logs live in Datadog.",
+                consolidates=["ancient"],
+            )
+        ],
+    )
+    use(
+        lambda cards: ConsolidationResponse(
+            cards=[
+                _card(["big"], "widget-deploy", "Widget deploys with make deploy."),
+                _card(["big"], "widget-logs", "Widget logs live in Datadog."),
+            ],
+            retire=[],
+        )
+    )
+
+    report = _upkeep(store, UpkeepStep.consolidate).steps[0]
+
+    facts = _by_id(store)
+    deploy, logs = (facts[fact_id] for fact_id in report.fact_ids["created"])
+    assert facts["big"].confidence == 0.0
+    assert report.fact_ids["superseded"] == ["big"]
+    assert report.counts["split_cards"] == 1
+    assert {deploy.memory_key, logs.memory_key} == {"widget-deploy", "widget-logs"}
+    # Both halves keep the lineage of the card they came from.
+    assert deploy.consolidates == logs.consolidates == ["big", "ancient"]
+    assert deploy.supersedes == logs.supersedes == "big"
+
+
+def test_split_that_repeats_claims_is_rejected(tmp_path: Path, llm):
+    calls, use = llm
+    store = _store(tmp_path, [_fact("a", "A one."), _fact("b", "B two.")])
+    answers = iter(
+        [
+            # Identical pieces.
+            [_card(["a"], "k1", "A one."), _card(["a"], "k2", "A one.")],
+            # One piece is the whole source; the other merges it again.
+            [_card(["a"], "k1", "A one."), _card(["a", "b"], "k2", "A one. B two.")],
+        ]
+    )
+
+    def responder(cards: list[dict]) -> ConsolidationResponse:
+        return ConsolidationResponse(cards=next(answers), retire=[])
+
+    use(responder)
+    report = _upkeep(store, UpkeepStep.consolidate).steps[0]
+
+    assert "two cards have the same content" in calls["consolidate"][1]
+    assert "split cards repeated whole in one piece: a" in report.errors[0]
+    assert all(fact.confidence == 1.0 for fact in _by_id(store).values())
+
+
+def test_oversized_merge_is_rejected_but_an_untouched_long_card_is_kept(
+    tmp_path: Path, llm
+):
+    calls, use = llm
+    long_text = "Widget fact. " * (MAX_CARD_CHARS // 13 + 1)
+    store = _store(
+        tmp_path,
+        [_fact("a", "one"), _fact("b", "two"), _fact("long", long_text.strip())],
+    )
+    answers = iter([[_card(["a", "b"], "bloated", "x" * (MAX_CARD_CHARS + 1))], None])
+
+    def responder(cards: list[dict]) -> ConsolidationResponse:
+        kept = _keep_all(cards)
+        merged = next(answers)
+        if merged is None:
+            return kept
+        untouched = [card for card in kept.cards if card.content == long_text.strip()]
+        return ConsolidationResponse(cards=[*merged, *untouched], retire=[])
+
+    use(responder)
+    report = _upkeep(store, UpkeepStep.consolidate).steps[0]
+
+    assert len(calls["consolidate"]) == 2
+    assert f"cards longer than {MAX_CARD_CHARS} characters" in calls["consolidate"][1]
+    # Only the merge is named: the long source card copied verbatim is allowed.
+    assert "independent cards: bloated (1201))" in calls["consolidate"][1]
+    assert report.errors == []
+    assert _by_id(store)["long"].confidence == 1.0
+
+
+def test_merged_card_keeps_the_age_of_its_oldest_claim(tmp_path: Path, llm):
+    _, use = llm
+    old = datetime(2026, 3, 22, tzinfo=timezone.utc)
+    new = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    store = _store(
+        tmp_path,
+        [
+            _fact("a", "Widget deploys with make deploy.", observed_at=old),
+            _fact("b", "Widget deploy needs VPN.", observed_at=new),
+        ],
+    )
+    use(
+        lambda cards: ConsolidationResponse(
+            cards=[_card(["a", "b"], "widget-deploy", "Deploy needs make and VPN.")],
+            retire=[],
+        )
+    )
+
+    report = _upkeep(store, UpkeepStep.consolidate).steps[0]
+
+    merged = _by_id(store)[report.fact_ids["created"][0]]
+    assert merged.observed_at == new
+    assert merged.first_observed_at == old
+    assert "2026-03-22..2026-10-01" in format_fact_line(merged)
+
+
 def test_unchanged_single_source_card_is_edited_in_place(tmp_path: Path, llm):
     _, use = llm
     observed = datetime.now(timezone.utc) - timedelta(days=5)
@@ -433,7 +561,7 @@ def test_persistently_invalid_cluster_is_retried_then_abandoned(tmp_path: Path, 
 
     assert len(calls["consolidate"]) == 2
     assert store.facts_path.read_bytes() == before
-    assert "ids used more than once: a" in report.errors[0]
+    assert "ids both kept and retired: a" in report.errors[0]
     # The project's timestamp advances; only the failed seed is retried.
     state = load_state(store.data_dir).projects["widget"]
     assert state.retry_seeds == {"a": 1}

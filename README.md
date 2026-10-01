@@ -25,7 +25,7 @@ lands in one atomic append to an event-sourced JSONL log.
 | --- | --- | --- |
 | `projects` | Canonicalizes scopes (paths and worktrees → repo name) | no |
 | `verify` | Checks file/symbol anchors against the repo; flags or retires drifted cards | no |
-| `consolidate` | Merges fragmented cards, retires junk and contradicted cards | yes |
+| `consolidate` | Merges fragmented cards, splits overloaded ones, retires junk and contradicted cards | yes |
 | `briefs` | Refreshes a per-project brief for session start | yes |
 
 Time-bound (`ephemeral`) memories fade in ranking and expire; `durable` ones hold

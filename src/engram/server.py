@@ -73,8 +73,8 @@ Write:
   it is no longer true: mark_stale(fact_id, reason).
 
 Engram keeps itself current: background upkeep merges fragmented cards,
-retires junk, verifies file anchors against the repository, and refreshes
-project briefs.
+splits overloaded ones, retires junk, verifies file anchors against the
+repository, and refreshes project briefs.
 """
 
 
@@ -565,7 +565,8 @@ def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
 
         Steps: ``projects`` (canonical scopes), ``verify`` (check file/symbol
         anchors against the repo; flag or retire drifted cards),
-        ``consolidate`` (merge fragmented cards, retire junk; LLM),
+        ``consolidate`` (merge fragmented cards, split overloaded ones,
+        retire junk; LLM),
         ``briefs`` (refresh project briefs; LLM). Changes are applied to the
         append-only log; ``dry_run`` reports without writing.
         """

@@ -104,6 +104,10 @@ class FactBase(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # When the oldest claim carried into this card was observed. Set when a
+    # card replaces or merges older cards, so their claims keep their age
+    # instead of taking the newest source's date. None means ``observed_at``.
+    first_observed_at: datetime | None = None
     effective_at: datetime | None = None
     expires_at: datetime | None = None
     tags: list[str] = Field(default_factory=list)
@@ -126,6 +130,11 @@ class FactBase(BaseModel):
     # Set via the maintenance workflows (mark_stale).
     stale: bool = False
     stale_reason: str = ""
+
+    @property
+    def oldest_claim_at(self) -> datetime:
+        """When this card's oldest claim was observed."""
+        return self.first_observed_at or self.observed_at
 
 
 class Fact(FactBase):
@@ -210,6 +219,7 @@ EDITABLE_FACT_FIELDS = frozenset(
         "source",
         "confidence",
         "observed_at",
+        "first_observed_at",
         "effective_at",
         "expires_at",
         "tags",
