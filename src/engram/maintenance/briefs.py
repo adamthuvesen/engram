@@ -18,7 +18,7 @@ from engram.core.models import Durability, Fact, FactCategory
 from engram.llm import complete_model
 from engram.maintenance.consolidate import BRIEF_KEY
 from engram.maintenance.upkeep_report import StepReport
-from engram.storage.store import AsyncFactStore, ChangeSet
+from engram.storage.store import AsyncFactStore, ChangeSet, format_observed
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +66,7 @@ def _brief_input(facts: list[Fact]) -> list[Fact]:
 
 def _brief_prompt(project: str, facts: list[Fact]) -> str:
     lines = [
-        f"- [{fact.category.value} · {fact.observed_at.date().isoformat()}] "
-        f"{fact.content}"
+        f"- [{fact.category.value} · {format_observed(fact)}] {fact.content}"
         for fact in facts
     ]
     return f"PROJECT: {project}\n\nMEMORY CARDS:\n" + "\n".join(lines)

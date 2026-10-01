@@ -32,7 +32,13 @@ from engram.core.structured_outputs import (
     ExtractionResponse,
 )
 from engram.llm import complete_model
-from engram.storage.store import AsyncFactStore, ChangeSet, FactStore, _content_hash
+from engram.storage.store import (
+    AsyncFactStore,
+    ChangeSet,
+    FactStore,
+    _content_hash,
+    format_observed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +67,8 @@ HOW TO WRITE A CARD
 - One card per future-use context. A card may hold several coupled clauses; split
   only when claims can be corrected, contradicted, expired, or acted on
   independently. Never split one policy or workflow into sentence fragments.
+- Keep a card well under 1200 characters. A longer card bundles claims that
+  belong in separate cards.
 - Self-contained: name the subject explicitly (the project, tool, service, or
   component). Never write "this workflow", "the script", or "the repo".
 - Third person ("The user prefers...", not "I prefer...").
@@ -88,7 +96,10 @@ RECONCILING WITH EXISTING CARDS
 - replaces: IDs of existing cards this card updates, extends, merges, or
   contradicts. The new card replaces them entirely, so it must be complete on its
   own: carry forward every still-true detail from the cards it replaces. Only
-  replace cards in the same project scope as the new card.
+  replace cards in the same project scope as the new card. Replace a card only
+  when the input changes or contradicts what it says. When the input adds an
+  independent claim on the same subject, write that claim as its own card and
+  leave the existing card alone.
 - duplicate_of: the ID of an existing card when the input adds nothing to it. The
   card is then skipped, so still fill its other fields briefly. Otherwise null.
 - retire (top level): existing cards the input shows are no longer true and that
@@ -227,6 +238,12 @@ class _Plan:
                     update={
                         "supersedes": replaced[0] if replaced else None,
                         "consolidates": consolidates,
+                        # Details carried forward from a replaced card keep
+                        # that card's age.
+                        "first_observed_at": min(
+                            (self.neighbors[old].oldest_claim_at for old in replaced),
+                            default=None,
+                        ),
                     }
                 )
             )
@@ -320,7 +337,7 @@ def _format_neighbor(fact: Fact) -> str:
     key = fact.memory_key or "(none)"
     return (
         f"[id:{fact.id}] [project:{project}] [{fact.category.value}] "
-        f"[memory_key:{key}] [observed:{fact.observed_at.date().isoformat()}] "
+        f"[memory_key:{key}] [observed:{format_observed(fact)}] "
         f"{fact.content}"
     )
 

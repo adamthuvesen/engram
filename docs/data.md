@@ -32,6 +32,14 @@ likely future queries and vocabulary. `source_group_id` links cards extracted
 from the same input. `supersedes` tracks correction lineage, while
 `consolidates` lists every source fact joined into a replacement card.
 
+`observed_at` is when a card last took in new information. A card that an
+ingest replacement, a consolidation, or `merge_memories` builds from older
+cards also records `first_observed_at`, the date of the oldest claim it
+carried forward, so a merge never makes an old claim look new. A correction
+keeps the value its card already had. Recall, briefs, and the LLM prompts show
+such a card's date as `oldest..newest`. Ranking and the audit's age heuristics
+still use `observed_at`.
+
 `durability` is `evergreen` (never ages), `durable` (true until contradicted),
 or `ephemeral` (in-flight state; gets an `expires_at` of now +
 `ENGRAM_EPHEMERAL_TTL_DAYS` when none is given and decays in ranking).

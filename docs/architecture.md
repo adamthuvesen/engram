@@ -68,7 +68,9 @@ synthesizes over the relevant cards with one call.
 `projects` canonicalizes scopes; `verify` checks anchors against the repo
 (missing everywhere → stale, missing only from the checkout → suspect, back →
 restored); `consolidate` clusters new cards with their neighbors and asks the
-LLM for the minimal coherent set, applied all-or-nothing per cluster; `briefs`
+LLM for the minimal coherent set, applied all-or-nothing per cluster. It merges
+cards that state one policy, splits a card that bundles independent claims,
+and rejects any merged or rewritten card over `MAX_CARD_CHARS`; `briefs`
 refreshes a `project-brief` card per project. The MCP server runs it every
 `ENGRAM_MAINTENANCE_INTERVAL` seconds.
 
