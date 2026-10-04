@@ -636,7 +636,7 @@ def _register_reporting_tools(app: FastMCP, get_store: StoreGetter) -> None:
 
         Runs ``git fetch`` + ``git pull --rebase`` + ``git push`` against the
         Engram data directory. Requires the data directory to be a git
-        repository with at least one remote — see CLAUDE.md for setup.
+        repository with at least one remote — see docs/sync.md for setup.
         """
         result = await op_sync(timeout=timeout, store=get_store())
         return _tool_result(result, format=format)
