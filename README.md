@@ -1,6 +1,6 @@
 # Engram
 
-![License](https://img.shields.io/github/license/adamthuvesen/engram) ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/github/license/adamthuvesen/engram) ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 
 Engram is structured, cross-project memory for coding agents. It runs as an MCP
 server or a CLI, and keeps itself current: what an agent recalls is ranked,
@@ -362,4 +362,4 @@ uv build                                   # build sdist + wheel
 Architecture notes live in [docs/architecture.md](docs/architecture.md). The
 storage and event-log model lives in [docs/data.md](docs/data.md).
 
-Python 3.11+ · FastMCP · OpenAI SDK · snowballstemmer · pydantic-settings · JSONL storage · MIT-licensed.
+Python 3.13+ · FastMCP · OpenAI SDK · snowballstemmer · pydantic-settings · JSONL storage · MIT-licensed.

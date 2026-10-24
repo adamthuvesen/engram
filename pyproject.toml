@@ -3,7 +3,7 @@ name = "engram"
 version = "0.1.0"
 description = "Engram — structured, cross-project memory for coding agents"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     "fastmcp==4.0.0b2",
     "pydantic>=2.0.0",
@@ -41,7 +41,7 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 files = ["src/engram"]
 check_untyped_defs = true
 implicit_optional = false
