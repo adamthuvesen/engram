@@ -76,7 +76,7 @@ refreshes a `project-brief` card per project. The MCP server runs it every
 
 ## Dev notes
 
-- Python 3.11+, managed with `uv`.
+- Python 3.13+, managed with `uv`.
 - FastMCP 3.x for the MCP server surface.
 - The official OpenAI SDK for LLM calls (reasoning effort, fast service tier).
 - All MCP tools are async. Storage I/O is synchronous behind an
