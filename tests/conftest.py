@@ -37,6 +37,22 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_store(monkeypatch, tmp_path_factory):
+    """Point default settings paths at a temporary home, never the user's live store."""
+    import json
+
+    from engram.core.config import get_settings
+
+    home = tmp_path_factory.mktemp("engram-home")
+    monkeypatch.setenv("ENGRAM_DATA_DIR", str(home / "data"))
+    monkeypatch.setenv("ENGRAM_CLAUDE_PROJECTS_DIR", str(home / "claude-projects"))
+    monkeypatch.setenv("ENGRAM_REPO_SEARCH_ROOTS", json.dumps([str(home / "repos")]))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _no_llm_key(monkeypatch, request):
     """Disable key discovery and reject unmocked provider connections.
 

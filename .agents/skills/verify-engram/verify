@@ -42,7 +42,7 @@ REDACT = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 def git(*args: str) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     result = subprocess.run(["git", *args], cwd=ROOT, env=env, capture_output=True, text=True)
-    return result.stdout.strip() if result.returncode == 0 else ""
+    return result.stdout.rstrip("\n") if result.returncode == 0 else ""
 
 
 # Paths a drive may change: evidence, the environment, and tool caches.
@@ -230,7 +230,11 @@ def main(argv: list[str]) -> int:
                 helper=HELPER,
                 root=ROOT,
             )
-            result, seconds, detail = asyncio.run(run_one(name, fn, ctx, timeout))
+            try:
+                result, seconds, detail = asyncio.run(run_one(name, fn, ctx, timeout))
+            except SystemExit as exc:  # asyncio re-raises a task's SystemExit past run_one
+                result, seconds, detail = "FAIL", 0.0, f"SystemExit({exc.code!r})"
+                print(f"{result} {name} {detail}", flush=True)
             results.append(
                 {
                     "drive": name,
