@@ -147,7 +147,7 @@ def test_readonly_doctor_does_not_create_directory(tmp_path):
 )
 def test_invalid_runtime_settings_fail_before_storage(tmp_path, field):
     with pytest.raises(ValidationError):
-        Settings(data_dir=tmp_path / "missing", **{field: 0})
+        Settings(data_dir=tmp_path / "missing", **{field: 0})  # pyright: ignore[reportArgumentType]  # int for every field on purpose
     assert not (tmp_path / "missing").exists()
 
 

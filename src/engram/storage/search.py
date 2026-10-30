@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 
-import snowballstemmer  # type: ignore[import-untyped]
+import snowballstemmer
 
 from engram.core.models import Durability, Fact, FactCategory
 

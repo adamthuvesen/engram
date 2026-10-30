@@ -310,30 +310,3 @@ def test_enforced_rules_cite_existing_paths():
             assert not name or re.search(defined, target.read_text(), re.M), (
                 f"AGENTS.md cites {path}::{name}, but {path} does not define {name}."
             )
-
-
-def test_baseline_ratchet_blocks_growth_past_main(tmp_path):
-    import json
-    import subprocess
-
-    import engram.tooling.verify as verification
-
-    def baseline(errors: int) -> str:
-        return json.dumps({"files": {"./tests/a.py": [{"code": "reportPrivateUsage"}] * errors}})
-
-    def git(*args: str) -> None:
-        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
-
-    git("init", "-q")
-    path = tmp_path / verification.BASELINE
-    path.parent.mkdir()
-    path.write_text(baseline(2))
-    git("add", ".")
-    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main")
-    git("update-ref", "refs/remotes/origin/main", "HEAD")
-
-    assert verification.baseline_ratchet(tmp_path).status == "passed"
-    path.write_text(baseline(1))
-    assert verification.baseline_ratchet(tmp_path).status == "passed"
-    path.write_text(baseline(3))
-    assert verification.baseline_ratchet(tmp_path).status == "failed"

@@ -125,7 +125,7 @@ def test_recall_does_not_reload_facts_once_index_is_warm():
     def fail_load():
         raise AssertionError("recall reloaded every fact")
 
-    store.load_facts = fail_load  # type: ignore[method-assign]
+    store.load_facts = fail_load
     _, _, provenance, _ = asyncio.run(recall_with_provenance("tabs", store=store))
     assert provenance.cited_fact_ids
 

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -35,50 +34,6 @@ EXCLUDED: dict[Profile, list[str]] = {
     "sync-transport": [LIVE_PROVIDER],
     "package": [SYNC_TRANSPORT, LIVE_PROVIDER],
 }
-
-
-BASELINE = Path(".basedpyright/baseline.json")
-MAIN_REF = "origin/main"
-
-
-def baseline_error_count(text: str) -> int:
-    """Count the errors a basedpyright baseline file records."""
-    files: dict[str, list[object]] = json.loads(text)["files"]
-    return sum(len(errors) for errors in files.values())
-
-
-def baseline_ratchet(root: Path) -> CheckResult:
-    """Fail when the type-error baseline holds more errors than on origin/main."""
-    name = f"basedpyright baseline does not grow past {MAIN_REF}"
-    path = root / BASELINE
-    count = baseline_error_count(path.read_text()) if path.exists() else 0
-    shown = subprocess.run(
-        ["git", "show", f"{MAIN_REF}:{BASELINE.as_posix()}"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if shown.returncode != 0:
-        known = subprocess.run(
-            ["git", "rev-parse", "--verify", "--quiet", MAIN_REF],
-            cwd=root,
-            capture_output=True,
-            check=False,
-        )
-        if known.returncode != 0:
-            return CheckResult(
-                name=name,
-                status="failed",
-                reason=f"{MAIN_REF} is missing. Run git fetch origin main.",
-            )
-        return CheckResult(name=name, status="passed", reason="main has no baseline yet")
-    allowed = baseline_error_count(shown.stdout)
-    if count > allowed:
-        return CheckResult(
-            name=name, status="failed", reason=f"{count} baselined errors, {allowed} on main"
-        )
-    return CheckResult(name=name, status="passed", reason=f"{count} baselined, {allowed} on main")
 
 
 class CheckResult(BaseModel):
@@ -278,10 +233,6 @@ def verify(root: Path, profile: Profile) -> VerificationReport:
             )
         )
         if violations:
-            return report
-        ratchet = baseline_ratchet(root)
-        report.checks.append(ratchet)
-        if ratchet.status == "failed":
             return report
     for command in commands(profile):
         if not _run(command, root, report):

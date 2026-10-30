@@ -45,6 +45,7 @@ addopts = "-m 'not live_provider and not sync_transport'"
 
 [tool.basedpyright]
 typeCheckingMode = "strict"
+enableTypeIgnoreComments = false
 pythonVersion = "3.14"
 include = ["src", "tests", ".agents/skills/verify-engram"]
 venvPath = "."
@@ -67,7 +68,7 @@ line-length = 100
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF", "PGH003"]
 ignore = [
     # ruff format wraps code; the remaining long lines are user-facing strings and prompts.
     "E501",
