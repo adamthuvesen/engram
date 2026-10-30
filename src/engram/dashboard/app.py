@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from rich.markup import escape
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -135,7 +135,7 @@ SECTION_INDEX = {section.id: index for index, section in enumerate(SECTIONS)}
 SECTION_IDS = frozenset(SECTION_BY_ID)
 
 
-class EngramDashboard(App):
+class EngramDashboard(App[None]):
     """Engram memory dashboard."""
 
     TITLE = "engram"
@@ -275,7 +275,7 @@ class EngramDashboard(App):
         self.set_timer(0.05, self.focus_nav)
         self._update_footer_hint()
 
-    def on_descendant_focus(self, event) -> None:
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         self._update_footer_hint()
 
     def _update_footer_hint(self) -> None:
@@ -295,7 +295,7 @@ class EngramDashboard(App):
             return "filter"
         return "default"
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         nav = self.query_one("#nav", OptionList)
         if self.focused is nav and event.key == "right":
             event.prevent_default()

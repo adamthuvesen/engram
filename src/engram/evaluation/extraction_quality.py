@@ -3,7 +3,7 @@
 
 Run directly:
 
-    uv run python tests/run_extraction_quality_evals.py
+    uv run --locked python -m engram.evaluation.extraction_quality
 
 The default run scores committed gold cards and never calls an LLM provider.
 Pass ``--live`` to run the configured provider through ingest, or

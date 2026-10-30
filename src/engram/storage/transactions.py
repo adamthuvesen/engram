@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -108,7 +109,7 @@ def _store_lock_depths() -> dict[Path, int]:
 
 
 @contextmanager
-def locked_write(path: Path):
+def locked_write(path: Path) -> Iterator[None]:
     """Acquire an exclusive flock on <path>.lock before writing."""
     if sys.platform == "win32":
         logger.warning(
@@ -127,7 +128,7 @@ def locked_write(path: Path):
 
 
 @contextmanager
-def locked_store(data_dir: Path):
+def locked_store(data_dir: Path) -> Iterator[None]:
     """Acquire the coarse store lock for multi-file operations."""
     data_dir = data_dir.resolve()
     lock_path = data_dir / "store.lock"

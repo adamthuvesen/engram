@@ -1,6 +1,8 @@
 """Projects screen — list projects, drill into detail with search."""
 
-from textual import on
+from typing import TYPE_CHECKING, cast
+
+from textual import events, on
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.timer import Timer
@@ -22,6 +24,9 @@ from engram.dashboard.tables import (
 )
 from engram.dashboard.widgets.fact_detail import FactDetail
 from engram.core.models import Fact
+
+if TYPE_CHECKING:
+    from engram.dashboard.app import EngramDashboard
 
 
 class ProjectDetailView(Container):
@@ -132,11 +137,11 @@ class ProjectDetailView(Container):
         self._all_facts = get_facts_for_project(data, self._project)
         self._apply_filters()
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         table = self.query_one("#proj-detail-table", DataTable)
         focused = self.app.focused
 
-        if focus_nav_from_top_row(self.app, table, event):
+        if focus_nav_from_top_row(cast("EngramDashboard", self.app), table, event):
             return
 
         if event.key == "down" and isinstance(focused, Input):
@@ -250,7 +255,7 @@ class ProjectsScreen(Container):
         direction = "▼" if self._sort_reverse else "▲"
         self.app.notify(f"Sort: {col} {direction}", severity="information")
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         if self._detail_view and event.key == "escape":
             event.prevent_default()
             self._close_detail()
@@ -262,7 +267,7 @@ class ProjectsScreen(Container):
         table = self.query_one("#proj-overview-table", DataTable)
         focused = self.app.focused
 
-        if focus_nav_from_top_row(self.app, table, event):
+        if focus_nav_from_top_row(cast("EngramDashboard", self.app), table, event):
             return
 
         if focused is table and event.key == "s":

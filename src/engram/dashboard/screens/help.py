@@ -62,7 +62,7 @@ FOOTER_HINTS: dict[str, str] = {
 }
 
 
-class HelpScreen(ModalScreen):
+class HelpScreen(ModalScreen[None]):
     """Full keybinding reference, pushed as modal."""
 
     BINDINGS = [("escape", "dismiss", "Close"), ("question_mark", "dismiss", "Close")]

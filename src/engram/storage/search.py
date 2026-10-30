@@ -77,7 +77,7 @@ _stemmer = snowballstemmer.stemmer("english")
 
 @lru_cache(maxsize=65536)
 def stem(word: str) -> str:
-    return _stemmer.stemWord(word)
+    return str(_stemmer.stemWord(word))
 
 
 def raw_tokens(text: str) -> list[str]:

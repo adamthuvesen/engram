@@ -2,7 +2,7 @@
 
 from collections import Counter
 
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
@@ -26,7 +26,7 @@ from engram.dashboard.widgets.fact_detail import FactDetail
 from engram.core.models import Fact
 
 
-class CategoryDetailScreen(ModalScreen):
+class CategoryDetailScreen(ModalScreen[None]):
     """Detail view for a single category, pushed as a modal."""
 
     BINDINGS = [("escape", "dismiss", "Back")]
@@ -121,7 +121,7 @@ class CategoryDetailScreen(ModalScreen):
     def _find_fact(self, fact_id: str) -> Fact | None:
         return item_by_id(self._all_facts, fact_id)
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         focused = self.app.focused
         if event.key == "slash" and not isinstance(focused, Input):
             event.prevent_default()

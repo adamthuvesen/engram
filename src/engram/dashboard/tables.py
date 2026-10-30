@@ -1,9 +1,12 @@
 """Shared table behavior for the Textual dashboard."""
 
 from collections.abc import Callable, Iterable
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
+from textual import events
+from textual.message_pump import MessagePump
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import DataTable
 
 from engram.dashboard.constants import SEARCH_DEBOUNCE_S
@@ -12,6 +15,13 @@ from engram.core.models import Fact
 
 class HasId(Protocol):
     id: str
+
+
+class NavigableApp(Protocol):
+    @property
+    def focused(self) -> Widget | None: ...
+
+    def focus_nav(self) -> None: ...
 
 
 T = TypeVar("T")
@@ -49,7 +59,7 @@ def filter_facts_by_text(
 
 
 def schedule_filter_timer(
-    owner, timer: Timer | None, callback: Callable[[], None]
+    owner: MessagePump, timer: Timer | None, callback: Callable[[], None]
 ) -> Timer:
     if timer:
         timer.stop()
@@ -70,14 +80,14 @@ def sort_by_column(items: list[T], column: str, *, reverse: bool) -> None:
     items.sort(key=lambda item: getattr(item, column) or "", reverse=reverse)
 
 
-def cursor_row_id(table: DataTable) -> str | None:
+def cursor_row_id(table: DataTable[Any]) -> str | None:
     if table.row_count == 0 or not table.is_valid_coordinate(table.cursor_coordinate):
         return None
     row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
     return str(row_key.value) if row_key.value else None
 
 
-def toggle_cursor_selection(table: DataTable, selected_ids: set[str]) -> bool:
+def toggle_cursor_selection(table: DataTable[Any], selected_ids: set[str]) -> bool:
     item_id = cursor_row_id(table)
     if not item_id:
         return False
@@ -89,10 +99,10 @@ def toggle_cursor_selection(table: DataTable, selected_ids: set[str]) -> bool:
 
 
 def handle_table_key(
-    event,
+    event: events.Key,
     *,
-    focused,
-    table: DataTable,
+    focused: Widget | None,
+    table: DataTable[Any],
     selected_ids: set[str],
     visible_ids: Iterable[str],
     refresh_table: Callable[[], None],
@@ -128,7 +138,9 @@ def handle_table_key(
     return False
 
 
-def focus_nav_from_top_row(app, table: DataTable, event) -> bool:
+def focus_nav_from_top_row(
+    app: NavigableApp, table: DataTable[Any], event: events.Key
+) -> bool:
     if app.focused is table and event.key == "up" and table.cursor_row == 0:
         event.prevent_default()
         app.focus_nav()

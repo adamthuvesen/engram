@@ -3,7 +3,7 @@
 
 Run directly:
 
-    uv run python tests/run_cross_project_recall_evals.py
+    uv run --locked python -m engram.evaluation.cross_project
 
 The fixture is no-secret fictional memory data. It measures whether deterministic
 recall keeps useful evidence while excluding stale, superseded, contradictory,

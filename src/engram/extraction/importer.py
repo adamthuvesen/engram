@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,7 +30,7 @@ class ImportFileResult(BaseModel):
 
 async def import_claude_code_memories(
     store: FactStore | AsyncFactStore | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Walk ~/.claude/projects/*/memory/*.md and import as structured facts.
 
     Returns summary of what was imported.
@@ -111,13 +111,13 @@ async def import_claude_code_memories(
     }
 
 
-def _parse_memory_file(path: Path) -> tuple[str, dict]:
+def _parse_memory_file(path: Path) -> tuple[str, dict[str, Any]]:
     """Parse a Claude Code memory file with YAML frontmatter.
 
     Returns (body_content, frontmatter_dict).
     """
     text = path.read_text(encoding="utf-8")
-    metadata: dict = {}
+    metadata: dict[str, Any] = {}
     body = text
     if text.startswith("---"):
         parts = text.split("---", 2)

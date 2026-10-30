@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from math import isfinite
+from typing import Any
 
 from pydantic import JsonValue, ValidationError
 from openai import OpenAIError
@@ -123,7 +124,7 @@ def validation_result(
     *,
     text: str | None = None,
     ids: list[str] | None = None,
-    details: dict | None = None,
+    details: dict[str, Any] | None = None,
 ) -> OperationResult:
     return failure_result(
         validation_error(message, ids=ids, details=details),
@@ -819,7 +820,7 @@ async def edit_fact(
     project: str | None = None,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    updates: dict = {}
+    updates: dict[str, Any] = {}
     if content is not None:
         if not content.strip():
             return validation_result("content must not be empty")
@@ -1278,7 +1279,7 @@ async def memory_stats(
     )
 
 
-def _recall_stats_payload(records: list[RecallRecord]) -> dict:
+def _recall_stats_payload(records: list[RecallRecord]) -> dict[str, Any]:
     total = len(records)
     tier_counts = Counter(r.tier for r in records)
     quality_counts = Counter(r.quality for r in records if r.quality)
@@ -1420,7 +1421,9 @@ def _empty_recall_stats_result(
     )
 
 
-def _recall_stats_lines(records: list[RecallRecord], payload: dict) -> list[str]:
+def _recall_stats_lines(
+    records: list[RecallRecord], payload: dict[str, Any]
+) -> list[str]:
     lines = _format_recall_summary(records, "# Recall Stats\n")
     selector_versions = payload["selector_versions"]
     if len(selector_versions) >= 2:
@@ -1539,7 +1542,7 @@ async def sync(
     try:
         result = await run_sync(_sync, data_dir, timeout=timeout)
     except SyncError as exc:
-        details: dict = {"sync_error_code": exc.code}
+        details: dict[str, Any] = {"sync_error_code": exc.code}
         if exc.git_stderr:
             details["git_stderr"] = exc.git_stderr
         return failure_result(

@@ -7,7 +7,7 @@ Recall ranks dated memory cards with BM25. Saving extracts and reconciles cards 
 uv sync --locked --extra dev
 just check
 uv run --locked engram --help
-uv run --locked python tests/run_evals.py
+uv run --locked python -m engram.evaluation.recall
 ```
 
 The eval command uses fictional committed data and a disabled provider. It does not read your memory store.
@@ -91,14 +91,14 @@ The build also uses the locked Hatchling dependency through `uv build --no-build
 
 ## Evaluate quality
 
-These compatibility scripts call typed modules under `engram.evaluation`:
+Each evaluation is a module under `engram.evaluation`:
 
 ```bash
-uv run --locked python tests/run_evals.py
-uv run --locked python tests/run_cross_project_recall_evals.py
-uv run --locked python tests/run_extraction_quality_evals.py
-uv run --locked python tests/run_memory_audit_evals.py
-uv run --locked python tests/bench_tiers.py
+uv run --locked python -m engram.evaluation.recall
+uv run --locked python -m engram.evaluation.cross_project
+uv run --locked python -m engram.evaluation.extraction_quality
+uv run --locked python -m engram.evaluation.memory_audit
+uv run --locked python -m engram.evaluation.tiers
 ```
 
 The score formulas, labels, floors, and query populations live beside the evaluation code.
@@ -110,7 +110,7 @@ Fixture scores verify deterministic contracts. They do not establish live model 
 Live extraction requires an explicit opt-in and provider credentials:
 
 ```bash
-ENGRAM_EVAL_PROVIDER=1 uv run --locked python tests/run_extraction_quality_evals.py --live
+ENGRAM_EVAL_PROVIDER=1 uv run --locked python -m engram.evaluation.extraction_quality --live
 ```
 
 ## Configuration and storage

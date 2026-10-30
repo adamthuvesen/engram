@@ -35,6 +35,9 @@ Legacy event categories decode through an explicit compatibility path. Provider 
 `storage.jsonl` provides validated JSONL reading.
 `storage.search` owns BM25 scoring and coverage. `storage.sync` integrates Git snapshots under the store lock.
 
+`ChangeSet.expected` records revisions for every read dependency, including facts that the batch does not mutate.
+With `require_eligible`, storage also checks each dependency against the active-memory policy under the same lock.
+
 Fact batches first persist local intent with exact event IDs, payloads, and timestamps.
 Recovery appends only missing events. Candidate approvals journal exact promoted identities and candidate decisions.
 Ordinary snapshots refuse unresolved intent and corrupt rows. Diagnostic readers can inspect valid rows without recovery writes.
@@ -44,7 +47,10 @@ See [data](data.md) and [sync](sync.md) for migration constraints and crash beha
 ## Extraction
 
 `extraction.observer` selects neighboring facts, requests one structured extraction response, and validates references before applying changes.
+Replacement, retirement, and duplicate decisions require unchanged, eligible dependencies. This validation also applies before queuing proposals.
+Ingest retries once with fresh neighbors, then reports conflicting decisions as unresolved.
 It preserves independent valid proposals when another provider decision is unresolved.
+New queued replacements record source revisions for storage to validate again during approval.
 `extraction.importer` imports reviewed source files through the same operation contracts.
 `core.structured_outputs` owns strict provider schemas. Invalid provider data must remain visible as a failure or unresolved decision.
 
@@ -73,13 +79,17 @@ Structured model calls use the installed SDK parser.
 
 `maintenance.upkeep` owns step ordering and per-machine upkeep exclusion.
 Anchor verification confines file checks to checkout roots and keeps missing evidence distinct from unreadable evidence.
-Consolidation checks source revisions before mutation and reports unresolved clusters without advancing their checkpoint.
+Consolidation validates every cluster input before mutation, including unchanged cards.
+Changed or ineligible inputs abort the cluster. Upkeep reports conflicts and schedules bounded retries.
 Project briefs record the exact source revisions used to create them.
 Recall invalidates a brief when an eligible source changes or disappears.
 
 ## Dashboard, evaluation, and checks
 
-`dashboard.data` uses the public lifecycle policy. Textual workers perform storage I/O away from UI callbacks.
+`dashboard.data` uses the public lifecycle policy. Textual workers load storage lazily through cancellation-safe thread calls.
+One dashboard lock serializes reads and mutations. Periodic refreshes coalesce while a read is pending.
+Failed reads retain the last successful snapshot and show a retry action. Undo records only successful mutations.
+Undo expiry waits for queued undo requests.
 Superseded facts remain distinct from forgotten facts. Expiry can refresh the view without a file change.
 
 `evaluation` contains typed runners, unchanged labeled datasets, fixture providers, and report provenance.

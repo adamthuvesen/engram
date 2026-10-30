@@ -4,7 +4,7 @@
 This is a *script*, not a CLI subcommand and not part of the shipped surface.
 Run it directly:
 
-    uv run python tests/run_evals.py
+    uv run --locked python -m engram.evaluation.recall
 
 It measures the deterministic lexical pass (BM25 search plus the relevance
 bar) that produces engram's default memory cards with zero LLM calls, over a
@@ -34,7 +34,7 @@ found nothing at all). The no-match queries (empty label) are checked
 separately: their relevant set must be empty.
 
 The script exits non-zero if the no-match case regresses or if recall drops
-below the floors below, so ``uv run python tests/run_evals.py`` is a real gate.
+below the floors below, so ``uv run --locked python -m engram.evaluation.recall`` is a real gate.
 ``tests/test_recall_evals.py`` enforces the same floors inside pytest/CI.
 """
 

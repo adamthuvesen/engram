@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, cast
 
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.timer import Timer
@@ -169,11 +169,11 @@ class FactsScreen(Container):
         direction = "▼" if self._sort_reverse else "▲"
         self.app.notify(f"Sort: {col} {direction}", severity="information")
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         table = self.query_one("#facts-table", DataTable)
         focused = self.app.focused
 
-        if focus_nav_from_top_row(self.app, table, event):
+        if focus_nav_from_top_row(cast("EngramDashboard", self.app), table, event):
             return
 
         if event.key == "down" and isinstance(focused, (Select, Input)):

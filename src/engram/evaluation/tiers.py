@@ -9,9 +9,9 @@ relevance bar (the cards), the top score and coverage, and whether it would
 spend an LLM selection call when a key is configured (no hit cleared the bar).
 
 This is a card-set sizing sanity check, NOT a retrieval-accuracy metric. For
-a real, deterministic recall number see ``tests/run_evals.py``.
+a real, deterministic recall number see ``engram.evaluation.recall``.
 
-Run: uv run python tests/bench_tiers.py
+Run: uv run --locked python -m engram.evaluation.tiers
 """
 
 from tempfile import TemporaryDirectory

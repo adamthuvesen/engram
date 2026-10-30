@@ -3,7 +3,7 @@
 
 Run directly:
 
-    uv run python tests/run_memory_audit_evals.py
+    uv run --locked python -m engram.evaluation.memory_audit
 
 The baseline mirrors the current no-key audit floor: exact duplicate signatures
 like ``doctor`` checks today. The new loop must improve labeled issue recall by

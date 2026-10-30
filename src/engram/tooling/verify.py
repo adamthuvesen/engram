@@ -17,6 +17,7 @@ from engram.tooling.boundaries import check_boundaries
 
 Profile = Literal["check", "verify", "sync-transport", "package"]
 OFFLINE_SELECTION = "not live_provider and not sync_transport"
+FAST_SELECTION = f"{OFFLINE_SELECTION} and not subprocess_smoke"
 FOCUSED_TESTS = [
     "tests/test_models.py",
     "tests/test_event_log.py",
@@ -72,14 +73,18 @@ def commands(profile: Profile) -> list[list[str]]:
     if profile == "package":
         return []
     prefix = ["uv", "run", "--locked", "--extra", "dev"]
-    tests = FOCUSED_TESTS if profile == "check" else ["tests/"]
+    tests, selection = (
+        (FOCUSED_TESTS, FAST_SELECTION)
+        if profile == "check"
+        else (["tests/"], OFFLINE_SELECTION)
+    )
     return [
         ["uv", "lock", "--check"],
         [*prefix, "ruff", "check", "."],
         [*prefix, "ruff", "format", "--check", "."],
         [*prefix, "mypy"],
         [*prefix, "python", "-m", "engram.tooling.reference", "--check"],
-        [*prefix, "pytest", *tests, "-q", "-m", OFFLINE_SELECTION],
+        [*prefix, "pytest", *tests, "-q", "-m", selection],
     ]
 
 

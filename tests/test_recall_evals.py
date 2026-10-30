@@ -1,6 +1,6 @@
 """CI guard for the deterministic lexical recall numbers.
 
-Runs the labeled dataset through ``tests/run_evals.py`` and asserts the recall
+Runs the labeled dataset through ``engram.evaluation.recall`` and asserts the recall
 floors, the zero-LLM cost floor, the no-match behavior, the per-kind division
 of labor, and dataset integrity. Fully deterministic — no LLM calls, no API
 keys — so this is safe to run in CI on every push. If search ranking or the

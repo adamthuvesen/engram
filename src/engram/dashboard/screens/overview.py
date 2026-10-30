@@ -1,9 +1,9 @@
 """Overview screen — stats, category/project bars, activity sparkline."""
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Label, OptionList, Sparkline, Static
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class OverviewScreen(VerticalScroll):
     """Main overview with stat cards, distributions, and activity sparkline."""
 
-    def __init__(self, data: DashboardData, **kwargs) -> None:
+    def __init__(self, data: DashboardData, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._data = data
 
@@ -97,7 +97,7 @@ class OverviewScreen(VerticalScroll):
             options.append(Option(label, id=f"{prefix}-{name}"))
         return options
 
-    def on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         focused = self.app.focused
         if not isinstance(focused, OptionList):
             return

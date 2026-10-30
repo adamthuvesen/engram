@@ -1,5 +1,8 @@
 """Fact detail panel — shows full metadata for a selected fact."""
 
+from collections.abc import Iterator
+from typing import Any
+
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Static
@@ -11,7 +14,9 @@ from engram.core.models import Fact, MemoryCandidate
 class FactDetail(Static):
     """Renders full metadata for a single fact."""
 
-    def __init__(self, fact: Fact | MemoryCandidate | None = None, **kwargs) -> None:
+    def __init__(
+        self, fact: Fact | MemoryCandidate | None = None, **kwargs: Any
+    ) -> None:
         super().__init__(**kwargs)
         self._fact = fact
 
@@ -22,7 +27,7 @@ class FactDetail(Static):
             else:
                 yield Static("Select a row to view details", classes="detail-title")
 
-    def _render_fact(self, f: Fact | MemoryCandidate):
+    def _render_fact(self, f: Fact | MemoryCandidate) -> Iterator[Static]:
         yield Static("FACT DETAIL", classes="detail-title")
         yield Static(f"[b]ID:[/b]          {f.id}", classes="detail-row")
         yield Static(f"[b]Category:[/b]    {f.category.value}", classes="detail-row")

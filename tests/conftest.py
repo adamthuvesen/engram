@@ -13,6 +13,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "sync_transport: pushes only to temporary local Git remotes"
     )
+    config.addinivalue_line(
+        "markers", "subprocess_smoke: starts installed entrypoints; runs in verify only"
+    )
 
 
 def pytest_addoption(parser):

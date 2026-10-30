@@ -228,9 +228,10 @@ def read_sync_state(data_dir: Path) -> dict[str, Any] | None:
     if not state_path.exists():
         return None
     try:
-        return json.loads(state_path.read_text())
+        state = json.loads(state_path.read_text())
     except (OSError, json.JSONDecodeError):
         return None
+    return state if isinstance(state, dict) else None
 
 
 def is_compaction_in_progress(data_dir: Path) -> bool:
@@ -480,7 +481,7 @@ def sync(
     skip_if_compacting: bool = True,
 ) -> dict[str, Any]:
     """Serialize recovery, a data snapshot, integration, and publication."""
-    from engram.storage.store import _locked_store
+    from engram.storage.transactions import locked_store as _locked_store
 
     _ensure_git_available()
     _ensure_repo(data_dir)

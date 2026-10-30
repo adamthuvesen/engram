@@ -1,6 +1,7 @@
 """Data loading and aggregation for the dashboard."""
 
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -205,7 +206,9 @@ def shorten_project(project: str | None) -> str:
     return project
 
 
-def _daily_counts(facts: list[Fact], key) -> dict[str, int]:
+def _daily_counts(
+    facts: list[Fact], key: Callable[[Fact], datetime | None]
+) -> dict[str, int]:
     counter: Counter[str] = Counter()
     for f in facts:
         dt = key(f)

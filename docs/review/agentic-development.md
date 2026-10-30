@@ -1,8 +1,8 @@
 # Agentic development implementation and verification
 
-The eight-phase plan is complete locally at implementation revision `09c8c03`.
-Both tested Python versions passed the full offline verification profile.
-The result is `passed_with_limits`, because live provider and Git transport integration remain unverified.
+The second local iteration passed complete verification profiles on macOS and Linux, with Python 3.13 and 3.14.
+The second-pass acceptance matrix is authoritative. First-pass results remain historical evidence.
+All four profiles report `passed_with_limits`. Live provider and actual Git publication remain unverified.
 
 ## Scope and evidence
 
@@ -10,11 +10,14 @@ The result is `passed_with_limits`, because live provider and Git transport inte
 - Branch: `adam/refactor-agentic-development`, based on `149cee2`.
 - Worktree: `/Users/adamthuvesen/.codex/worktrees/engram-agentic/engram`.
 - Original checkout: `/Users/adamthuvesen/dev/tools/engram`, clean at `149cee2` when checked.
-- Implementation: `09c8c03`, `refactor: make memory operations transactional and verifiable`.
+- First-pass implementation: `09c8c03`, `refactor: make memory operations transactional and verifiable`.
+- Second-pass storage: `897ba18`, `fix(storage): guard complete memory decisions and sync snapshots`.
+- Second-pass dashboard and tooling: `c7f8a19`, `fix(dx): keep dashboard responsive and verify cold-cache installs`.
 
 The approved review context included commits `75750fa`, `1f21bb3`, `33da069`, and PR #26.
-The claims below concern implemented behavior and current local evidence.
-Verification ran against the implementation source subsequently committed as `09c8c03`.
+Sections 1–8 and the first-pass acceptance matrix describe the implementation reviewed at `09c8c03`.
+The second-iteration section records additional changes and their bounded local evidence.
+First-pass verification ran against the source subsequently committed as `09c8c03`.
 This report is a separate documentation artifact.
 
 ## 1. Domain, lifecycle, and isolation
@@ -105,7 +108,7 @@ Hooks use locked Ruff. Builds use locked Hatchling without build isolation.
 [Generated references](../../src/engram/tooling/reference.py) derive settings and command inventories from source contracts.
 The [architecture guide](../architecture.md) and short [agent instructions](../../AGENTS.md) identify ownership and enforced boundaries.
 
-## 8. Independent review and final reassessment
+## 8. First-pass independent review and reassessment
 
 Independent storage, application, and tooling reviews finished with zero unresolved findings after local reproduction and fixes.
 The reviews closed these demonstrated gaps:
@@ -123,6 +126,42 @@ The reviews closed these demonstrated gaps:
 The first full attempt also found an obsolete safety assertion that expected the previous permissive behavior.
 The assertion now checks the intentional strict contract. Final acceptance used the corrected suite.
 
+## Second iteration: review fixes and local guarantees
+
+The second iteration reviewed the implementation beyond the first-pass acceptance matrix.
+Demonstrated gaps below came from local reproductions or inspection of the affected implementation.
+Added guarantees describe bounded behavioral tests. They do not establish production failures or distributed guarantees.
+The independent second-pass reviews closed their reported findings after the corresponding fixes.
+
+| Area and evidence | Finding or guarantee | Current contract |
+| --- | --- | --- |
+| [Dashboard workers](../../src/engram/dashboard/app.py), [UI tests](../../tests/test_dashboard.py) | Demonstrated gaps: synchronous startup, forget, and undo could block the UI. Failed refreshes could suppress retries. | Storage work runs through serialized async workers. Failed loads retain the last snapshot and remain retryable without a file change. |
+| Dashboard undo queue | Added guarantees: partial forget, failed reload, queued undo, expiry, and cancellation interact. | Only successful forgets enter undo. Requested undo survives storage contention. Completed entries leave the queue. Cancellation does not prevent eventual expiry. |
+| [Package asset smoke](../../src/engram/tooling/smoke.py), [negative smoke tests](../../tests/test_tooling.py) | Demonstrated verification gap: a headless launch did not prove that persisted data reached the UI. | The smoke opens the facts tab and requires the seeded fact ID and content. A failed data load fails verification. |
+| [Observer](../../src/engram/extraction/observer.py), [consolidation](../../src/engram/maintenance/consolidate.py) | Demonstrated gaps: duplicate decisions and unchanged cluster members were missing from source dependency checks. | Duplicate decisions and all consolidation read dependencies carry revision guards. Eligibility is checked under the same lock at one timestamp. |
+| [Dependency tests](../../tests/test_observer.py), [storage tests](../../tests/test_storage_transactions.py), [upkeep tests](../../tests/test_upkeep.py) | Added guarantees: expiry can invalidate evidence without changing its revision. Explicit stale restoration still needs its earlier behavior. | `require_eligible=True` protects semantic operations. Its default remains false for compatibility. Retries preserve independent valid proposals and expose unresolved dependencies. |
+| [Candidate approval](../../src/engram/storage/store.py), [operation adapter](../../src/engram/operations.py) | Demonstrated gap: edits and approval used separate transactions, so a losing approval could still change candidate content. | One journal owns pending-state checks, edits, promoted facts, and reported edited IDs. An unavailable edit aborts the full request before writing. |
+| Candidate replacement groups | Demonstrated gap: competing candidates could replace the same source within one approval request. | Overlapping groups remain pending with explicit conflicts. Independent candidates can proceed. The list-returning compatibility wrapper remains supported. |
+| [Candidate revisions](../../src/engram/storage/candidates.py) and storage tests | Added guarantees: new proposals need source-revision checks without changing legacy promotion identity. | `replaces_expected` records all replacement sources. Incomplete, changed, or ineligible dependencies block approval. Legacy `None` proposals retain earlier behavior and hashes. |
+| [Event-log scanner](../../src/engram/storage/transactions.py) and storage tests | Demonstrated gap: independent first-writer headers could become false corruption after a union merge. | New headers are canonical. Valid legacy duplicate headers and timestamps remain readable. Loading, doctor, and repair share one scanner. Unknown or malformed headers still fail. |
+| Edited-category validation and storage tests | Demonstrated gap: array or object category values could escape normal corruption diagnostics. | The shared decoder reports the corrupt line. Doctor diagnoses it. Explicit repair removes the invalid row and preserves valid facts. |
+| `correct_fact` and storage tests | Demonstrated gap: correction rebuilt a subset of source metadata. | Corrections preserve the complete source metadata unless an explicit correction field replaces it. |
+| [Sync validation](../../src/engram/storage/sync.py) and storage tests | Demonstrated gaps: empty-remote bootstrap failed, and Git count errors could appear as zero. | Only successful inspection of an empty remote permits bootstrap. Invalid counts fail explicitly. Every allowlisted log is validated before commit and after integration. |
+| [Doctor](../../src/engram/maintenance/doctor.py), [doctor tests](../../tests/test_doctor.py) | Demonstrated gap: sync rejected maintenance-state corruption that doctor did not diagnose. | Both use `StateLine` and identify the same corrupt file and line. Doctor does not advertise unsupported automatic repair. |
+| [Portable fixtures](../../tests/test_hardening.py) | Added guarantee: project-name fixtures must cover home paths on both operating-system families. | Cases explicitly cover `/Users/alex`, `/home/alex`, and `/root`, including short and hyphenated repository names. |
+
+These tests use fictional data, temporary stores, local Git operations, and injected or blocked providers.
+Safe empty-remote inspection uses local Git. Bootstrap publication is intercepted, so it does not prove a successful remote push.
+Concurrent offline approvals against divergent source snapshots still require review after integration.
+All writers must upgrade before relying on the new candidate dependency contract.
+
+A fresh Linux run exposed a cold-cache package-install metadata failure after its tests completed.
+Exporting requirements had caused package installation to require metadata that the lock-based setup had not cached.
+The package profile now runs `uv sync --locked --offline --no-dev --no-install-project --python` directly from `uv.lock`.
+Only dependency setup overrides `UV_PROJECT_ENVIRONMENT`. The explicit interpreter overrides inherited `UV_PYTHON`.
+Isolation tests reject imports from the checkout and preserve the caller environment. Independent review found no remaining tooling findings.
+The complete profiles below passed after this fix.
+
 ## Enforcement choices
 
 | Contract | Primary enforcement | Why behavioral checks or instructions remain |
@@ -135,7 +174,7 @@ The assertion now checks the intentional strict contract. Final acceptance used 
 | Sync transport opt-in | Pytest collection requires `--run-sync-transport` | A marker typo cannot enable pushes. The external push safeguard remains authoritative. |
 | Cross-machine upgrades | Explicit writer-upgrade constraint | This process cannot prevent an older binary on another machine from rewriting history. |
 
-## Final acceptance
+## First-pass acceptance
 
 Both runs used isolated environments and the same profile as `just verify`:
 
@@ -162,6 +201,41 @@ An sdist build and wheel build from that sdist also passed with locked Hatchling
 Local verification logs were `/tmp/engram-agentic-verify-313.log` and `/tmp/engram-agentic-verify-314.log`.
 Those paths are temporary evidence, not durable dependencies of this report.
 
+## Second-pass acceptance
+
+All four complete profile processes exited zero with `passed_with_limits` against the source committed at `c7f8a19`.
+All 115 tracked source, test, CI, and configuration files matched both tested Linux snapshots byte for byte.
+Each ran locked lint, format, types, reference generation, boundary checks, the offline suite, and installed-wheel verification.
+
+| Environment | Python | Offline pytest | Complete profile |
+| --- | --- | --- | --- |
+| macOS | 3.13.17 | 637 passed, 13 deselected | Passed with limits |
+| macOS | 3.14.9 | 637 passed, 13 deselected | Passed with limits |
+| Debian bookworm container | 3.13.11 | 637 passed, 13 deselected | Passed with limits |
+| Debian bookworm container | 3.14.9 | 637 passed, 13 deselected | Passed with limits |
+
+Each profile passed Ruff lint and format across 104 files, plus mypy across 66 source modules.
+Lock consistency, generated references, and import boundaries passed in every environment.
+Installed wheels loaded outside the checkout and passed real CLI, stdio, HTTP, and restart checks.
+Asset checks loaded CSS and datasets, opened the facts tab, and required the persisted fact's ID and content to appear.
+
+Linux profiles used fresh tracked-file copies without host caches, virtual environments, or credentials.
+Setup used a cached bookworm Python 3.13 image, installed Git, certificates, uv 0.13.5, and locked development dependencies.
+Python 3.14 was downloaded during setup. The complete verification profiles then ran with `UV_OFFLINE=true`.
+This separates permitted dependency setup from the offline acceptance run.
+Mac profiles used isolated Python environments. This iteration made no pushes and ran no GitHub CI workflow.
+The original checkout remained clean at `149cee2`. No test containers remained after verification.
+
+Final logs are `/tmp/engram-excellence-313.log`, `/tmp/engram-excellence-314.log`,
+`/tmp/engram-excellence-linux-313.log`, and `/tmp/engram-excellence-linux-314.log`.
+These temporary paths identify the observed runs. They are not durable dependencies of this report.
+
+## Final reassessment
+
+No material findings remain in the audited local scope after the independent reviews and complete profile reruns.
+Tests exercised intended behavior and explicit failure cases, including blocked storage, invalid dependencies, corrupt rows, and failed package imports.
+The dataset contents, scoring thresholds, and populations remain unchanged. More checks do not establish a measured quality or performance improvement.
+
 ## External limits
 
 The 13 deselected tests comprise 12 Git transport tests and one live-provider test.
@@ -171,6 +245,6 @@ The explicit collection opt-in now prevents default and marker-typo test command
 Run `just verify-sync` only where temporary-local-remote pushes are permitted.
 
 No live OpenAI call, real memory store, hosted transport, or cross-machine deployment was exercised.
-Linux CI has not run because this branch has not been pushed.
-The local macOS checks establish the implemented fixture and packaging contracts, including both supported Python versions.
-They do not establish live model quality, production reliability, cross-machine convergence under real transport, or a performance improvement.
+Hosted GitHub CI has not run because this branch has not been pushed.
+The completed local macOS and Linux profiles establish their tested fixture, failure-handling, and packaging contracts.
+They do not establish live model quality, production reliability, actual Git publication, or cross-machine convergence under real transport.

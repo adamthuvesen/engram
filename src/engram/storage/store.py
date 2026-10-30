@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Concatenate, ParamSpec, TypeVar
+from typing import Any, Concatenate, ParamSpec, TypeVar
 
 from uuid import uuid4
 
@@ -239,7 +239,7 @@ class ChangeSet:
     supersede: dict[str, str] = field(default_factory=dict)
     stale: dict[str, str] = field(default_factory=dict)
     unstale: list[str] = field(default_factory=list)
-    edits: dict[str, dict] = field(default_factory=dict)
+    edits: dict[str, dict[str, Any]] = field(default_factory=dict)
     expected: dict[str, datetime] = field(default_factory=dict)
     require_eligible: bool = False
     reason: str = ""
@@ -564,7 +564,7 @@ class FactStore:
         return fact
 
     def _event_and_result_for_update(
-        self, existing: Fact, updates: dict, now: datetime
+        self, existing: Fact, updates: dict[str, Any], now: datetime
     ) -> tuple[FactEvent, Fact]:
         if updates.get("confidence") == 0.0 and len(updates) == 1:
             return (
@@ -600,7 +600,7 @@ class FactStore:
         event_type: EventType,
         fact_id: str,
         now: datetime,
-        payload: dict | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         self.append_events(
             [
@@ -613,7 +613,7 @@ class FactStore:
             ]
         )
 
-    def update_fact(self, fact_id: str, **updates) -> Fact | None:
+    def update_fact(self, fact_id: str, **updates: Any) -> Fact | None:
         """Update a fact by appending an ``edited`` event to the log.
 
         Returns ``None`` when the fact is not found or is currently forgotten,
@@ -636,7 +636,9 @@ class FactStore:
             self.append_events([event])
             return updated
 
-    def update_candidate(self, candidate_id: str, **updates) -> MemoryCandidate | None:
+    def update_candidate(
+        self, candidate_id: str, **updates: Any
+    ) -> MemoryCandidate | None:
         """Append a validated snapshot for one candidate."""
         with _locked_store(self.data_dir):
             candidate = next(
@@ -710,7 +712,7 @@ class FactStore:
 
             return fact_count + cand_count
 
-    def batch_update_facts(self, updates: dict[str, dict]) -> list[Fact]:
+    def batch_update_facts(self, updates: dict[str, dict[str, Any]]) -> list[Fact]:
         """Apply multiple fact updates by appending a batch of events.
 
         Each ``updates[fact_id]`` dict may contain ``confidence`` to mark a
@@ -750,7 +752,7 @@ class FactStore:
             return updated_facts
 
     def batch_update_candidates(
-        self, updates: dict[str, dict]
+        self, updates: dict[str, dict[str, Any]]
     ) -> list[MemoryCandidate]:
         """Append validated snapshots for multiple candidate updates.
 
@@ -1275,7 +1277,7 @@ class FactStore:
             pending_candidates = {
                 c.id: c for c in self.load_candidates(status=CandidateStatus.pending)
             }
-            updates: dict[str, dict] = {}
+            updates: dict[str, dict[str, Any]] = {}
             for candidate_id in candidate_ids:
                 if candidate_id in pending_candidates:
                     updates[candidate_id] = {
@@ -1342,9 +1344,9 @@ class FactStore:
                 )
 
         facts_by_id = self._facts_by_id()
-        fact_updates: dict[str, dict] = {}
+        fact_updates: dict[str, dict[str, Any]] = {}
         supersessions: dict[str, str] = {}
-        candidate_updates: dict[str, dict] = {}
+        candidate_updates: dict[str, dict[str, Any]] = {}
         new_facts: list[Fact] = []
         now = datetime.now(timezone.utc)
         seen_ids: set[str] = set()
@@ -1615,7 +1617,7 @@ class FactStore:
                 "Purge and compaction require a coordinated offline procedure for synced stores"
             )
 
-    def purge(self) -> dict:
+    def purge(self) -> dict[str, Any]:
         """Remove forgotten and expired facts from the event log.
 
         Returns counts of purged and retained facts.
@@ -1646,7 +1648,7 @@ class FactStore:
 
             return {"purged": purged, "retained": len(kept)}
 
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, Any]:
         """Get store statistics."""
         facts = self.load_facts()
         now = datetime.now(timezone.utc)
@@ -1755,14 +1757,14 @@ class FactStore:
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
 
-    def repair(self) -> dict:
+    def repair(self) -> dict[str, Any]:
         """Explicitly repair corrupt rows under the shared transaction lock."""
         if self.read_only:
             raise RuntimeError("Read-only store cannot write")
         with _locked_store(self.data_dir):
             return self._repair_locked()
 
-    def _repair_locked(self) -> dict:
+    def _repair_locked(self) -> dict[str, Any]:
         """Recover from truncated/corrupt JSONL lines.
 
         For ``facts.jsonl`` in event-log format, validates each line as either
@@ -1964,16 +1966,16 @@ class AsyncFactStore:
     async def append_candidates(self, candidates: list[MemoryCandidate]) -> None:
         await self._run(self.sync_store.append_candidates, candidates)
 
-    async def update_fact(self, fact_id: str, **updates) -> Fact | None:
+    async def update_fact(self, fact_id: str, **updates: Any) -> Fact | None:
         return await self._run(self.sync_store.update_fact, fact_id, **updates)
 
     async def batch_update_candidates(
-        self, updates: dict[str, dict]
+        self, updates: dict[str, dict[str, Any]]
     ) -> list[MemoryCandidate]:
         return await self._run(self.sync_store.batch_update_candidates, updates)
 
     async def update_candidate(
-        self, candidate_id: str, **updates
+        self, candidate_id: str, **updates: Any
     ) -> MemoryCandidate | None:
         return await self._run(
             self.sync_store.update_candidate, candidate_id, **updates
@@ -1982,7 +1984,9 @@ class AsyncFactStore:
     async def rename_project(self, old_project: str, new_project: str) -> int:
         return await self._run(self.sync_store.rename_project, old_project, new_project)
 
-    async def batch_update_facts(self, updates: dict[str, dict]) -> list[Fact]:
+    async def batch_update_facts(
+        self, updates: dict[str, dict[str, Any]]
+    ) -> list[Fact]:
         return await self._run(self.sync_store.batch_update_facts, updates)
 
     async def forget(self, fact_id: str, reason: str = "") -> Fact | None:
@@ -1992,7 +1996,7 @@ class AsyncFactStore:
         self,
         fact_id: str,
         new_content: str,
-        **kwargs,
+        **kwargs: Any,
     ) -> Fact | None:
         return await self._run(
             self.sync_store.correct_fact, fact_id, new_content, **kwargs
@@ -2002,7 +2006,7 @@ class AsyncFactStore:
         self,
         source_ids: list[str],
         merged_content: str,
-        **kwargs,
+        **kwargs: Any,
     ) -> tuple[Fact, list[str]] | None:
         return await self._run(
             self.sync_store.merge_facts, source_ids, merged_content, **kwargs
@@ -2034,10 +2038,10 @@ class AsyncFactStore:
     ) -> list[MemoryCandidate]:
         return await self._run(self.sync_store.reject_candidates, candidate_ids, reason)
 
-    async def purge(self) -> dict:
+    async def purge(self) -> dict[str, Any]:
         return await self._run(self.sync_store.purge)
 
-    async def stats(self) -> dict:
+    async def stats(self) -> dict[str, Any]:
         return await self._run(self.sync_store.stats)
 
     def format_candidates_for_review(self, candidates: list[MemoryCandidate]) -> str:
