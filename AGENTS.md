@@ -21,7 +21,7 @@ Regenerate references after changing either surface or Settings descriptions.
 
 ## Enforced Rules
 
-`tests/test_tooling.py::test_enforced_rules_cite_existing_paths` fails when a cited path or test is missing.
+`tests/test_tooling.py::test_enforced_rules_cite_existing_paths` fails when a cited path, test, or recipe is missing. `tests/test_tooling.py::test_citation_check_finds_rotten_citations` proves it finds each kind.
 
 | Rule | Enforced by | Added |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ Regenerate references after changing either surface or Settings descriptions.
 | Live evals refuse without `ENGRAM_EVAL_PROVIDER=1`. | `src/engram/evaluation/extraction_quality.py::extract_live_provider_outputs`, `tests/test_extraction_quality_evals.py::test_live_extraction_refuses_without_approval` | 2026-11-06 |
 | `just verify control` must observe FAIL before a verify pass counts. | `.agents/skills/verify-engram/drives.py::control` | 2026-11-06 |
 | Git transport tests need explicit opt-in. | `tests/conftest.py`, `tests/test_tooling.py::test_wrong_marker_expression_cannot_enable_git_push_fixtures` | 2026-11-04 |
-| No file downgrades strict type checking with a `# pyright:` mode comment | `tests/test_strict_mode.py::test_no_file_downgrades_type_checking_mode` | 2026-11-07 |
+| No file downgrades strict type checking with a `# pyright:` mode comment | `tests/test_strict_mode.py::test_no_file_downgrades_type_checking_mode`, `tests/test_strict_mode.py::test_detector_finds_an_unstaged_downgrade` | 2026-11-07 |
 
 Compatibility changes still require judgment. Preserve MCP tool names, persisted event formats, and documented adapters.
 Add settings to `Settings` with descriptions, then regenerate references.

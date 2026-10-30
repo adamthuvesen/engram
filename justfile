@@ -8,8 +8,8 @@ check:
 
 # Apply every auto-fixer: ruff lint fixes, then ruff format.
 fix:
-    uv run --locked --extra dev ruff check --fix .
-    uv run --locked --extra dev ruff format .
+    uv run --locked --extra dev ruff check --fix . .agents/skills/verify-engram/verify
+    uv run --locked --extra dev ruff format . .agents/skills/verify-engram/verify
 
 # Run check, then subprocess smokes and an installed-wheel transport and asset smoke.
 slow: check

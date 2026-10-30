@@ -193,12 +193,20 @@ def evaluate(
     )
 
 
+class SpendRefusedError(SystemExit):
+    """A live eval refused because no person approved the provider spend.
+
+    It is a SystemExit so a handler that catches Exception cannot report the
+    refusal as a failed eval run.
+    """
+
+
 async def extract_live_provider_outputs(
     dataset_path: Path = DATASET_PATH,
 ) -> dict[str, list[ExtractedCard]]:
     """Run the real ingest path with the configured provider."""
     if os.environ.get("ENGRAM_EVAL_PROVIDER") != "1":
-        raise ValueError(
+        raise SpendRefusedError(
             "Live extraction spends provider tokens. To approve, run: "
             "ENGRAM_EVAL_PROVIDER=1 uv run --locked python -m "
             "engram.evaluation.extraction_quality --live"

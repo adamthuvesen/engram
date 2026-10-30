@@ -56,6 +56,10 @@ class VerificationReport(BaseModel):
         return "failed" if self.failed else "passed"
 
 
+# Ruff skips an extensionless script unless it is named.
+VERIFY_ENTRY = ".agents/skills/verify-engram/verify"
+
+
 def commands(profile: Profile) -> list[list[str]]:
     if profile == "sync-transport":
         return [
@@ -81,8 +85,8 @@ def commands(profile: Profile) -> list[list[str]]:
         return [[*prefix, "pytest", "tests/", "-q", "-m", smoke]]
     return [
         ["uv", "lock", "--check"],
-        [*prefix, "ruff", "check", "."],
-        [*prefix, "ruff", "format", "--check", "."],
+        [*prefix, "ruff", "check", ".", VERIFY_ENTRY],
+        [*prefix, "ruff", "format", "--check", ".", VERIFY_ENTRY],
         [*prefix, "basedpyright"],
         [*prefix, "basedpyright", "--project", ".agents/skills/verify-engram"],
         [*prefix, "python", "-m", "engram.tooling.reference", "--check"],

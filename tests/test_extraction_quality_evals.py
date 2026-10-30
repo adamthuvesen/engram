@@ -224,8 +224,15 @@ def test_live_provider_meets_extraction_quality_gates():
 def test_live_extraction_refuses_without_approval(monkeypatch):
     import asyncio
 
-    from engram.evaluation.extraction_quality import extract_live_provider_outputs
+    from engram.evaluation import extraction_quality
+
+    async def no_ingest(*args: object, **kwargs: object) -> object:
+        raise AssertionError("ingest ran before the approval gate")
 
     monkeypatch.delenv("ENGRAM_EVAL_PROVIDER", raising=False)
-    with pytest.raises(ValueError, match="ENGRAM_EVAL_PROVIDER=1 uv run"):
-        asyncio.run(extract_live_provider_outputs())
+    monkeypatch.setattr(extraction_quality, "ingest", no_ingest)
+    with pytest.raises(extraction_quality.SpendRefusedError, match="ENGRAM_EVAL_PROVIDER=1 uv run"):
+        asyncio.run(extraction_quality.extract_live_provider_outputs())
+    # main() catches Exception around the live run; the refusal must escape it.
+    with pytest.raises(extraction_quality.SpendRefusedError):
+        extraction_quality.main(live=True)

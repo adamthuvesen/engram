@@ -291,22 +291,55 @@ def test_tests_cannot_reach_live_provider():
         client._client()
 
 
-def test_enforced_rules_cite_existing_paths():
+def citation_problems(agents: str, root: Path) -> list[str]:
+    """Every backticked `path` or `path::name` in an Enforced Rules row must resolve."""
     import re
 
-    root = Path(__file__).resolve().parents[1]
-    agents = (root / "AGENTS.md").read_text()
     assert "\n## Enforced Rules\n" in agents, "AGENTS.md lost its ## Enforced Rules section."
     section = agents.split("\n## Enforced Rules\n", 1)[1].split("\n## ", 1)[0]
     rows = [row for row in section.splitlines() if row.startswith("| ")][2:]
     assert rows, "AGENTS.md Enforced Rules table has no rows."
+    problems: list[str] = []
     for row in rows:
-        cited = re.findall(r"`([\w./-]+\.\w+)(?:::(\w+))?`", row.split("|")[2])
-        assert cited, f"Enforced Rules row cites no path: {row}"
-        for path, name in cited:
+        cited = re.findall(r"`([^`]+)`", row.split("|")[2])
+        if not cited:
+            problems.append(f"Enforced Rules row cites no path: {row}")
+        for citation in cited:
+            path, _, name = citation.partition("::")
             target = root / path
-            assert target.is_file(), f"AGENTS.md cites missing path {path}."
-            defined = rf"^\s*(?:(?:async\s+)?def|class)\s+{name}\b|^{name}\s*="
-            assert not name or re.search(defined, target.read_text(), re.M), (
-                f"AGENTS.md cites {path}::{name}, but {path} does not define {name}."
-            )
+            if not target.is_file():
+                problems.append(f"AGENTS.md cites missing path {path}.")
+                continue
+            if target.name == "justfile":
+                defined = rf"^{re.escape(name)}(?:\s[^\n]*)?:"
+            else:
+                defined = (
+                    rf"^\s*(?:(?:async\s+)?def|class)\s+{re.escape(name)}\b|^{re.escape(name)}\s*="
+                )
+            if name and not re.search(defined, target.read_text(), re.M):
+                problems.append(f"AGENTS.md cites {path}::{name}, but {path} does not define it.")
+    return problems
+
+
+def test_enforced_rules_cite_existing_paths():
+    root = Path(__file__).resolve().parents[1]
+    assert citation_problems((root / "AGENTS.md").read_text(), root) == []
+
+
+def test_citation_check_finds_rotten_citations():
+    root = Path(__file__).resolve().parents[1]
+    table = "\n## Enforced Rules\n\n| Rule | Enforced by | Added |\n| --- | --- | --- |\n"
+    rows = [
+        "| a | nothing cited | d |",
+        "| b | `tests/test_tooling.py::test_named_nowhere` | d |",
+        "| c | `justfile::check-everything` | d |",
+        "| d | `.agents/skills/verify-engram/verify::no_such_name` | d |",
+        "| e | `docs/missing.md` | d |",
+    ]
+    assert citation_problems(table + "\n".join(rows) + "\n", root) == [
+        "Enforced Rules row cites no path: | a | nothing cited | d |",
+        "AGENTS.md cites tests/test_tooling.py::test_named_nowhere, but tests/test_tooling.py does not define it.",
+        "AGENTS.md cites justfile::check-everything, but justfile does not define it.",
+        "AGENTS.md cites .agents/skills/verify-engram/verify::no_such_name, but .agents/skills/verify-engram/verify does not define it.",
+        "AGENTS.md cites missing path docs/missing.md.",
+    ]
