@@ -67,26 +67,27 @@ def test_package_smoke_isolates_locked_dependencies_and_wheel_import(
     monkeypatch.setenv("VIRTUAL_ENV", str(root / ".venv"))
     monkeypatch.setenv("PYTHONPATH", str(root / "src"))
     calls = []
-    target = None
+    environments: list[Path] = []
 
     def run(command, *, cwd, env=None, **kwargs):
-        nonlocal target
         calls.append((command, cwd, env))
         if command[:2] == ["uv", "build"]:
             dist = Path(command[command.index("--out-dir") + 1])
             dist.mkdir()
             (dist / "engram-0.1.0-py3-none-any.whl").write_bytes(b"fixture wheel")
         if command[:2] == ["uv", "sync"]:
-            target = Path(env["UV_PROJECT_ENVIRONMENT"])
+            assert env is not None
+            environments.append(Path(env["UV_PROJECT_ENVIRONMENT"]))
         stdout = ""
         if "-c" in command:
-            origin = root if import_from_checkout else target
+            origin = root if import_from_checkout else environments[0]
             stdout = str(origin / "lib/site-packages/engram/__init__.py")
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(verification.subprocess, "run", run)
     report = VerificationReport(profile="package")
     verification.package_smoke(root, report)
+    target = environments[0]
 
     sync, sync_cwd, sync_env = next(call for call in calls if call[0][:2] == ["uv", "sync"])
     assert {"--locked", "--offline", "--no-dev", "--no-install-project"} <= set(sync)

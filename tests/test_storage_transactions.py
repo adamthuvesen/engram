@@ -27,6 +27,7 @@ from engram.core.models import (
 from engram.storage import store as store_module
 from engram.storage import sync as sync_module
 from engram.storage.store import ChangeSet, FactStore, StoreIntegrityError
+from tests.mcp_helpers import json_object
 
 
 def fact(fact_id: str, **fields) -> Fact:
@@ -74,7 +75,9 @@ def test_restore_only_reverses_forgetting_and_preserves_confidence(tmp_path):
     store = FactStore(tmp_path)
     store.append_facts([fact("forgotten", confidence=0.6), fact("replaced")])
     store.forget("forgotten")
-    assert store.restore_fact("forgotten").confidence == 0.6
+    restored = store.restore_fact("forgotten")
+    assert restored is not None
+    assert restored.confidence == 0.6
     replacement = store.correct_fact("replaced", "Replacement memory")
     assert replacement is not None
     assert store.restore_fact("replaced") is None
@@ -994,8 +997,8 @@ async def test_operation_exposes_competing_replacement_conflicts(tmp_path):
     )
     result = await operations.approve_candidates(["a", "b", "independent"], store=store)
     assert result.envelope.status.value == "partial"
-    assert result.envelope.data["applied_ids"] == ["independent"]
-    assert result.envelope.data["unresolved_ids"] == ["a", "b"]
+    assert json_object(result.envelope.data)["applied_ids"] == ["independent"]
+    assert json_object(result.envelope.data)["unresolved_ids"] == ["a", "b"]
     assert len(result.envelope.errors) == 2
     for error in result.envelope.errors:
         assert error.code.value == "conflict"

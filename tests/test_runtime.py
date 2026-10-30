@@ -4,6 +4,7 @@ import asyncio
 import threading
 from datetime import UTC
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -13,8 +14,10 @@ from engram.core.config import Settings, get_settings
 from engram.core.models import Fact, FactCategory, MemoryCandidate
 from engram.core.structured_outputs import UnresolvedDecision
 from engram.extraction.observer import IngestResult
+from engram.llm.client import Completion, ModelCompletion
 from engram.runtime import Runtime
 from engram.storage.store import FactStore
+from tests.mcp_helpers import structured_content, text_of
 
 
 class DisabledProvider:
@@ -22,6 +25,12 @@ class DisabledProvider:
 
     def __init__(self):
         self.closed = False
+
+    async def complete(self, *args: Any, **kwargs: Any) -> Completion:
+        raise AssertionError("a disabled provider must never be called")
+
+    async def complete_model(self, *args: Any, **kwargs: Any) -> ModelCompletion[Any]:
+        raise AssertionError("a disabled provider must never be called")
 
     async def aclose(self):
         self.closed = True
@@ -103,7 +112,7 @@ def test_mcp_invalid_format_never_opens_storage(tmp_path, tool, arguments):
     app = server.create_mcp(runtime=runtime)
     result = asyncio.run(app.call_tool(tool, {**arguments, "format": "yaml"}))
     assert result.is_error
-    assert result.structured_content["errors"][0]["code"] == "validation_error"
+    assert structured_content(result)["errors"][0]["code"] == "validation_error"
     assert not runtime.settings.data_dir.exists()
     asyncio.run(runtime.aclose())
 
@@ -172,8 +181,8 @@ def test_ingest_unresolved_is_partial_in_mcp(tmp_path, monkeypatch):
         app.call_tool("remember", {"content": "New information", "format": "json"})
     )
     assert result.is_error
-    assert result.structured_content["status"] == "partial"
-    assert result.structured_content["data"]["unresolved"][0]["fact_id"] == "old"
+    assert structured_content(result)["status"] == "partial"
+    assert structured_content(result)["data"]["unresolved"][0]["fact_id"] == "old"
 
 
 @pytest.mark.parametrize("operation", [operations.approve_candidates, operations.reject_candidates])
@@ -219,9 +228,9 @@ def test_recall_text_keeps_requested_structured_provenance(tmp_path):
             {"query": "Zagblort xylophone", "format": "text", "with_provenance": True},
         )
     )
-    assert not result.content[0].text.startswith("{")
-    assert result.structured_content["data"]["provenance"]["delivered_fact_ids"]
-    assert result.structured_content["meta"]["returned"] == 1
+    assert not text_of(result.content[0]).startswith("{")
+    assert structured_content(result)["data"]["provenance"]["delivered_fact_ids"]
+    assert structured_content(result)["meta"]["returned"] == 1
     asyncio.run(runtime.aclose())
 
 
@@ -335,7 +344,7 @@ def test_corrupt_recall_log_is_storage_failure_for_stats(tmp_path, monkeypatch, 
             server.create_mcp(runtime=runtime).call_tool("recall_stats", {"format": "json"})
         )
         assert result.is_error
-        assert result.structured_content["errors"][0]["code"] == "storage_error"
+        assert structured_content(result)["errors"][0]["code"] == "storage_error"
         asyncio.run(runtime.aclose())
     finally:
         get_settings.cache_clear()

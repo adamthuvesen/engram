@@ -7,6 +7,7 @@ import tempfile
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,7 +23,7 @@ from engram.core.models import (
     TransactionStatus,
 )
 from engram.storage.store import AsyncFactStore, FactStore
-from tests.mcp_helpers import call_tool
+from tests.mcp_helpers import call_tool, text_of
 
 
 def _make_store() -> FactStore:
@@ -30,14 +31,14 @@ def _make_store() -> FactStore:
     return FactStore(data_dir=tmp)
 
 
-def _make_fact(**kwargs) -> Fact:
-    defaults = {"category": FactCategory.preference, "content": "Test fact"}
+def _make_fact(**kwargs: Any) -> Fact:
+    defaults: dict[str, Any] = {"category": FactCategory.preference, "content": "Test fact"}
     defaults.update(kwargs)
     return Fact(**defaults)
 
 
-def _make_candidate(**kwargs) -> MemoryCandidate:
-    defaults = {"category": FactCategory.preference, "content": "Test candidate"}
+def _make_candidate(**kwargs: Any) -> MemoryCandidate:
+    defaults: dict[str, Any] = {"category": FactCategory.preference, "content": "Test candidate"}
     defaults.update(kwargs)
     return MemoryCandidate(**defaults)
 
@@ -650,7 +651,7 @@ def test_mcp_tools_return_text_and_structured_content():
 
     content, structured = asyncio.run(call_tool(app, "inspect", {"format": "json"}))
 
-    assert content[0].text.startswith('{"status":"ok"')
+    assert text_of(content[0]).startswith('{"status":"ok"')
     assert structured["status"] == "ok"
     assert structured["data"][0]["id"] == "aaaaaaaaaaaa"
 

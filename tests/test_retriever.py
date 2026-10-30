@@ -461,6 +461,7 @@ def test_selector_rejects_fabricated_id_with_explicit_failure(monkeypatch):
     assert result.provenance.usage.llm_completions == 1
     assert result.provenance.usage.llm_failures == 1
     assert result.provenance.usage.llm_calls == 0
+    assert result.trace is not None
     assert result.trace.calls[0].error == "ProviderResponseError"
 
 
@@ -484,4 +485,5 @@ def test_timeout_is_attempted_and_unknown_usage_with_error_trace(monkeypatch):
     assert result.provenance.usage.llm_completions == 0
     assert result.provenance.usage.llm_failures == 1
     assert result.provenance.usage.usage_unknown_calls == 1
+    assert result.trace is not None
     assert result.trace.calls[0].error == "TimeoutError"

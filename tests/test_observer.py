@@ -59,7 +59,7 @@ class FakeModel:
         self,
         facts: list[dict[str, Any]],
         retire: list[dict[str, Any]] | None = None,
-        during_call: Callable[[int], None] | None = None,
+        during_call: Callable[[int], object] | None = None,
     ):
         self.response = {
             "facts": [_card(**fact) for fact in facts],

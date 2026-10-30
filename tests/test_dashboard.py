@@ -3,6 +3,7 @@
 import asyncio
 import threading
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 from textual.widgets import DataTable, Static, TabbedContent
@@ -42,7 +43,7 @@ def store(tmp_path, monkeypatch):
 def _fact(
     content="test",
     category=FactCategory.project,
-    project="engram",
+    project: str | None = "engram",
     confidence=1.0,
     **kw,
 ):
@@ -288,7 +289,7 @@ def test_space_on_empty_table_is_handled_without_selection():
     selected_ids: set[str] = set()
 
     handled = handle_table_key(
-        event,
+        cast(Any, event),
         focused=table,
         table=table,
         selected_ids=selected_ids,

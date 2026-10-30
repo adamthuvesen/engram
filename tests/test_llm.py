@@ -3,7 +3,7 @@
 import asyncio
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -65,16 +65,16 @@ def test_extract_usage_openai_style():
         prompt_tokens=1234,
         prompt_tokens_details=SimpleNamespace(cached_tokens=800),
     )
-    assert _extract_usage(SimpleNamespace(usage=usage)) == (1234, 800)
+    assert _extract_usage(cast(Any, SimpleNamespace(usage=usage))) == (1234, 800)
 
 
 def test_extract_usage_no_cached_field():
     usage = SimpleNamespace(prompt_tokens=500, prompt_tokens_details=None)
-    assert _extract_usage(SimpleNamespace(usage=usage)) == (500, None)
+    assert _extract_usage(cast(Any, SimpleNamespace(usage=usage))) == (500, None)
 
 
 def test_extract_usage_missing_entirely():
-    assert _extract_usage(SimpleNamespace()) == (None, None)
+    assert _extract_usage(cast(Any, SimpleNamespace())) == (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -299,10 +299,12 @@ def test_injected_client_controls_availability_and_usage():
         available = True
         closed = False
 
-        async def complete(self, *args):
+        async def complete(self, *args: Any, **kwargs: Any):
             return Completion("injected")
 
-        async def complete_model(self, prompt, system, response_model, model, reasoning_effort):
+        async def complete_model(
+            self, prompt, system, response_model, model=None, reasoning_effort=None
+        ):
             return ModelCompletion(value=response_model(answer=7))
 
         async def aclose(self):

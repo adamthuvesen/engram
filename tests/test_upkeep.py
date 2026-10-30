@@ -31,6 +31,7 @@ from engram.maintenance.upkeep import (
     run_upkeep,
     seconds_until_due,
 )
+from engram.maintenance.upkeep_report import StepReport, UpkeepReport
 from engram.maintenance.upkeep_state import (
     STATE_FILE,
     StateLine,
@@ -137,6 +138,12 @@ def _keep_all(cards: list[dict[str, Any]]) -> ConsolidationResponse:
 
 def _upkeep(store: AsyncFactStore, *steps: UpkeepStep, **kw):
     return asyncio.run(run_upkeep(store, steps=steps, **kw))
+
+
+def _step(report: UpkeepReport, step: UpkeepStep) -> StepReport:
+    found = report.step(step)
+    assert found is not None
+    return found
 
 
 # --- projects ----------------------------------------------------------------
@@ -695,7 +702,7 @@ def test_run_upkeep_skips_when_another_run_holds_the_lock(tmp_path: Path):
     assert load_state(store.data_dir).last_run_at is None
 
     report = _upkeep(store, *UpkeepStep)
-    assert not report.step(UpkeepStep.verify).skipped
+    assert not _step(report, UpkeepStep.verify).skipped
     assert load_state(store.data_dir).last_run_at == report.started_at
 
 
@@ -830,8 +837,8 @@ def test_dry_run_writes_nothing(tmp_path: Path, widget_repo: Path, llm):
     ]
     assert report.dry_run
     assert all(not step.fact_ids for step in report.steps)
-    assert len(report.step(UpkeepStep.projects).proposed["edited"]) == 6
-    assert len(report.step(UpkeepStep.consolidate).proposed["staled"]) == 6
+    assert len(_step(report, UpkeepStep.projects).proposed["edited"]) == 6
+    assert len(_step(report, UpkeepStep.consolidate).proposed["staled"]) == 6
     assert calls["brief"]
     assert "dry run" in format_upkeep_report(report)
 
@@ -842,6 +849,6 @@ def test_llm_steps_skip_without_key(tmp_path: Path, monkeypatch):
 
     report = _upkeep(store, *UpkeepStep)
 
-    assert report.step(UpkeepStep.consolidate).skipped
-    assert report.step(UpkeepStep.briefs).skipped
-    assert not report.step(UpkeepStep.verify).skipped
+    assert _step(report, UpkeepStep.consolidate).skipped
+    assert _step(report, UpkeepStep.briefs).skipped
+    assert not _step(report, UpkeepStep.verify).skipped
