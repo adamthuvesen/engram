@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -151,9 +151,7 @@ def _resolve_remote_and_branch(data_dir: Path, timeout: float) -> tuple[str, str
         )
     remote = "origin" if "origin" in remote_names else remote_names[0]
 
-    branch_proc = _run_git(
-        ["symbolic-ref", "--short", "HEAD"], cwd=data_dir, timeout=timeout
-    )
+    branch_proc = _run_git(["symbolic-ref", "--short", "HEAD"], cwd=data_dir, timeout=timeout)
     if branch_proc.returncode != 0:
         raise SyncError(
             code="detached_head",
@@ -229,7 +227,7 @@ def read_sync_state(data_dir: Path) -> dict[str, Any] | None:
         return None
     try:
         state = json.loads(state_path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return None
     return state if isinstance(state, dict) else None
 
@@ -318,9 +316,7 @@ def _commit_untrack(data_dir: Path, paths: list[str], timeout: float) -> bool:
     if head_paths:
         with tempfile.TemporaryDirectory(prefix="engram-sync-index-") as tmp:
             env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
-            read_proc = _run_git(
-                ["read-tree", "HEAD"], cwd=data_dir, timeout=timeout, env=env
-            )
+            read_proc = _run_git(["read-tree", "HEAD"], cwd=data_dir, timeout=timeout, env=env)
             _require_git_success(
                 read_proc,
                 code="untrack_locks_commit_failed",
@@ -451,9 +447,7 @@ def _commit_data_snapshot(data_dir: Path, timeout: float) -> None:
     _require_git_success(
         stage, code="data_stage_failed", message="Failed to stage Engram data snapshot."
     )
-    changed = _run_git(
-        ["diff", "--cached", "--quiet", "--", *paths], cwd=data_dir, timeout=timeout
-    )
+    changed = _run_git(["diff", "--cached", "--quiet", "--", *paths], cwd=data_dir, timeout=timeout)
     if changed.returncode == 0:
         return
     if changed.returncode != 1:
@@ -487,9 +481,7 @@ def sync(
     _ensure_repo(data_dir)
     with _locked_store(data_dir):
         _validate_sync_snapshot(data_dir)
-        result = _sync_locked(
-            data_dir, timeout=timeout, skip_if_compacting=skip_if_compacting
-        )
+        result = _sync_locked(data_dir, timeout=timeout, skip_if_compacting=skip_if_compacting)
         return result
 
 
@@ -546,9 +538,7 @@ def _sync_locked(
             code="git_fetch_failed",
             message=f"git fetch {remote} {branch} failed.",
         )
-        pull_proc = _run_git(
-            ["pull", "--rebase", remote, branch], cwd=data_dir, timeout=timeout
-        )
+        pull_proc = _run_git(["pull", "--rebase", remote, branch], cwd=data_dir, timeout=timeout)
         _require_git_success(
             pull_proc,
             code="git_pull_failed",
@@ -558,9 +548,7 @@ def _sync_locked(
     _validate_sync_snapshot(data_dir)
     _commit_data_snapshot(data_dir, timeout)
 
-    head_after_pull_proc = _run_git(
-        ["rev-parse", "HEAD"], cwd=data_dir, timeout=timeout
-    )
+    head_after_pull_proc = _run_git(["rev-parse", "HEAD"], cwd=data_dir, timeout=timeout)
     head_after_pull = head_after_pull_proc.stdout.strip()
     pulled_commits = (
         0
@@ -588,7 +576,7 @@ def _sync_locked(
         "pulled_commits": pulled_commits,
         "pushed_commits": pushed_commits,
         "took_ms": took_ms,
-        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": datetime.now(UTC).isoformat(),
     }
     _write_sync_state(data_dir, result)
     logger.info(
@@ -637,7 +625,7 @@ async def auto_sync_loop(
                 )
                 if on_result is not None:
                     on_result(exc)
-            except Exception as exc:  # noqa: BLE001 — auto-loop must not die
+            except Exception as exc:
                 logger.exception("engram-sync auto-loop unexpected error: %s", exc)
                 if on_result is not None:
                     on_result(SyncError(code="unexpected", message=str(exc)))
@@ -655,10 +643,8 @@ async def run_final_sync(
     try:
         return await run_sync(data_dir, timeout=timeout)
     except SyncError as exc:
-        logger.warning(
-            "engram-sync shutdown sync failed (%s): %s", exc.code, exc.message
-        )
+        logger.warning("engram-sync shutdown sync failed (%s): %s", exc.code, exc.message)
         return exc
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("engram-sync shutdown sync unexpected: %s", exc)
         return SyncError(code="shutdown_unexpected", message=str(exc))

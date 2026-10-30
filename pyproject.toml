@@ -3,7 +3,7 @@ name = "engram"
 version = "0.1.0"
 description = "Engram — structured, cross-project memory for coding agents"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "fastmcp==4.0.0b2",
     "pydantic>=2.0.0",
@@ -22,12 +22,12 @@ engram-dash = "engram.dashboard.app:main"
 [project.optional-dependencies]
 dev = [
     "hatchling>=1.33.0",
-    "mypy>=2.2.0",
+    "basedpyright==1.40.2",
     "pre-commit>=4.0.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-xdist>=3.8.0",
-    "ruff>=0.15.0",
+    "ruff==0.17.4",
     "types-pyyaml>=6.0.12.20260518",
 ]
 
@@ -43,7 +43,32 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-m 'not live_provider and not sync_transport'"
 
-[tool.mypy]
-python_version = "3.13"
-files = ["src/engram"]
-strict = true
+[tool.basedpyright]
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+include = ["src", "tests", ".agents/skills/verify-engram"]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["src", "."]
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportUnknownLambdaType = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+reportMissingParameterType = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF"]
+ignore = [
+    # ruff format wraps code; the remaining long lines are user-facing strings and prompts.
+    "E501",
+    # (str, Enum) keeps str(member) == "Class.member"; StrEnum would change it.
+    "UP042",
+]

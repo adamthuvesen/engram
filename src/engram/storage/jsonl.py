@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
-def _load_jsonl_records(
+def _load_jsonl_records[ModelT: BaseModel](
     path: Path, model: type[ModelT], corrupt_label: str, *, strict: bool = False
 ) -> tuple[list[ModelT], int]:
     """Parse a JSONL file into ``model`` records, returning ``(records, corrupt)``."""

@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from engram import server
-from engram.maintenance.doctor import DoctorIssue, repair_store, run_doctor
 from engram.core.models import (
     Durability,
     Fact,
@@ -20,6 +19,7 @@ from engram.core.models import (
     StoreTransaction,
     TransactionStatus,
 )
+from engram.maintenance.doctor import DoctorIssue, repair_store, run_doctor
 from engram.storage.store import AsyncFactStore, FactStore
 from tests.mcp_helpers import call_tool
 
@@ -70,9 +70,7 @@ def test_doctor_detects_missing_event_log_sentinel():
 
 def test_doctor_labels_corrupt_event_line_as_repairable():
     store = _make_store()
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="ok")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="ok")])
     with store.facts_path.open("a") as fh:
         fh.write("not json\n")
 
@@ -188,7 +186,7 @@ def test_doctor_skips_provider_by_default():
 
 def test_doctor_counts_active_stale_forgotten():
     store = _make_store()
-    past = datetime.now(timezone.utc) - timedelta(days=1)
+    past = datetime.now(UTC) - timedelta(days=1)
     store.append_facts(
         [
             Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a"),
@@ -220,9 +218,9 @@ def test_doctor_counts_active_stale_forgotten():
 
 def test_doctor_flags_stale_pending_candidates():
     store = _make_store()
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    old = datetime.now(timezone.utc) - timedelta(days=45)
+    old = datetime.now(UTC) - timedelta(days=45)
     candidate = MemoryCandidate(
         id="oldpendingcan",
         category=FactCategory.preference,
@@ -364,9 +362,7 @@ def test_doctor_reports_volume_metrics():
         ]
     )
     store.log_recall(
-        RecallRecord(
-            query="q", tier=0, prefilter_count=1, latency_ms=1.0, delivered_ids=["a"]
-        )
+        RecallRecord(query="q", tier=0, prefilter_count=1, latency_ms=1.0, delivered_ids=["a"])
     )
     store.log_recall(
         RecallRecord(
@@ -375,7 +371,7 @@ def test_doctor_reports_volume_metrics():
             prefilter_count=1,
             latency_ms=1.0,
             delivered_ids=["c"],
-            timestamp=datetime.now(timezone.utc) - timedelta(days=200),
+            timestamp=datetime.now(UTC) - timedelta(days=200),
         )
     )
 
@@ -392,9 +388,7 @@ def test_doctor_uses_same_legacy_event_decoder_as_snapshot(tmp_path):
     import json
 
     store = FactStore(tmp_path)
-    store.append_facts(
-        [Fact(id="legacy", category=FactCategory.project, content="Original")]
-    )
+    store.append_facts([Fact(id="legacy", category=FactCategory.project, content="Original")])
     event = {
         "event_type": "edited",
         "fact_id": "legacy",
@@ -413,9 +407,7 @@ def test_doctor_uses_same_legacy_event_decoder_as_snapshot(tmp_path):
 
 def test_doctor_reports_corrupt_recall_log_without_rewriting(tmp_path):
     store = FactStore(tmp_path)
-    store.log_recall(
-        RecallRecord(query="valid", tier=0, prefilter_count=1, latency_ms=1)
-    )
+    store.log_recall(RecallRecord(query="valid", tier=0, prefilter_count=1, latency_ms=1))
     with store.recall_log_path.open("a") as stream:
         stream.write("broken JSON\n")
     before = store.recall_log_path.read_bytes()
@@ -425,18 +417,14 @@ def test_doctor_reports_corrupt_recall_log_without_rewriting(tmp_path):
     assert store.recall_log_path.read_bytes() == before
 
 
-@pytest.mark.parametrize(
-    "bad_row", ["{broken", '{"kind":"unknown","at":"2026-01-01T00:00:00Z"}']
-)
+@pytest.mark.parametrize("bad_row", ["{broken", '{"kind":"unknown","at":"2026-01-01T00:00:00Z"}'])
 def test_doctor_and_sync_report_same_corrupt_maintenance_state_row(tmp_path, bad_row):
     from engram.storage.sync import _validate_sync_snapshot
     from engram.storage.transactions import StoreIntegrityError
 
     store = FactStore(tmp_path)
     state_path = tmp_path / "maintenance_state.jsonl"
-    state_path.write_text(
-        '{"kind":"run","at":"2026-01-01T00:00:00Z"}\n' + bad_row + "\n"
-    )
+    state_path.write_text('{"kind":"run","at":"2026-01-01T00:00:00Z"}\n' + bad_row + "\n")
     before = state_path.read_bytes()
 
     report = run_doctor(store)
@@ -444,9 +432,7 @@ def test_doctor_and_sync_report_same_corrupt_maintenance_state_row(tmp_path, bad
     assert report.status == "error"
     assert "maintenance_state" in report.checks_run
     issue = next(
-        issue
-        for issue in report.issues
-        if issue.code == "maintenance_state_jsonl_corrupt"
+        issue for issue in report.issues if issue.code == "maintenance_state_jsonl_corrupt"
     )
     assert issue.severity == "error"
     assert f"{state_path}:2" in issue.message

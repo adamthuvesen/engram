@@ -237,9 +237,7 @@ def test_merge_facts_append_failure_leaves_sources_active(monkeypatch):
 
 def test_mark_stale_excludes_from_active_recall():
     store = _make_store()
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")])
     fact = store.mark_stale("aaaaaaaaaaaa", reason="outdated")
     assert fact is not None
     assert fact.stale is True
@@ -305,9 +303,7 @@ def test_correct_memory_mcp_success(monkeypatch):
 
 def test_correct_memory_mcp_not_found(monkeypatch):
     _setup_server(monkeypatch)
-    result = asyncio.run(
-        _call("correct_memory", fact_id="missingmissi", new_content="x")
-    )
+    result = asyncio.run(_call("correct_memory", fact_id="missingmissi", new_content="x"))
     parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "not_found"
@@ -338,9 +334,7 @@ def test_merge_memories_mcp_success(monkeypatch):
 
 def test_merge_memories_mcp_validation_for_one_source(monkeypatch):
     _setup_server(monkeypatch)
-    result = asyncio.run(
-        _call("merge_memories", source_ids=["onlyoneonlyo"], merged_content="x")
-    )
+    result = asyncio.run(_call("merge_memories", source_ids=["onlyoneonlyo"], merged_content="x"))
     parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "validation_error"
@@ -348,9 +342,7 @@ def test_merge_memories_mcp_validation_for_one_source(monkeypatch):
 
 def test_mark_stale_mcp(monkeypatch):
     store = _setup_server(monkeypatch)
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")])
     result = asyncio.run(_call("mark_stale", fact_id="aaaaaaaaaaaa", reason="old"))
     parsed = _structured(result)
     assert parsed["status"] == "ok"

@@ -11,8 +11,8 @@ from engram.core.models import Fact, FactCategory
 from engram.core.provenance import RecallTrace
 from engram.recall.retriever import (
     recall,
-    recall_with_provenance,
     recall_result,
+    recall_with_provenance,
 )
 from engram.storage.store import FactStore
 
@@ -108,9 +108,7 @@ def test_provenance_includes_scored_matches():
             ),
         ]
     )
-    _, _, provenance, _ = asyncio.run(
-        recall_with_provenance("tabs spaces", store=store)
-    )
+    _, _, provenance, _ = asyncio.run(recall_with_provenance("tabs spaces", store=store))
     assert [m.id for m in provenance.prefilter_matches] == ["f1aaaaaaaaaa"]
     top = provenance.prefilter_matches[0]
     assert top.above_floor is True
@@ -121,9 +119,7 @@ def test_provenance_includes_scored_matches():
 def test_recall_does_not_reload_facts_once_index_is_warm():
     """Provenance is built from search hits, not a second full fact load."""
     store = _make_store()
-    store.append_facts(
-        [Fact(category=FactCategory.preference, content="prefers tabs over spaces")]
-    )
+    store.append_facts([Fact(category=FactCategory.preference, content="prefers tabs over spaces")])
     asyncio.run(recall_with_provenance("tabs", store=store))
 
     def fail_load():
@@ -178,9 +174,7 @@ def test_stale_facts_are_not_delivered():
             ),
         ]
     )
-    _, _, provenance, _ = asyncio.run(
-        recall_with_provenance("prefers option", store=store)
-    )
+    _, _, provenance, _ = asyncio.run(recall_with_provenance("prefers option", store=store))
     assert "staleaaaaaaa" not in provenance.cited_fact_ids
     assert "staleaaaaaaa" not in [m.id for m in provenance.prefilter_matches]
 
@@ -233,9 +227,7 @@ def test_suspect_fact_is_delivered_with_warning():
             )
         ]
     )
-    text, _, provenance, _ = asyncio.run(
-        recall_with_provenance("zagblort parser", store=store)
-    )
+    text, _, provenance, _ = asyncio.run(recall_with_provenance("zagblort parser", store=store))
     assert "unverified: anchor src/zagblort/parse.py vanished" in text
     [warning] = provenance.warnings
     assert warning.code == WarningCode.suspect_fact
@@ -244,9 +236,7 @@ def test_suspect_fact_is_delivered_with_warning():
 
 def test_trace_is_opt_in():
     store = _make_store()
-    store.append_facts(
-        [Fact(category=FactCategory.preference, content="prefers tabs over spaces")]
-    )
+    store.append_facts([Fact(category=FactCategory.preference, content="prefers tabs over spaces")])
     _, _, provenance, trace = asyncio.run(recall_with_provenance("tabs", store=store))
     assert trace is None
     _, _, provenance, trace = asyncio.run(
@@ -259,21 +249,11 @@ def test_trace_is_opt_in():
 
 def test_result_evidence_and_legacy_provenance_agree():
     store = _make_store()
-    store.append_facts(
-        [Fact(category=FactCategory.preference, content="prefers tabs over spaces")]
-    )
+    store.append_facts([Fact(category=FactCategory.preference, content="prefers tabs over spaces")])
     result = asyncio.run(recall_result("tabs spaces", store=store))
     delivered = [item.fact.id for item in result.delivered]
     selected = [item.fact.id for item in result.selected]
-    assert (
-        delivered
-        == result.provenance.delivered_fact_ids
-        == result.provenance.cited_fact_ids
-    )
-    assert (
-        selected
-        == result.provenance.selected_fact_ids
-        == result.provenance.source_fact_ids
-    )
+    assert delivered == result.provenance.delivered_fact_ids == result.provenance.cited_fact_ids
+    assert selected == result.provenance.selected_fact_ids == result.provenance.source_fact_ids
     assert result.cited == []
     assert result.candidates[0].score == result.provenance.prefilter_matches[0].score

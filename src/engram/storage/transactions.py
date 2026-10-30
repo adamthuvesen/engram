@@ -72,9 +72,7 @@ def scan_event_log(path: Path, *, strict: bool = False) -> EventLogScan:
                 if meta is None:
                     result.sentinel_line = lineno
                     if strict:
-                        raise StoreIntegrityError(
-                            path, lineno, "invalid event-log sentinel"
-                        )
+                        raise StoreIntegrityError(path, lineno, "invalid event-log sentinel")
             if meta is not None:
                 if result.meta is None and result.sentinel_line is None:
                     result.meta = meta
@@ -83,9 +81,7 @@ def scan_event_log(path: Path, *, strict: bool = False) -> EventLogScan:
                 result.events.append(decode_stored_event(line))
             except ValueError as exc:
                 if strict:
-                    raise StoreIntegrityError(
-                        path, lineno, "invalid event record"
-                    ) from exc
+                    raise StoreIntegrityError(path, lineno, "invalid event record") from exc
                 result.corrupt_lines.append(lineno)
     return result
 
@@ -195,10 +191,7 @@ class StoreTransactions:
         return self.data_dir / ".transaction-intent.json"
 
     def read_intent(self) -> list[FactEvent]:
-        return [
-            FactEvent.model_validate(row)
-            for row in json.loads(self.intent_path.read_text())
-        ]
+        return [FactEvent.model_validate(row) for row in json.loads(self.intent_path.read_text())]
 
     def clear_intent(self) -> None:
         self.intent_path.unlink()
@@ -215,7 +208,7 @@ class StoreTransactions:
                     continue
                 try:
                     payload = decode_event_log_meta(line)
-                except (ValueError, ValidationError):
+                except ValueError, ValidationError:
                     return False
                 return payload.meta == EVENT_LOG_META_VERSION
         return False
@@ -268,7 +261,7 @@ class StoreTransactions:
             json.dump([event.model_dump(mode="json") for event in events], stream)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, self.intent_path)
+        temp.replace(self.intent_path)
         self.sync_directory()
 
     def read_events(

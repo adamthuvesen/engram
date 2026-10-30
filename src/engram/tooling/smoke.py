@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 import asyncio
+import json
 import os
 import socket
 import subprocess
@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 from typing import Literal
 
 from fastmcp import Client
-from fastmcp.client.transports import StdioTransport, ClientTransport
+from fastmcp.client.transports import ClientTransport, StdioTransport
 from pydantic import BaseModel
 
 from engram.core.config import Settings, settings_scope
@@ -134,13 +134,9 @@ async def run_cli(data_dir: Path) -> SmokeResult:
             )
         envelope = json.loads(output)
         if envelope.get("status") != expected_status:
-            raise RuntimeError(
-                f"Console returned an invalid envelope: {output.decode()[-2000:]}"
-            )
+            raise RuntimeError(f"Console returned an invalid envelope: {output.decode()[-2000:]}")
         if expected_status == "ok" and "smoke0000001" not in str(envelope):
-            raise RuntimeError(
-                "Console inspect did not return the persisted smoke fact."
-            )
+            raise RuntimeError("Console inspect did not return the persisted smoke fact.")
         checks.append(" ".join(args))
     return SmokeResult(transport="cli", checks=checks, provider="blocked")
 
@@ -178,7 +174,7 @@ async def run_http(
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     checks: list[str] = []
-    for restart in range(2):
+    for _restart in range(2):
         with (data_dir / "http-smoke.log").open("a") as log:
             process = subprocess.Popen(
                 _server_command(python, data_dir, "http", port, entrypoints),
@@ -188,25 +184,21 @@ async def run_http(
                 stderr=log,
             )
             try:
-                for attempt in range(600):
+                for _attempt in range(600):
                     if process.poll() is not None:
                         raise RuntimeError(
                             "HTTP smoke server exited: "
                             + (data_dir / "http-smoke.log").read_text()[-2000:]
                         )
                     try:
-                        reader, writer = await asyncio.open_connection(
-                            "127.0.0.1", port
-                        )
+                        _reader, writer = await asyncio.open_connection("127.0.0.1", port)
                         writer.close()
                         await writer.wait_closed()
                         break
                     except OSError:
                         await asyncio.sleep(0.05)
                 else:
-                    raise RuntimeError(
-                        "HTTP smoke server did not become ready within 30 seconds."
-                    )
+                    raise RuntimeError("HTTP smoke server did not become ready within 30 seconds.")
                 async with Client(f"http://127.0.0.1:{port}/mcp", timeout=10) as client:
                     checks = await _exercise(client)
             finally:
@@ -230,12 +222,8 @@ async def run_assets(data_dir: Path) -> SmokeResult:
     from engram.evaluation.recall import DATASET_PATH
 
     if not CSS_PATH.is_file() or not DATASET_PATH.is_file():
-        raise RuntimeError(
-            "Installed package is missing dashboard CSS or evaluation data."
-        )
-    with settings_scope(
-        Settings(data_dir=data_dir, maintenance_enabled=False, sync_enabled=False)
-    ):
+        raise RuntimeError("Installed package is missing dashboard CSS or evaluation data.")
+    with settings_scope(Settings(data_dir=data_dir, maintenance_enabled=False, sync_enabled=False)):
         app = EngramDashboard()
         async with app.run_test(size=(100, 30)) as pilot:
             await app.workers.wait_for_complete()
@@ -249,9 +237,7 @@ async def run_assets(data_dir: Path) -> SmokeResult:
                 for index in range(table.row_count)
             ):
                 status = app.query_one("#status-bar", Static).render()
-                raise RuntimeError(
-                    f"Dashboard did not render the persisted smoke fact: {status}"
-                )
+                raise RuntimeError(f"Dashboard did not render the persisted smoke fact: {status}")
     return SmokeResult(
         transport="assets",
         checks=[
@@ -297,9 +283,7 @@ def serve(data_dir: Path, transport: str, port: int) -> None:
     from engram.server import create_mcp
 
     runtime = Runtime(
-        settings=Settings(
-            data_dir=data_dir, maintenance_enabled=False, sync_enabled=False
-        ),
+        settings=Settings(data_dir=data_dir, maintenance_enabled=False, sync_enabled=False),
         provider=FixtureCompletionClient(),
     )
     app = create_mcp(runtime=runtime)

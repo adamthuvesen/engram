@@ -34,15 +34,11 @@ def test_wrong_marker_expression_cannot_enable_git_push_fixtures():
         add_marker=lambda value: pytest.fail("Safe unit test was skipped."),
     )
     applied = []
-    pytest_collection_modifyitems(
-        SimpleNamespace(getoption=lambda name: False), [marked, unmarked]
-    )
+    pytest_collection_modifyitems(SimpleNamespace(getoption=lambda name: False), [marked, unmarked])
     assert len(applied) == 1
     assert "--run-sync-transport" in applied[0].kwargs["reason"]
     applied.clear()
-    pytest_collection_modifyitems(
-        SimpleNamespace(getoption=lambda name: True), [marked]
-    )
+    pytest_collection_modifyitems(SimpleNamespace(getoption=lambda name: True), [marked])
     assert applied == []
 
 
@@ -55,7 +51,7 @@ def test_excluded_profiles_are_listed_without_changing_status():
     assert report.status == "passed"
     assert any("verify-sync" in item for item in report.excluded)
     assert not report.failed
-    report.checks.append(CheckResult(name="mypy", status="failed"))
+    report.checks.append(CheckResult(name="basedpyright", status="failed"))
     assert report.status == "failed"
 
 
@@ -92,9 +88,7 @@ def test_package_smoke_isolates_locked_dependencies_and_wheel_import(
     report = VerificationReport(profile="package")
     verification.package_smoke(root, report)
 
-    sync, sync_cwd, sync_env = next(
-        call for call in calls if call[0][:2] == ["uv", "sync"]
-    )
+    sync, sync_cwd, sync_env = next(call for call in calls if call[0][:2] == ["uv", "sync"])
     assert {"--locked", "--offline", "--no-dev", "--no-install-project"} <= set(sync)
     assert sync[sync.index("--python") + 1] == verification.sys.executable
     assert sync_cwd == root
@@ -160,8 +154,7 @@ def test_generated_references_are_current():
 def test_eval_provenance_uses_exact_dataset_bytes():
     summary = evaluate()
     assert (
-        summary.provenance.dataset_sha256
-        == hashlib.sha256(DATASET_PATH.read_bytes()).hexdigest()
+        summary.provenance.dataset_sha256 == hashlib.sha256(DATASET_PATH.read_bytes()).hexdigest()
     )
     assert summary.provenance.live_status.startswith("skipped")
 
@@ -261,9 +254,7 @@ def test_report_revision_uses_loaded_source_not_custom_dataset(monkeypatch, tmp_
     assert all(cwd != dataset.parent for _, cwd in calls)
 
 
-def test_report_does_not_attribute_nested_wheel_to_host_repository(
-    monkeypatch, tmp_path
-):
+def test_report_does_not_attribute_nested_wheel_to_host_repository(monkeypatch, tmp_path):
     import engram.evaluation.report as reporting
 
     installed = tmp_path / ".venv/lib/site-packages/engram/evaluation/report.py"
@@ -271,9 +262,7 @@ def test_report_does_not_attribute_nested_wheel_to_host_repository(
     monkeypatch.setattr(
         reporting.subprocess,
         "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=0, stdout=str(tmp_path), stderr=""
-        ),
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=str(tmp_path), stderr=""),
     )
     assert reporting._source_revision() == (None, None)
 
@@ -306,9 +295,7 @@ def test_enforced_rules_cite_existing_paths():
 
     root = Path(__file__).resolve().parents[1]
     agents = (root / "AGENTS.md").read_text()
-    assert "\n## Enforced Rules\n" in agents, (
-        "AGENTS.md lost its ## Enforced Rules section."
-    )
+    assert "\n## Enforced Rules\n" in agents, "AGENTS.md lost its ## Enforced Rules section."
     section = agents.split("\n## Enforced Rules\n", 1)[1].split("\n## ", 1)[0]
     rows = [row for row in section.splitlines() if row.startswith("| ")][2:]
     assert rows, "AGENTS.md Enforced Rules table has no rows."
@@ -322,3 +309,30 @@ def test_enforced_rules_cite_existing_paths():
             assert not name or re.search(defined, target.read_text(), re.M), (
                 f"AGENTS.md cites {path}::{name}, but {path} does not define {name}."
             )
+
+
+def test_baseline_ratchet_blocks_growth_past_main(tmp_path):
+    import json
+    import subprocess
+
+    import engram.tooling.verify as verification
+
+    def baseline(errors: int) -> str:
+        return json.dumps({"files": {"./tests/a.py": [{"code": "reportPrivateUsage"}] * errors}})
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    path = tmp_path / verification.BASELINE
+    path.parent.mkdir()
+    path.write_text(baseline(2))
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+    assert verification.baseline_ratchet(tmp_path).status == "passed"
+    path.write_text(baseline(1))
+    assert verification.baseline_ratchet(tmp_path).status == "passed"
+    path.write_text(baseline(3))
+    assert verification.baseline_ratchet(tmp_path).status == "failed"

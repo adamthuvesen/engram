@@ -22,9 +22,7 @@ def check_source(source: str, path: str) -> list[BoundaryViolation]:
 
     def report(node: ast.AST, message: str) -> None:
         violations.append(
-            BoundaryViolation(
-                path=path, line=getattr(node, "lineno", 1), message=message
-            )
+            BoundaryViolation(path=path, line=getattr(node, "lineno", 1), message=message)
         )
 
     for node in ast.walk(tree):
@@ -40,15 +38,9 @@ def check_source(source: str, path: str) -> list[BoundaryViolation]:
                     storage_modules.add(alias.asname or alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module == "engram.storage":
             storage_modules.update(
-                alias.asname or alias.name
-                for alias in node.names
-                if alias.name == "store"
+                alias.asname or alias.name for alias in node.names if alias.name == "store"
             )
-        elif (
-            isinstance(node, ast.Attribute)
-            and node.attr == "sync_store"
-            and is_dashboard
-        ):
+        elif isinstance(node, ast.Attribute) and node.attr == "sync_store" and is_dashboard:
             report(node, "Dashboard code must use the public store API.")
 
     for node in ast.walk(tree):
@@ -56,16 +48,15 @@ def check_source(source: str, path: str) -> list[BoundaryViolation]:
             isinstance(node, ast.Attribute)
             and node.attr.startswith("_")
             and not is_storage
+            and ast.unparse(node.value) in storage_modules
         ):
-            if ast.unparse(node.value) in storage_modules:
-                report(node, "Use the public lifecycle policy or storage API.")
+            report(node, "Use the public lifecycle policy or storage API.")
         if not isinstance(node, ast.AsyncFunctionDef) or is_storage:
             continue
         for child in ast.walk(node):
             if isinstance(child, ast.Call):
                 direct_constructor = (
-                    isinstance(child.func, ast.Name)
-                    and child.func.id in fact_store_names
+                    isinstance(child.func, ast.Name) and child.func.id in fact_store_names
                 )
                 storage_class = (
                     isinstance(child.func, ast.Attribute)

@@ -29,7 +29,6 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from engram.core.models import StateLine as StateLine
-
 from engram.storage.transactions import locked_store
 
 logger = logging.getLogger(__name__)
@@ -101,15 +100,11 @@ def append_state(data_dir: Path, lines: list[StateLine]) -> None:
         existing = _read_lines(path)
         if len(existing) <= _COMPACT_LINES:
             return
-        fd, tmp = tempfile.mkstemp(
-            dir=data_dir, prefix=".maintenance_state.", suffix=".tmp"
-        )
+        fd, tmp = tempfile.mkstemp(dir=data_dir, prefix=".maintenance_state.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as fh:
-                fh.writelines(
-                    line.model_dump_json() + "\n" for line in _latest(existing).values()
-                )
-            os.replace(tmp, path)
+                fh.writelines(line.model_dump_json() + "\n" for line in _latest(existing).values())
+            Path(tmp).replace(path)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise

@@ -49,8 +49,8 @@ from pydantic import BaseModel, Field
 from engram.evaluation.fixtures import EvalFactSpec, materialize_facts
 from engram.evaluation.report import (
     ReportProvenance,
-    report_provenance,
     print_provenance,
+    report_provenance,
 )
 from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
@@ -105,17 +105,15 @@ class Summary(BaseModel):
 
 
 async def _run_query(store: AsyncFactStore, lq: LabeledQuery) -> QueryResult:
-    from engram.recall.retriever import ZERO_HIT_MAX_CANDIDATES, recall_with_provenance
     from engram.evaluation.provider import FixtureCompletionClient
     from engram.llm import completion_client
+    from engram.recall.retriever import ZERO_HIT_MAX_CANDIDATES, recall_with_provenance
 
     with completion_client(FixtureCompletionClient()):
         _, _, provenance, _ = await recall_with_provenance(lq.query, store=store)
 
     ranked = [m.id for m in provenance.prefilter_matches if m.above_floor]
-    pool = ranked or [
-        m.id for m in provenance.prefilter_matches[:ZERO_HIT_MAX_CANDIDATES]
-    ]
+    pool = ranked or [m.id for m in provenance.prefilter_matches[:ZERO_HIT_MAX_CANDIDATES]]
     expected = set(lq.expected)
 
     rank: int | None = None
@@ -219,9 +217,7 @@ def main() -> int:
     print(f"{'candidate recall (hit-rate)':<26}{_pct(summary.hit_rate):>8}")
     print(f"{'MRR':<26}{summary.mrr:>8.2f}")
     print()
-    print(
-        "recall@1 by query kind (where lexical search wins vs. where the LLM earns it):"
-    )
+    print("recall@1 by query kind (where lexical search wins vs. where the LLM earns it):")
     for kind, (hits, total) in sorted(summary.recall1_by_kind.items()):
         print(f"  {kind:<14}{hits:>3}/{total:<3}  {_pct(hits / total):>4}")
     print(f"\nno-match returns no cards: {'ok' if summary.nomatch_ok else 'FAIL'}")
@@ -229,11 +225,7 @@ def main() -> int:
     if misses:
         print(f"\nrecall@5 misses ({len(misses)}) — the LLM's territory:")
         for r in misses:
-            where = (
-                f"rank {r.rank}"
-                if r.rank
-                else ("no card" if not r.hit else "below top-5")
-            )
+            where = f"rank {r.rank}" if r.rank else ("no card" if not r.hit else "below top-5")
             print(f'  [{r.kind:<13}] "{r.query}"  → expected {r.expected}, {where}')
 
     ok = (

@@ -3,10 +3,10 @@
 import logging
 import os
 import re
-from functools import lru_cache
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from collections.abc import Iterator
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -27,10 +27,8 @@ class Settings(BaseSettings):
         default="openai/gpt-6-luna",
         description="OpenAI model for extraction, recall fallback, and upkeep.",
     )
-    llm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = (
-        Field(
-            default="medium", description="Reasoning effort for extraction and upkeep."
-        )
+    llm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = Field(
+        default="medium", description="Reasoning effort for extraction and upkeep."
     )
     llm_temperature: float = Field(
         default=0.0, description="Temperature for models without reasoning effort."
@@ -42,9 +40,9 @@ class Settings(BaseSettings):
     )
     # Recall sits on the agent's critical path; extraction and upkeep can think
     # harder than recall does.
-    recall_reasoning_effort: Literal[
-        "none", "low", "medium", "high", "xhigh", "max"
-    ] = Field(default="low", description="Reasoning effort for recall calls.")
+    recall_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = Field(
+        default="low", description="Reasoning effort for recall calls."
+    )
 
     # Retrieval
     max_facts_per_agent: int = Field(
@@ -128,9 +126,7 @@ DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 7422
 
 
-_CURRENT_SETTINGS: ContextVar[Settings | None] = ContextVar(
-    "engram_settings", default=None
-)
+_CURRENT_SETTINGS: ContextVar[Settings | None] = ContextVar("engram_settings", default=None)
 
 
 @lru_cache(maxsize=1)

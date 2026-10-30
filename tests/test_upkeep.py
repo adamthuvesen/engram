@@ -7,7 +7,7 @@ import asyncio
 import json
 import subprocess
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -28,8 +28,8 @@ from engram.maintenance.upkeep import (
     format_upkeep_report,
     project_brief,
     run_upkeep,
+    seconds_until_due,
 )
-from engram.maintenance.upkeep import seconds_until_due
 from engram.maintenance.upkeep_state import (
     STATE_FILE,
     StateLine,
@@ -81,9 +81,7 @@ def _cluster_cards(prompt: str) -> list[dict]:
 @pytest.fixture(autouse=True)
 def _isolated_repo_search(tmp_path: Path, monkeypatch):
     """Never walk the developer's home directory looking for repositories."""
-    monkeypatch.setenv(
-        "ENGRAM_REPO_SEARCH_ROOTS", json.dumps([str(tmp_path / "repos")])
-    )
+    monkeypatch.setenv("ENGRAM_REPO_SEARCH_ROOTS", json.dumps([str(tmp_path / "repos")]))
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -196,9 +194,7 @@ def widget_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def test_verify_stales_flags_clears_and_records_anchors(
-    tmp_path: Path, widget_repo: Path
-):
+def test_verify_stales_flags_clears_and_records_anchors(tmp_path: Path, widget_repo: Path):
     store = _store(
         tmp_path,
         [
@@ -283,9 +279,7 @@ def test_verify_respects_branches_and_restores_its_own_stale_facts(
 
     facts = _by_id(store)
     assert not facts["branch_path"].stale and not facts["branch_symbol"].stale
-    assert facts["branch_path"].suspect_reason == (
-        "missing: src/feature.py (only on a branch)"
-    )
+    assert facts["branch_path"].suspect_reason == ("missing: src/feature.py (only on a branch)")
     assert facts["branch_symbol"].suspect_reason.endswith("(only on a branch)")
     assert facts["comes_back"].stale
     assert report.fact_ids["staled"] == ["comes_back"]
@@ -310,7 +304,7 @@ def test_partition_clusters_is_disjoint_and_seeded_by_new_facts():
         _fact(
             f"f{i:02d}",
             f"{topics[i % 4]} detail number {i}",
-            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(hours=i),
+            created_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=i),
         )
         for i in range(60)
     ]
@@ -441,9 +435,7 @@ def test_split_that_repeats_claims_is_rejected(tmp_path: Path, llm):
     assert all(fact.confidence == 1.0 for fact in _by_id(store).values())
 
 
-def test_oversized_merge_is_rejected_but_an_untouched_long_card_is_kept(
-    tmp_path: Path, llm
-):
+def test_oversized_merge_is_rejected_but_an_untouched_long_card_is_kept(tmp_path: Path, llm):
     calls, use = llm
     long_text = "Widget fact. " * (MAX_CARD_CHARS // 13 + 1)
     store = _store(
@@ -473,8 +465,8 @@ def test_oversized_merge_is_rejected_but_an_untouched_long_card_is_kept(
 
 def test_merged_card_keeps_the_age_of_its_oldest_claim(tmp_path: Path, llm):
     _, use = llm
-    old = datetime(2026, 3, 22, tzinfo=timezone.utc)
-    new = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    old = datetime(2026, 3, 22, tzinfo=UTC)
+    new = datetime(2026, 10, 1, tzinfo=UTC)
     store = _store(
         tmp_path,
         [
@@ -499,7 +491,7 @@ def test_merged_card_keeps_the_age_of_its_oldest_claim(tmp_path: Path, llm):
 
 def test_unchanged_single_source_card_is_edited_in_place(tmp_path: Path, llm):
     _, use = llm
-    observed = datetime.now(timezone.utc) - timedelta(days=5)
+    observed = datetime.now(UTC) - timedelta(days=5)
     store = _store(
         tmp_path,
         [_fact("keep", "Widget staging is down this week.", observed_at=observed)],
@@ -519,7 +511,7 @@ def test_unchanged_single_source_card_is_edited_in_place(tmp_path: Path, llm):
     assert fact.retrieval_hints == ["hint"]
     # The TTL starts when upkeep classifies the card, never in the past.
     assert fact.expires_at is not None
-    assert fact.expires_at > datetime.now(timezone.utc) + timedelta(days=44)
+    assert fact.expires_at > datetime.now(UTC) + timedelta(days=44)
     assert report.fact_ids["edited"] == ["keep"]
     assert "created" not in report.fact_ids or not report.fact_ids["created"]
 
@@ -592,9 +584,7 @@ def test_retry_seed_is_dropped_once_its_cluster_succeeds(tmp_path: Path, llm):
 
 def test_concurrent_write_aborts_cluster_and_is_seen_next_run(tmp_path: Path, llm):
     calls, use = llm
-    store = _store(
-        tmp_path, [_fact("a", "one"), _fact("g", "gadget", project="gadget")]
-    )
+    store = _store(tmp_path, [_fact("a", "one"), _fact("g", "gadget", project="gadget")])
 
     def edit_during_call(cards: list[dict]) -> ConsolidationResponse:
         if len(calls["consolidate"]) == 1:
@@ -615,9 +605,7 @@ def test_concurrent_write_aborts_cluster_and_is_seen_next_run(tmp_path: Path, ll
 
 
 @pytest.mark.parametrize("mutation", ["forget", "edit"])
-def test_unchanged_kept_card_is_still_a_cluster_dependency(
-    tmp_path: Path, llm, mutation
-):
+def test_unchanged_kept_card_is_still_a_cluster_dependency(tmp_path: Path, llm, mutation):
     _, use = llm
     store = _store(
         tmp_path,
@@ -640,13 +628,9 @@ def test_unchanged_kept_card_is_still_a_cluster_dependency(
     def change_kept_card(cards: list[dict]) -> ConsolidationResponse:
         response = _keep_all(cards)
         retired = next(
-            card
-            for card in cards
-            if card["content"] == "Widget uses pnpm for packages."
+            card for card in cards if card["content"] == "Widget uses pnpm for packages."
         )
-        response.cards = [
-            card for card in response.cards if card.source_ids != [retired["id"]]
-        ]
+        response.cards = [card for card in response.cards if card.source_ids != [retired["id"]]]
         response.retire = [RetiredInputCard(id=retired["id"], reason="duplicate")]
         if mutation == "forget":
             store.sync_store.forget("b")
@@ -663,11 +647,9 @@ def test_unchanged_kept_card_is_still_a_cluster_dependency(
     assert load_state(store.data_dir).projects["widget"].retry_seeds == {"a": 1}
 
 
-def test_source_expiring_during_provider_cannot_become_durable(
-    tmp_path: Path, llm, monkeypatch
-):
+def test_source_expiring_during_provider_cannot_become_durable(tmp_path: Path, llm, monkeypatch):
     _, use = llm
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
 
     class Clock(datetime):
         current = start
@@ -708,9 +690,7 @@ def test_run_upkeep_skips_when_another_run_holds_the_lock(tmp_path: Path):
     with upkeep_lock(store.data_dir) as acquired:
         assert acquired
         report = _upkeep(store, *UpkeepStep)
-    assert [step.skipped for step in report.steps] == [
-        "another upkeep run is in progress"
-    ] * 4
+    assert [step.skipped for step in report.steps] == ["another upkeep run is in progress"] * 4
     assert load_state(store.data_dir).last_run_at is None
 
     report = _upkeep(store, *UpkeepStep)
@@ -721,7 +701,7 @@ def test_run_upkeep_skips_when_another_run_holds_the_lock(tmp_path: Path):
 def test_background_schedule_survives_restarts(tmp_path: Path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    now = datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 1, 12, tzinfo=UTC)
     assert seconds_until_due(data_dir, interval=3600, minimum=120, now=now) == 120
     append_state(data_dir, [StateLine(kind="run", at=now - timedelta(minutes=10))])
     assert seconds_until_due(data_dir, interval=3600, minimum=120, now=now) == 3000
@@ -746,8 +726,7 @@ def test_consolidation_never_mixes_projects(tmp_path: Path, llm):
 
     # Prompts carry handles, not IDs; each cluster must hold one scope only.
     scopes = sorted(
-        (prompt.split("\n", 1)[0], len(_cluster_cards(prompt)))
-        for prompt in calls["consolidate"]
+        (prompt.split("\n", 1)[0], len(_cluster_cards(prompt))) for prompt in calls["consolidate"]
     )
     assert scopes == [
         ("PROJECT SCOPE: (global)", 1),
@@ -810,11 +789,8 @@ def test_brief_is_written_then_replaced_when_facts_change(tmp_path: Path, llm):
 
 
 def test_brief_refresh_supersedes_every_duplicate(tmp_path: Path, llm):
-    calls, _ = llm
-    dupes = [
-        _fact(f"brief{i}", f"old brief {i}", memory_key="project-brief")
-        for i in range(2)
-    ]
+    _calls, _ = llm
+    dupes = [_fact(f"brief{i}", f"old brief {i}", memory_key="project-brief") for i in range(2)]
     store = _store(tmp_path, [_fact(f"f{i}", f"widget fact {i}") for i in range(5)])
     store.sync_store.append_facts(dupes)
 
@@ -833,10 +809,7 @@ def test_dry_run_writes_nothing(tmp_path: Path, widget_repo: Path, llm):
     calls, use = llm
     store = _store(
         tmp_path,
-        [
-            _fact(f"f{i}", f"Widget fact {i} in src/gone{i}.py", project="Widget")
-            for i in range(6)
-        ],
+        [_fact(f"f{i}", f"Widget fact {i} in src/gone{i}.py", project="Widget") for i in range(6)],
     )
     use(
         lambda cards: ConsolidationResponse(

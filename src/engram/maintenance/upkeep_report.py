@@ -58,9 +58,7 @@ class StepReport(BaseModel):
         self.conflicts.update(result.skipped)
         for action in ("cleared", "suspect", "anchored"):
             applied = [
-                fact_id
-                for fact_id in self.proposed.get(action, [])
-                if fact_id in result.edited
+                fact_id for fact_id in self.proposed.get(action, []) if fact_id in result.edited
             ]
             if applied:
                 self.add(action, *applied)
@@ -83,8 +81,7 @@ class UpkeepReport(BaseModel):
     @property
     def partial(self) -> bool:
         return any(
-            step.errors or step.conflicts or step.skips or step.skipped
-            for step in self.steps
+            step.errors or step.conflicts or step.skips or step.skipped for step in self.steps
         )
 
     def step(self, step: UpkeepStep) -> StepReport | None:
@@ -110,14 +107,8 @@ def format_upkeep_report(report: UpkeepReport) -> str:
             lines.append(f"- {step.step.value}: skipped ({step.skipped})")
             continue
         parts = [f"{name} {count}" for name, count in step.counts.items()]
-        parts += [
-            f"{action} {len(ids)}" for action, ids in step.fact_ids.items() if ids
-        ]
-        parts += [
-            f"proposed {action} {len(ids)}"
-            for action, ids in step.proposed.items()
-            if ids
-        ]
+        parts += [f"{action} {len(ids)}" for action, ids in step.fact_ids.items() if ids]
+        parts += [f"proposed {action} {len(ids)}" for action, ids in step.proposed.items() if ids]
         if step.conflicts:
             parts.append(f"conflicts {len(step.conflicts)}")
         if step.skips:

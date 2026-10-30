@@ -2,7 +2,7 @@
 
 import asyncio
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -33,7 +33,7 @@ def refresh(store: AsyncFactStore) -> StepReport:
             project=None,
             report=report,
             dry_run=False,
-            now=datetime.now(timezone.utc),
+            now=datetime.now(UTC),
         )
     )
     return report
@@ -42,9 +42,7 @@ def refresh(store: AsyncFactStore) -> StepReport:
 @pytest.fixture
 def brief_store(tmp_path, monkeypatch):
     async def provider(*args, **kwargs):
-        return briefs.BriefResponse(
-            content="Current orientation", retrieval_hints=["overview"]
-        )
+        return briefs.BriefResponse(content="Current orientation", retrieval_hints=["overview"])
 
     monkeypatch.setattr(briefs, "complete_model", provider)
     store = AsyncFactStore(FactStore(tmp_path / "data"))
@@ -64,9 +62,7 @@ def test_brief_rejects_changed_source_membership(brief_store, mutation):
     elif mutation == "move":
         store.sync_store.update_fact("source0", project="elsewhere")
     elif mutation == "expiry":
-        store.sync_store.update_fact(
-            "source0", expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
-        )
+        store.sync_store.update_fact("source0", expires_at=datetime.now(UTC) - timedelta(seconds=1))
     else:
         store.sync_store.forget("source0")
         store.sync_store.purge()
@@ -96,9 +92,7 @@ def test_git_failure_cannot_retire_missing_anchor(tmp_path, monkeypatch, command
         return subprocess.CompletedProcess(args, 0, output, "")
 
     monkeypatch.setattr(verify, "_run_git", git)
-    verdict = verify.check_fact(
-        fact(0, anchors=["src/gone.py"]), verify.RepoCheck(tmp_path)
-    )
+    verdict = verify.check_fact(fact(0, anchors=["src/gone.py"]), verify.RepoCheck(tmp_path))
     assert verdict is not None and verdict.unavailable == ["src/gone.py"]
     report = StepReport(step=UpkeepStep.verify)
     assert not verify.plan_verification([verdict], report).changes.stale
@@ -168,9 +162,7 @@ def test_brief_source_change_during_generation_is_conflict(brief_store, monkeypa
 
     async def provider(*args, **kwargs):
         store.sync_store.update_fact("source0", tags=["concurrent"])
-        return briefs.BriefResponse(
-            content="Outdated orientation", retrieval_hints=["overview"]
-        )
+        return briefs.BriefResponse(content="Outdated orientation", retrieval_hints=["overview"])
 
     monkeypatch.setattr(briefs, "complete_model", provider)
     report = refresh(store)
@@ -221,9 +213,7 @@ def test_restored_fact_clears_verifier_suspect_atomically(tmp_path, monkeypatch)
         missing=[],
         derived=False,
     )
-    store.apply_changes(
-        verify.plan_verification([verdict], report).changes, all_or_nothing=True
-    )
+    store.apply_changes(verify.plan_verification([verdict], report).changes, all_or_nothing=True)
     assert not store.load_facts()[0].stale
     assert store.load_facts()[0].suspect_reason == ""
 
@@ -247,15 +237,13 @@ def test_project_registry_serializes_process_updates(tmp_path):
     for process in processes:
         process.join(timeout=10)
         assert process.exitcode == 0
-    assert load_project_roots(tmp_path) == {
-        f"project{i}": Path(f"/repo{i}") for i in range(12)
-    }
+    assert load_project_roots(tmp_path) == {f"project{i}": Path(f"/repo{i}") for i in range(12)}
 
 
 @pytest.mark.parametrize("writer", ["recall", "upkeep_state"])
 def test_sync_store_lock_blocks_all_synced_log_writers(tmp_path, writer):
-    from concurrent.futures import ThreadPoolExecutor
     import threading
+    from concurrent.futures import ThreadPoolExecutor
 
     from engram.core.models import RecallRecord
     from engram.maintenance.upkeep_state import StateLine, append_state
@@ -268,13 +256,9 @@ def test_sync_store_lock_blocks_all_synced_log_writers(tmp_path, writer):
     def append():
         started.set()
         if writer == "recall":
-            store.log_recall(
-                RecallRecord(query="offline", tier=0, latency_ms=1, prefilter_count=0)
-            )
+            store.log_recall(RecallRecord(query="offline", tier=0, latency_ms=1, prefilter_count=0))
         else:
-            append_state(
-                tmp_path, [StateLine(kind="run", at=datetime.now(timezone.utc))]
-            )
+            append_state(tmp_path, [StateLine(kind="run", at=datetime.now(UTC))])
         completed.set()
 
     with ThreadPoolExecutor(max_workers=1) as pool:

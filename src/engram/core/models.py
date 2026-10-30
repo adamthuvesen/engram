@@ -1,9 +1,9 @@
 """Data models for Engram."""
 
 import threading
-from copy import copy
 import time
-from datetime import datetime, timezone
+from copy import copy
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
 from uuid import uuid4
@@ -110,9 +110,9 @@ class FactBase(BaseModel):
     content: str
     source: str = "conversation"
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     # When the oldest claim carried into this card was observed. Set when a
     # card replaces or merges older cards, so their claims keep their age
     # instead of taking the newest source's date. None means ``observed_at``.
@@ -219,7 +219,7 @@ class RecallRecord(BaseModel):
     mode: str | None = None
     # Fact IDs handed back to the caller (cards shown or answer citations).
     delivered_ids: list[str] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class StoreTransaction(BaseModel):
@@ -234,9 +234,9 @@ class StoreTransaction(BaseModel):
     new_facts: list[Fact] = Field(default_factory=list)
     # old fact id -> replacing fact id, applied as ``superseded`` events.
     supersessions: dict[str, str] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     committed_at: datetime | None = None
-    events: list["FactEvent"] = Field(default_factory=list)
+    events: list[FactEvent] = Field(default_factory=list)
     candidates: list[MemoryCandidate] = Field(default_factory=list)
 
 
@@ -322,12 +322,12 @@ class FactEvent(BaseModel):
     event_id: str = Field(default_factory=new_event_id)
     event_type: EventType
     fact_id: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     actor: str = "engram"
     payload: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_payload(self) -> "FactEvent":
+    def validate_payload(self) -> FactEvent:
         if self.event_type is EventType.created:
             fact = fact_from_stored_data(self.payload)
             if fact.id != self.fact_id:
@@ -335,10 +335,7 @@ class FactEvent(BaseModel):
             self.payload = fact.model_dump(mode="json")
         elif self.event_type is EventType.edited:
             data = dict(self.payload)
-            if (
-                isinstance(data.get("category"), str)
-                and data["category"] in _STORED_CATEGORY_NAMES
-            ):
+            if isinstance(data.get("category"), str) and data["category"] in _STORED_CATEGORY_NAMES:
                 data["category"] = _STORED_CATEGORY_NAMES[data["category"]]
             self.payload = EditedPayload.model_validate(data).model_dump(
                 mode="json", exclude_unset=True
@@ -393,23 +390,17 @@ def _event_sort_key(event: FactEvent) -> tuple[datetime, str]:
 def _ensure_single_fact_id(events: list[FactEvent]) -> None:
     fact_id = events[0].fact_id
     if any(event.fact_id != fact_id for event in events):
-        raise ValueError(
-            f"replay_fact received events for multiple fact_ids: {fact_id} + others"
-        )
+        raise ValueError(f"replay_fact received events for multiple fact_ids: {fact_id} + others")
 
 
 def _fact_with_event_timestamp(fact: Fact, event: FactEvent, **updates: object) -> Fact:
-    return fact_from_stored_data(
-        {**fact.model_dump(), **updates, "updated_at": event.timestamp}
-    )
+    return fact_from_stored_data({**fact.model_dump(), **updates, "updated_at": event.timestamp})
 
 
 def _fact_after_event(fact: Fact, event: FactEvent) -> Fact:
     if event.event_type is EventType.edited:
         updates = {
-            key: value
-            for key, value in event.payload.items()
-            if key in EDITABLE_FACT_FIELDS
+            key: value for key, value in event.payload.items() if key in EDITABLE_FACT_FIELDS
         }
         return _fact_with_event_timestamp(fact, event, **updates) if updates else fact
     if event.event_type is EventType.stale:
@@ -481,9 +472,7 @@ def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
         if is_forgotten
         else FactLifecycle.active
     )
-    fact = fact.model_copy(
-        update={"lifecycle": lifecycle, "superseded_by": superseded_by}
-    )
+    fact = fact.model_copy(update={"lifecycle": lifecycle, "superseded_by": superseded_by})
     return fact, lifecycle is FactLifecycle.active
 
 

@@ -5,7 +5,7 @@ import json
 import shutil
 import subprocess
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -51,7 +51,7 @@ def test_nested_snapshots_and_search_results_cannot_mutate_store(tmp_path):
     original = fact(
         "one",
         tags=["original"],
-        brief_source_revisions={"source": datetime.now(timezone.utc)},
+        brief_source_revisions={"source": datetime.now(UTC)},
     )
     store.append_facts([original])
     first = store.load_facts()[0]
@@ -143,13 +143,9 @@ def test_recovery_reuses_exact_events_and_replays_twice(tmp_path, monkeypatch):
 
     monkeypatch.setattr(store, "_append_events_raw", interrupted)
     with pytest.raises(OSError, match="interrupted append"):
-        store.apply_changes(
-            ChangeSet(new_facts=[fact("new")], supersede={"old": "new"})
-        )
+        store.apply_changes(ChangeSet(new_facts=[fact("new")], supersede={"old": "new"}))
     prepared = json.loads(store.intent_path.read_text())
-    assert [row["event_id"] for row in prepared] == [
-        event.event_id for event in captured
-    ]
+    assert [row["event_id"] for row in prepared] == [event.event_id for event in captured]
     reader = FactStore(tmp_path)
     with pytest.raises(RuntimeError, match="recover_transactions"):
         reader.load_facts()
@@ -158,10 +154,7 @@ def test_recovery_reuses_exact_events_and_replays_twice(tmp_path, monkeypatch):
     reader.recover_transactions()
     assert reader.facts_path.read_bytes() == after
     assert [row.id for row in reader.load_active_facts()] == ["new"]
-    by_id = {
-        event.event_id: event.model_dump(mode="json")
-        for event in reader._load_all_events()
-    }
+    by_id = {event.event_id: event.model_dump(mode="json") for event in reader._load_all_events()}
     for row in prepared:
         assert by_id[row["event_id"]] == row
 
@@ -207,9 +200,7 @@ def test_reader_waits_for_complete_batch(tmp_path, monkeypatch):
 
     def write():
         try:
-            writer.apply_changes(
-                ChangeSet(new_facts=[fact("new")], supersede={"old": "new"})
-            )
+            writer.apply_changes(ChangeSet(new_facts=[fact("new")], supersede={"old": "new"}))
         except BaseException as exc:
             errors.append(exc)
 
@@ -298,9 +289,7 @@ def offline_stores(tmp_path):
     base = tmp_path / "base"
     store = FactStore(base)
     store.append_candidates([candidate("one"), candidate("two")])
-    store.facts_path.write_text(
-        EventLogMeta().model_dump_json(exclude_none=True) + "\n"
-    )
+    store.facts_path.write_text(EventLogMeta().model_dump_json(exclude_none=True) + "\n")
     left = tmp_path / "left"
     right = tmp_path / "right"
     shutil.copytree(base, left)
@@ -353,21 +342,13 @@ def test_pending_dedup_reads_entire_queue_and_allows_rejected_reproposal(tmp_pat
     store = FactStore(tmp_path)
     rows = [candidate(str(number)) for number in range(250)]
     store.append_candidates(rows)
-    assert (
-        store.append_pending_candidates(
-            [rows[0].model_copy(update={"id": "duplicate"})]
-        )
-        == []
-    )
+    assert store.append_pending_candidates([rows[0].model_copy(update={"id": "duplicate"})]) == []
     store.reject_candidates([rows[0].id])
-    assert (
-        len(store.append_pending_candidates([rows[0].model_copy(update={"id": "new"})]))
-        == 1
-    )
+    assert len(store.append_pending_candidates([rows[0].model_copy(update={"id": "new"})])) == 1
 
 
 def test_cached_search_excludes_newly_expired_fact(tmp_path, monkeypatch):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     store = FactStore(tmp_path)
     store.append_facts([fact("one", expires_at=now + timedelta(minutes=1))])
     assert store.search_facts("Memory")
@@ -441,9 +422,7 @@ async def test_cancelled_sync_waits_for_worker_before_returning(tmp_path, monkey
 @pytest.mark.parametrize(
     "row", ["[]", "null", "42", '{"event_type":"edited","fact_id":"one","payload":[]}']
 )
-def test_valid_json_with_invalid_event_shape_has_actionable_integrity_error(
-    tmp_path, row
-):
+def test_valid_json_with_invalid_event_shape_has_actionable_integrity_error(tmp_path, row):
     store = FactStore(tmp_path)
     store.append_facts([fact("one")])
     with store.facts_path.open("a") as stream:
@@ -492,8 +471,7 @@ def test_first_writer_headers_union_merge_without_corruption(tmp_path):
     left.append_facts([fact("left")])
     right.append_facts([fact("right")])
     assert (
-        left.facts_path.read_text().splitlines()[0]
-        == right.facts_path.read_text().splitlines()[0]
+        left.facts_path.read_text().splitlines()[0] == right.facts_path.read_text().splitlines()[0]
     )
     base = tmp_path / "empty"
     base.write_text("")
@@ -553,7 +531,7 @@ def test_unknown_or_missing_header_marker_is_rejected(tmp_path, header):
 def test_correction_preserves_full_source_metadata(tmp_path):
     from engram.core.models import Durability
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     original = fact(
         "one",
         durability=Durability.ephemeral,
@@ -580,18 +558,14 @@ def test_correction_preserves_full_source_metadata(tmp_path):
         "supersedes",
         "why_store",
     }
-    assert replacement.model_dump(exclude=overridden) == original.model_dump(
-        exclude=overridden
-    )
+    assert replacement.model_dump(exclude=overridden) == original.model_dump(exclude=overridden)
     assert (
         next(row for row in store.load_facts() if row.id == replacement.id).model_dump()
         == replacement.model_dump()
     )
 
 
-def test_approval_edits_are_owned_by_journal_and_recovered_exactly(
-    tmp_path, monkeypatch
-):
+def test_approval_edits_are_owned_by_journal_and_recovered_exactly(tmp_path, monkeypatch):
     store = FactStore(tmp_path)
     row = candidate("one")
     store.append_candidates([row])
@@ -606,11 +580,7 @@ def test_approval_edits_are_owned_by_journal_and_recovered_exactly(
             edits={row.id: "Edited content"},
         )
     journal = store._pending_transactions()[0]
-    assert (
-        journal.new_facts[0].content
-        == journal.candidates[0].content
-        == "Edited content"
-    )
+    assert journal.new_facts[0].content == journal.candidates[0].content == "Edited content"
     recovered = FactStore(tmp_path)
     assert recovered.recover_transactions() == 1
     approved = recovered.load_candidates()[0]
@@ -638,14 +608,10 @@ def test_approval_reports_transaction_owned_applied_edits(tmp_path):
     approved = store.approve_candidates_result([row.id], edits={row.id: "Final edit"})
     assert approved.edited == [row.id]
     assert approved.approved == {row.id: approved.facts[0].id}
-    assert (
-        store.load_candidates()[0].content == approved.facts[0].content == "Final edit"
-    )
+    assert store.load_candidates()[0].content == approved.facts[0].content == "Final edit"
 
 
-@pytest.mark.parametrize(
-    "change", ["edit", "expire", "stale", "incomplete", "forgotten"]
-)
+@pytest.mark.parametrize("change", ["edit", "expire", "stale", "incomplete", "forgotten"])
 def test_approval_keeps_changed_replacement_sources_unresolved(tmp_path, change):
     source = fact("source")
     store = FactStore(tmp_path)
@@ -653,18 +619,14 @@ def test_approval_keeps_changed_replacement_sources_unresolved(tmp_path, change)
     row = candidate("replacement").model_copy(
         update={
             "replaces": [source.id],
-            "replaces_expected": {}
-            if change == "incomplete"
-            else {source.id: source.updated_at},
+            "replaces_expected": {} if change == "incomplete" else {source.id: source.updated_at},
         }
     )
     store.append_candidates([row])
     if change == "edit":
         store.update_fact(source.id, content="Changed source")
     elif change == "expire":
-        store.update_fact(
-            source.id, expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
-        )
+        store.update_fact(source.id, expires_at=datetime.now(UTC) - timedelta(seconds=1))
     elif change == "stale":
         store.mark_stale(source.id)
     elif change == "forgotten":
@@ -679,6 +641,7 @@ def test_approval_keeps_changed_replacement_sources_unresolved(tmp_path, change)
 
 def test_legacy_promotion_hash_ignores_only_new_absent_dependency_field():
     import hashlib
+
     from engram.storage.candidates import candidate_promotion_id
 
     row = candidate("legacy")
@@ -689,9 +652,7 @@ def test_legacy_promotion_hash_ignores_only_new_absent_dependency_field():
     revision = hashlib.sha256(
         json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    expected = hashlib.sha256(f"candidate:{row.id}:{revision}".encode()).hexdigest()[
-        :24
-    ]
+    expected = hashlib.sha256(f"candidate:{row.id}:{revision}".encode()).hexdigest()[:24]
     assert candidate_promotion_id(row) == expected
 
 
@@ -699,13 +660,11 @@ def test_legacy_promotion_hash_ignores_only_new_absent_dependency_field():
     "fields",
     [
         {"stale": True},
-        {"expires_at": datetime(2000, 1, 1, tzinfo=timezone.utc)},
+        {"expires_at": datetime(2000, 1, 1, tzinfo=UTC)},
         {"confidence": 0.05},
     ],
 )
-def test_required_dependencies_must_be_eligible_without_revision_change(
-    tmp_path, fields
-):
+def test_required_dependencies_must_be_eligible_without_revision_change(tmp_path, fields):
     source = fact("source", **fields)
     store = FactStore(tmp_path)
     store.append_facts([source])
@@ -740,16 +699,12 @@ def test_sync_validation_rejects_every_allowlisted_log(tmp_path, filename):
     assert error.value.path.name == filename
 
 
-@pytest.mark.parametrize(
-    "returncode,stdout", [(1, ""), (0, "invalid"), (0, ""), (0, "-1")]
-)
+@pytest.mark.parametrize("returncode,stdout", [(1, ""), (0, "invalid"), (0, ""), (0, "-1")])
 def test_commit_count_errors_are_typed(tmp_path, monkeypatch, returncode, stdout):
     monkeypatch.setattr(
         sync_module,
         "_run_git",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            [], returncode, stdout, "failure"
-        ),
+        lambda *args, **kwargs: subprocess.CompletedProcess([], returncode, stdout, "failure"),
     )
     with pytest.raises(sync_module.SyncError) as error:
         sync_module._count_commits("origin/main..HEAD", tmp_path, 5)
@@ -775,9 +730,7 @@ def test_sync_bootstraps_only_verified_empty_remote_without_real_push(
     calls = []
     monkeypatch.setattr(sync_module, "_ensure_git_available", lambda: None)
     monkeypatch.setattr(sync_module, "_ensure_repo", lambda *args: None)
-    monkeypatch.setattr(
-        sync_module, "_resolve_remote_and_branch", lambda *args: ("origin", "main")
-    )
+    monkeypatch.setattr(sync_module, "_resolve_remote_and_branch", lambda *args: ("origin", "main"))
     monkeypatch.setattr(sync_module, "_ensure_managed_repo_setup", lambda *args: None)
     monkeypatch.setattr(sync_module, "_commit_data_snapshot", lambda *args: None)
 
@@ -839,9 +792,7 @@ def test_sync_rejects_corruption_introduced_by_integration_before_publication(
     calls = []
     monkeypatch.setattr(sync_module, "_ensure_git_available", lambda: None)
     monkeypatch.setattr(sync_module, "_ensure_repo", lambda *args: None)
-    monkeypatch.setattr(
-        sync_module, "_resolve_remote_and_branch", lambda *args: ("origin", "main")
-    )
+    monkeypatch.setattr(sync_module, "_resolve_remote_and_branch", lambda *args: ("origin", "main"))
     monkeypatch.setattr(sync_module, "_ensure_managed_repo_setup", lambda *args: None)
     monkeypatch.setattr(sync_module, "_commit_data_snapshot", lambda *args: None)
 
@@ -864,7 +815,7 @@ def test_sync_rejects_corruption_introduced_by_integration_before_publication(
     "fields",
     [
         {"stale": True},
-        {"expires_at": datetime(2000, 1, 1, tzinfo=timezone.utc)},
+        {"expires_at": datetime(2000, 1, 1, tzinfo=UTC)},
         {"confidence": 0.05},
     ],
 )
@@ -885,9 +836,7 @@ def test_approval_rejects_ineligible_sources_with_matching_revisions(tmp_path, f
 
 
 @pytest.mark.parametrize("guarded", [True, False])
-def test_replacement_approval_accepts_matching_sources_and_legacy_proposals(
-    tmp_path, guarded
-):
+def test_replacement_approval_accepts_matching_sources_and_legacy_proposals(tmp_path, guarded):
     source = fact("source")
     store = FactStore(tmp_path)
     store.append_facts([source])
@@ -969,9 +918,7 @@ def test_overlapping_replacement_group_conflicts_but_independent_approval_succee
             candidate(candidate_id).model_copy(
                 update={
                     "replaces": [source.id for source in sources],
-                    "replaces_expected": {
-                        source.id: source.updated_at for source in sources
-                    }
+                    "replaces_expected": {source.id: source.updated_at for source in sources}
                     if guarded
                     else None,
                 }
@@ -994,8 +941,7 @@ def test_overlapping_replacement_group_conflicts_but_independent_approval_succee
     saved = {row.id: row for row in store.load_candidates()}
     assert saved["a"].content == "Candidate a"
     assert all(
-        saved[candidate_id].status is CandidateStatus.pending
-        for candidate_id in ["a", "b", "c"]
+        saved[candidate_id].status is CandidateStatus.pending for candidate_id in ["a", "b", "c"]
     )
     assert saved["independent"].status is CandidateStatus.approved
     assert saved["independent"].content == "Approved edit"

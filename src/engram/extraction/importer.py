@@ -4,9 +4,8 @@ import logging
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
 import yaml
+from pydantic import BaseModel, ConfigDict, Field
 
 from engram.core.config import get_settings
 from engram.core.projects import canonical_project
@@ -59,9 +58,7 @@ async def import_claude_code_memories(
     failed_files = 0
 
     for memory_file in memory_files:
-        project_name = canonical_project(
-            _clean_project_name(memory_file.parent.parent.name)
-        )
+        project_name = canonical_project(_clean_project_name(memory_file.parent.parent.name))
         try:
             content, metadata = await run_sync(_parse_memory_file, memory_file)
             if not content.strip():

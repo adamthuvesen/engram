@@ -31,9 +31,7 @@ def configuration_markdown() -> str:
     ]
     for name, field in Settings.model_fields.items():
         if not field.description:
-            raise ValueError(
-                f"Settings.{name} needs a description before reference generation."
-            )
+            raise ValueError(f"Settings.{name} needs a description before reference generation.")
         default = _default_text(field.default).replace("|", "\\|")
         description = field.description.replace("|", "\\|")
         lines.append(f"| `ENGRAM_{name.upper()}` | `{default}` | {description} |")
@@ -70,17 +68,15 @@ async def tools_markdown() -> str:
         command = tool.name.replace("_", "-")
         if command not in HANDLERS:
             raise ValueError(f"MCP tool {tool.name} has no CLI handler.")
-        description = " ".join(
-            (tool.description or "").split("\n\n", 1)[0].split()
-        ).replace("|", "\\|")
+        description = " ".join((tool.description or "").split("\n\n", 1)[0].split()).replace(
+            "|", "\\|"
+        )
         lines.append(f"| `{tool.name}` | `{command}` | {description} |")
     lines.extend(
         [
             "",
             "CLI aliases: "
-            + ", ".join(
-                f"`{alias}` → `{command}`" for alias, command in ALIASES.items()
-            )
+            + ", ".join(f"`{alias}` → `{command}`" for alias, command in ALIASES.items())
             + ".",
             "",
             "`engram serve` owns the MCP process. It has no corresponding tool.",
@@ -128,10 +124,7 @@ def main() -> int:
     args = parser.parse_args()
     stale = asyncio.run(update_references(Path.cwd(), check=args.check))
     if stale:
-        print(
-            ("Stale references: " if args.check else "Updated references: ")
-            + ", ".join(stale)
-        )
+        print(("Stale references: " if args.check else "Updated references: ") + ", ".join(stale))
     return int(bool(stale) and args.check)
 
 

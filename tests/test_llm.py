@@ -7,8 +7,12 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from engram.core.structured_outputs import ExtractionResponse
 from engram.llm.client import (
     Completion,
+    ModelCompletion,
+    OpenAICompletionClient,
+    ProviderResponseError,
     _accepts_reasoning_effort,
     _extract_usage,
     _model_name,
@@ -16,14 +20,10 @@ from engram.llm.client import (
     _response_format_for_model,
     complete_model,
     complete_model_with_usage,
-    OpenAICompletionClient,
-    ModelCompletion,
-    ProviderResponseError,
+    complete_with_usage,
     completion_client,
     provider_available,
-    complete_with_usage,
 )
-from engram.core.structured_outputs import ExtractionResponse
 
 
 class _StructuredAnswer(BaseModel):
@@ -81,9 +81,7 @@ def test_extract_usage_missing_entirely():
 # ---------------------------------------------------------------------------
 
 
-def _mock_response(
-    text: str, prompt_tokens: int | None = None, cached: int | None = None
-):
+def _mock_response(text: str, prompt_tokens: int | None = None, cached: int | None = None):
     msg = SimpleNamespace(content=text)
     choice = SimpleNamespace(message=msg)
     usage = None
@@ -100,9 +98,7 @@ class _MockClient:
     """Stands in for ``AsyncOpenAI``; records the last request."""
 
     response: SimpleNamespace = field(
-        default_factory=lambda: _mock_response(
-            "answer text", prompt_tokens=123, cached=80
-        )
+        default_factory=lambda: _mock_response("answer text", prompt_tokens=123, cached=80)
     )
     last_kwargs: dict | None = None
 
@@ -177,9 +173,7 @@ def test_complete_with_usage_reasoning_model_uses_reasoning_effort(
 
 def test_reasoning_effort_override_wins(client, fresh_settings):
     asyncio.run(
-        complete_with_usage(
-            prompt="hello", model="openai/gpt-6-luna", reasoning_effort="low"
-        )
+        complete_with_usage(prompt="hello", model="openai/gpt-6-luna", reasoning_effort="low")
     )
     assert client.last_kwargs["reasoning_effort"] == "low"
 
@@ -216,9 +210,7 @@ def test_response_format_for_model_uses_strict_json_schema():
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["name"] == "_StructuredAnswer"
     assert response_format["json_schema"]["strict"] is True
-    assert response_format["json_schema"]["schema"] == (
-        _openai_strict_schema(_StructuredAnswer)
-    )
+    assert response_format["json_schema"]["schema"] == (_openai_strict_schema(_StructuredAnswer))
 
 
 def test_openai_strict_schema_requires_all_extraction_properties():
@@ -246,11 +238,7 @@ def test_complete_model_returns_validated_model(client, fresh_settings):
 def test_complete_model_invalid_json_raises_validation_error(client, fresh_settings):
     client.response = _mock_response("This is not JSON at all!")
     with pytest.raises(ValidationError):
-        asyncio.run(
-            complete_model(
-                prompt="test", system="sys", response_model=_StructuredAnswer
-            )
-        )
+        asyncio.run(complete_model(prompt="test", system="sys", response_model=_StructuredAnswer))
     assert client.closed
 
 
@@ -258,9 +246,7 @@ def test_structured_completion_retains_usage(client, fresh_settings):
     client.response = _mock_response('{"answer":42}', prompt_tokens=300, cached=100)
     client.response.usage.completion_tokens = 9
     result = asyncio.run(
-        complete_model_with_usage(
-            prompt="test", system="sys", response_model=_StructuredAnswer
-        )
+        complete_model_with_usage(prompt="test", system="sys", response_model=_StructuredAnswer)
     )
     assert result == ModelCompletion(
         value=_StructuredAnswer(answer=42),
@@ -315,9 +301,7 @@ def test_injected_client_controls_availability_and_usage():
         async def complete(self, *args):
             return Completion("injected")
 
-        async def complete_model(
-            self, prompt, system, response_model, model, reasoning_effort
-        ):
+        async def complete_model(self, prompt, system, response_model, model, reasoning_effort):
             return ModelCompletion(value=response_model(answer=7))
 
         async def aclose(self):
@@ -329,17 +313,15 @@ def test_injected_client_controls_availability_and_usage():
         with completion_client(fake):
             assert provider_available()
             assert (await complete_with_usage("hello")).text == "injected"
-            assert await complete_model(
-                "hello", "sys", _StructuredAnswer
-            ) == _StructuredAnswer(answer=7)
+            assert await complete_model("hello", "sys", _StructuredAnswer) == _StructuredAnswer(
+                answer=7
+            )
         assert not fake.closed
 
     asyncio.run(run())
 
 
-def test_native_sdk_parsing_uses_strict_schema_without_network(
-    monkeypatch, fresh_settings
-):
+def test_native_sdk_parsing_uses_strict_schema_without_network(monkeypatch, fresh_settings):
     import json
 
     import httpx2

@@ -225,9 +225,7 @@ def test_append_facts_adds_newline_if_missing():
         fact_id=fact1.id,
         payload=fact1.model_dump(),
     )
-    store.facts_path.write_text(
-        EventLogMeta().model_dump_json() + "\n" + event1.model_dump_json()
-    )
+    store.facts_path.write_text(EventLogMeta().model_dump_json() + "\n" + event1.model_dump_json())
 
     fact2 = Fact(id="f2", category=FactCategory.preference, content="Fact 2")
     store.append_facts([fact2])
@@ -285,8 +283,7 @@ def test_atomic_rewrite_preserves_data():
     """Rewrite uses tmp+rename for atomicity."""
     store = _make_store()
     facts = [
-        Fact(id=f"f{i}", category=FactCategory.preference, content=f"Fact {i}")
-        for i in range(100)
+        Fact(id=f"f{i}", category=FactCategory.preference, content=f"Fact {i}") for i in range(100)
     ]
     store.append_facts(facts)
 

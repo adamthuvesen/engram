@@ -33,12 +33,64 @@ _GIT_TIMEOUT_SECONDS = 10.0
 # Extensions that make a token unambiguously a file path. ``snapshot.events``
 # is a symbol access, ``snapshot.ts`` is a file.
 FILE_EXTENSIONS = frozenset(
-    """
-    c cc cfg cjs conf cpp cs css csv env go gradle graphql h hcl hpp html ini
-    ipynb java jinja jl js json jsonl jsx kt lock lua md mdx mjs php plist proto
-    ps1 py pyi rb rs sass scss sh sql svelte swift tf toml ts tsx txt vue xml
-    yaml yml zsh
-    """.split()
+    [
+        "c",
+        "cc",
+        "cfg",
+        "cjs",
+        "conf",
+        "cpp",
+        "cs",
+        "css",
+        "csv",
+        "env",
+        "go",
+        "gradle",
+        "graphql",
+        "h",
+        "hcl",
+        "hpp",
+        "html",
+        "ini",
+        "ipynb",
+        "java",
+        "jinja",
+        "jl",
+        "js",
+        "json",
+        "jsonl",
+        "jsx",
+        "kt",
+        "lock",
+        "lua",
+        "md",
+        "mdx",
+        "mjs",
+        "php",
+        "plist",
+        "proto",
+        "ps1",
+        "py",
+        "pyi",
+        "rb",
+        "rs",
+        "sass",
+        "scss",
+        "sh",
+        "sql",
+        "svelte",
+        "swift",
+        "tf",
+        "toml",
+        "ts",
+        "tsx",
+        "txt",
+        "vue",
+        "xml",
+        "yaml",
+        "yml",
+        "zsh",
+    ]
 )
 
 AnchorKind = Literal["path", "symbol"]
@@ -96,11 +148,7 @@ def derive_anchors(content: str) -> list[str]:
     found: list[str] = []
     for token in [*slashed, *backticked]:
         normalized = normalize_anchor(token)
-        if (
-            normalized
-            and normalized[0] == "path"
-            and _extension(normalized[1]) in FILE_EXTENSIONS
-        ):
+        if normalized and normalized[0] == "path" and _extension(normalized[1]) in FILE_EXTENSIONS:
             found.append(normalized[1])
     return list(dict.fromkeys(found))
 
@@ -114,7 +162,7 @@ def _run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
 
 
@@ -125,9 +173,7 @@ def _suffixes(files: list[str]) -> set[str]:
     """Every trailing sub-path of every file and directory in ``files``, so
     "lib/snapshot.ts" matches "src/renderer/lib/snapshot.ts"."""
     directories = {
-        entry.rsplit("/", depth)[0]
-        for entry in files
-        for depth in range(1, entry.count("/") + 1)
+        entry.rsplit("/", depth)[0] for entry in files for depth in range(1, entry.count("/") + 1)
     }
     found: set[str] = set()
     for entry in [*files, *directories]:
@@ -160,9 +206,7 @@ class RepoCheck:
 
     def _branch_trees(self) -> list[str] | None:
         if self._trees is None:
-            result = _run_git(
-                self.root, "for-each-ref", "--format=%(tree)", "refs/heads"
-            )
+            result = _run_git(self.root, "for-each-ref", "--format=%(tree)", "refs/heads")
             ok = result is not None and result.returncode == 0
             if not ok or result is None:
                 self._failed = True
@@ -184,9 +228,7 @@ class RepoCheck:
         if trees is None:
             return
         for tree in trees:
-            listed = _listing(
-                _run_git(self.root, "ls-tree", "-r", "--name-only", "-z", tree)
-            )
+            listed = _listing(_run_git(self.root, "ls-tree", "-r", "--name-only", "-z", tree))
             if listed is None:
                 self._failed = True
                 return
@@ -223,18 +265,10 @@ class RepoCheck:
             else:
                 trees = self._branch_trees()
                 on_branch = (
-                    None
-                    if trees is None
-                    else self._grep(symbol, *trees)
-                    if trees
-                    else False
+                    None if trees is None else self._grep(symbol, *trees) if trees else False
                 )
                 status = (
-                    "unavailable"
-                    if on_branch is None
-                    else "branch"
-                    if on_branch
-                    else "missing"
+                    "unavailable" if on_branch is None else "branch" if on_branch else "missing"
                 )
             self._symbols[symbol] = status
         return self._symbols[symbol]
@@ -318,13 +352,9 @@ def plan_verification(verdicts: list[AnchorVerdict], report: StepReport) -> Veri
     for verdict in verdicts:
         fact = verdict.fact
         if verdict.unavailable:
-            report.skips[fact.id] = "anchor evidence unavailable: " + ", ".join(
-                verdict.unavailable
-            )
+            report.skips[fact.id] = "anchor evidence unavailable: " + ", ".join(verdict.unavailable)
             report.bump("facts_unavailable")
-            report.notes.append(
-                f"unavailable {fact.id}: {', '.join(verdict.unavailable)}"
-            )
+            report.notes.append(f"unavailable {fact.id}: {', '.join(verdict.unavailable)}")
             continue
         gone_everywhere = not verdict.present and not verdict.on_branch
         if fact.stale:
@@ -398,19 +428,13 @@ def verify_facts(
 
     verdicts: list[AnchorVerdict] = []
     for project, project_facts in sorted(by_project.items()):
-        checkable = [
-            fact
-            for fact in project_facts
-            if fact.anchors or derive_anchors(fact.content)
-        ]
+        checkable = [fact for fact in project_facts if fact.anchors or derive_anchors(fact.content)]
         if not checkable:
             continue
         root = find_repo_root(project, data_dir=data_dir, search_roots=search_roots)
         if root is None:
             report.bump("projects_without_repo")
-            report.skips.update(
-                {fact.id: "project repository unavailable" for fact in checkable}
-            )
+            report.skips.update({fact.id: "project repository unavailable" for fact in checkable})
             continue
         report.bump("projects_with_repo")
         repo = RepoCheck(root)

@@ -9,8 +9,8 @@ from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import DataTable
 
-from engram.dashboard.constants import SEARCH_DEBOUNCE_S
 from engram.core.models import Fact
+from engram.dashboard.constants import SEARCH_DEBOUNCE_S
 
 
 class HasId(Protocol):
@@ -35,7 +35,7 @@ def short_cell(value: str, limit: int) -> str:
     return value[:limit] + "..."
 
 
-def item_by_id(items: Iterable[ItemT], item_id: str) -> ItemT | None:
+def item_by_id[ItemT: HasId](items: Iterable[ItemT], item_id: str) -> ItemT | None:
     for item in items:
         if item.id == item_id:
             return item
@@ -76,7 +76,7 @@ def next_sort_state(
     return sort_index, sort_reverse, columns[sort_index]
 
 
-def sort_by_column(items: list[T], column: str, *, reverse: bool) -> None:
+def sort_by_column[T](items: list[T], column: str, *, reverse: bool) -> None:
     items.sort(key=lambda item: getattr(item, column) or "", reverse=reverse)
 
 
@@ -138,9 +138,7 @@ def handle_table_key(
     return False
 
 
-def focus_nav_from_top_row(
-    app: NavigableApp, table: DataTable[Any], event: events.Key
-) -> bool:
+def focus_nav_from_top_row(app: NavigableApp, table: DataTable[Any], event: events.Key) -> bool:
     if app.focused is table and event.key == "up" and table.cursor_row == 0:
         event.prevent_default()
         app.focus_nav()

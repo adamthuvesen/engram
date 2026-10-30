@@ -1,14 +1,17 @@
 """Category detail screen — pushed from overview drill-down, with search."""
 
 from collections import Counter
+from typing import ClassVar
 
 from textual import events, on
 from textual.app import ComposeResult
+from textual.binding import BindingType
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import DataTable, Input, Static
 
+from engram.core.models import Fact
 from engram.dashboard.constants import NO_PROJECT_LABEL
 from engram.dashboard.data import (
     DashboardData,
@@ -23,13 +26,12 @@ from engram.dashboard.tables import (
     short_cell,
 )
 from engram.dashboard.widgets.fact_detail import FactDetail
-from engram.core.models import Fact
 
 
 class CategoryDetailScreen(ModalScreen[None]):
     """Detail view for a single category, pushed as a modal."""
 
-    BINDINGS = [("escape", "dismiss", "Back")]
+    BINDINGS: ClassVar[list[BindingType]] = [("escape", "dismiss", "Back")]
 
     def __init__(self, category: str, data: DashboardData) -> None:
         super().__init__()
@@ -42,28 +44,23 @@ class CategoryDetailScreen(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         container = Vertical(id="cat-detail-container")
-        container.border_title = f"category › {self._category}"
+        container.border_title = f"category › {self._category}"  # noqa: RUF001 - UI separator glyph
         with container:
             with Horizontal(id="cat-stats-row"):
                 with Vertical(classes="cat-stat"):
                     yield Static(f"Facts: [b]{len(self._all_facts)}[/b]")
                 with Vertical(classes="cat-stat"):
-                    projects = Counter(
-                        f.project or NO_PROJECT_LABEL for f in self._all_facts
-                    )
+                    projects = Counter(f.project or NO_PROJECT_LABEL for f in self._all_facts)
                     top = projects.most_common(3)
                     yield Static(
-                        "Top projects: "
-                        + ", ".join(f"[b]{p}[/b] ({c})" for p, c in top)
+                        "Top projects: " + ", ".join(f"[b]{p}[/b] ({c})" for p, c in top)
                         if top
                         else "No projects"
                     )
                 with Vertical(classes="cat-stat"):
                     if self._all_facts:
                         newest = max(self._all_facts, key=lambda f: f.created_at)
-                        yield Static(
-                            f"Newest: [b]{format_age(newest.created_at)} ago[/b]"
-                        )
+                        yield Static(f"Newest: [b]{format_age(newest.created_at)} ago[/b]")
                     else:
                         yield Static("Newest: —")
 
@@ -100,9 +97,7 @@ class CategoryDetailScreen(ModalScreen[None]):
         self._populate_table()
 
     def _schedule_filter(self) -> None:
-        self._search_timer = schedule_filter_timer(
-            self, self._search_timer, self._apply_filters
-        )
+        self._search_timer = schedule_filter_timer(self, self._search_timer, self._apply_filters)
 
     @on(Input.Changed, "#cat-search-input")
     def on_search(self, event: Input.Changed) -> None:

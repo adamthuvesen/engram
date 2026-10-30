@@ -7,8 +7,8 @@ import tempfile
 from pathlib import Path
 
 from engram import server
-from engram.llm import Completion
 from engram.core.models import Fact, FactCategory
+from engram.llm import Completion
 from engram.storage.store import AsyncFactStore, FactStore
 from tests.mcp_helpers import call_tool
 
@@ -173,9 +173,7 @@ def test_recall_limit_alias(monkeypatch):
 
 def test_recall_limit_and_max_sources_conflict(monkeypatch):
     _setup_store(monkeypatch)
-    result = asyncio.run(
-        _call("recall", query="x", format="json", limit=5, max_sources=7)
-    )
+    result = asyncio.run(_call("recall", query="x", format="json", limit=5, max_sources=7))
     parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "validation_error"

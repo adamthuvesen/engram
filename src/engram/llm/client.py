@@ -1,9 +1,10 @@
 """Typed, closeable OpenAI completion clients and compatibility helpers."""
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterator, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from pydantic import BaseModel
 
@@ -85,12 +86,10 @@ def completion_client(client: CompletionClient) -> Iterator[CompletionClient]:
 
 def provider_available() -> bool:
     client = _CURRENT_CLIENT.get()
-    return (
-        client.available if client is not None else ensure_openai_api_key() is not None
-    )
+    return client.available if client is not None else ensure_openai_api_key() is not None
 
 
-def _client() -> "AsyncOpenAI":
+def _client() -> AsyncOpenAI:
     from openai import AsyncOpenAI
 
     return AsyncOpenAI(max_retries=_MAX_RETRIES)
@@ -110,7 +109,7 @@ def _accepts_reasoning_effort(model: str) -> bool:
     return _model_name(model).lower().startswith(_REASONING_PREFIXES)
 
 
-def _extract_usage(response: "ChatCompletion") -> tuple[int | None, int | None]:
+def _extract_usage(response: ChatCompletion) -> tuple[int | None, int | None]:
     usage = getattr(response, "usage", None)
     if usage is None:
         return None, None
@@ -137,15 +136,13 @@ def _request(
     if _accepts_reasoning_effort(model):
         kwargs["reasoning_effort"] = reasoning_effort or settings.llm_reasoning_effort
     else:
-        kwargs["temperature"] = (
-            temperature if temperature is not None else settings.llm_temperature
-        )
+        kwargs["temperature"] = temperature if temperature is not None else settings.llm_temperature
     if settings.llm_service_tier:
         kwargs["service_tier"] = settings.llm_service_tier
     return kwargs
 
 
-def _message(response: "ChatCompletion") -> "ChatCompletionMessage":
+def _message(response: ChatCompletion) -> ChatCompletionMessage:
     if not response.choices:
         raise ProviderResponseError("Provider returned no completion choices.")
     choice = response.choices[0]
@@ -154,9 +151,7 @@ def _message(response: "ChatCompletion") -> "ChatCompletionMessage":
         raise ProviderResponseError("Provider refused the completion.")
     finish_reason = getattr(choice, "finish_reason", "stop")
     if finish_reason != "stop":
-        raise ProviderResponseError(
-            f"Provider completion ended with {finish_reason!r}."
-        )
+        raise ProviderResponseError(f"Provider completion ended with {finish_reason!r}.")
     if not message.content or not message.content.strip():
         raise ProviderResponseError("Provider returned empty completion text.")
     return message
@@ -173,7 +168,7 @@ class OpenAICompletionClient:
     def available(self) -> bool:
         return not self._closed and ensure_openai_api_key() is not None
 
-    def _connection(self) -> "AsyncOpenAI":
+    def _connection(self) -> AsyncOpenAI:
         if self._closed:
             raise RuntimeError("Completion client is closed.")
         if self._sdk is None:
@@ -206,9 +201,7 @@ class OpenAICompletionClient:
             text=message.content,
             input_tokens=input_tokens,
             cached_tokens=cached_tokens,
-            output_tokens=getattr(
-                getattr(response, "usage", None), "completion_tokens", None
-            ),
+            output_tokens=getattr(getattr(response, "usage", None), "completion_tokens", None),
         )
 
     async def complete_model(
@@ -233,9 +226,7 @@ class OpenAICompletionClient:
             value=value,
             input_tokens=input_tokens,
             cached_tokens=cached_tokens,
-            output_tokens=getattr(
-                getattr(response, "usage", None), "completion_tokens", None
-            ),
+            output_tokens=getattr(getattr(response, "usage", None), "completion_tokens", None),
         )
 
 
@@ -273,7 +264,7 @@ async def complete_with_usage(
             await client.aclose()
 
 
-async def complete_model_with_usage(
+async def complete_model_with_usage[T: BaseModel](
     prompt: str,
     system: str,
     response_model: type[T],
@@ -284,15 +275,13 @@ async def complete_model_with_usage(
     owned = client is None
     client = client or OpenAICompletionClient()
     try:
-        return await client.complete_model(
-            prompt, system, response_model, model, reasoning_effort
-        )
+        return await client.complete_model(prompt, system, response_model, model, reasoning_effort)
     finally:
         if owned:
             await client.aclose()
 
 
-async def complete_model(
+async def complete_model[T: BaseModel](
     prompt: str,
     system: str,
     response_model: type[T],

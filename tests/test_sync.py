@@ -11,6 +11,7 @@ embed a library, and the system git is the only required dependency.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -22,9 +23,7 @@ from engram.core.models import Fact, FactCategory
 from engram.storage.store import FactStore
 from engram.storage.sync import SYNC_STATE_FILENAME, SyncError, read_sync_state, sync
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("git") is None, reason="git binary not available"
-)
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git binary not available")
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -183,12 +182,8 @@ def test_managed_setup_commits_only_managed_files(tmp_path: Path):
     changed = _ensure_managed_repo_setup(clone, timeout=5.0)
 
     assert changed is True
-    assert "pending.jsonl" not in _git(
-        "ls-tree", "-r", "--name-only", "HEAD", cwd=clone
-    )
-    assert _git("status", "--short", "--", "pending.jsonl", cwd=clone) == (
-        "A  pending.jsonl"
-    )
+    assert "pending.jsonl" not in _git("ls-tree", "-r", "--name-only", "HEAD", cwd=clone)
+    assert _git("status", "--short", "--", "pending.jsonl", cwd=clone) == ("A  pending.jsonl")
 
 
 @pytest.mark.sync_transport
@@ -201,9 +196,7 @@ def test_sync_pushes_local_commits(tmp_path: Path):
     sync(clone)
 
     store = FactStore(data_dir=clone)
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")])
     _commit_all(clone, "add a fact")
 
     result = sync(clone)
@@ -368,18 +361,14 @@ async def test_auto_sync_loop_runs_sync_on_interval(tmp_path: Path):
         if len(calls) >= 2:
             got_two_results.set()
 
-    task = asyncio.create_task(
-        auto_sync_loop(clone, interval=0.05, timeout=5.0, on_result=collect)
-    )
+    task = asyncio.create_task(auto_sync_loop(clone, interval=0.05, timeout=5.0, on_result=collect))
 
     try:
         await asyncio.wait_for(got_two_results.wait(), timeout=2.0)
     finally:
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     assert len(calls) >= 2
     for value in calls:
@@ -406,9 +395,7 @@ async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatc
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise SyncError(code="injected", message="boom")
-        return real_sync(
-            data_dir, timeout=timeout, skip_if_compacting=skip_if_compacting
-        )
+        return real_sync(data_dir, timeout=timeout, skip_if_compacting=skip_if_compacting)
 
     monkeypatch.setattr("engram.storage.sync.sync", failing_sync)
 
@@ -422,17 +409,13 @@ async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatc
         ):
             seen_failure_and_success.set()
 
-    task = asyncio.create_task(
-        auto_sync_loop(clone, interval=0.1, timeout=5.0, on_result=collect)
-    )
+    task = asyncio.create_task(auto_sync_loop(clone, interval=0.1, timeout=5.0, on_result=collect))
     try:
         await asyncio.wait_for(seen_failure_and_success.wait(), timeout=2.0)
     finally:
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     assert any(isinstance(r, SyncError) for r in results)
     assert any(isinstance(r, dict) for r in results)
@@ -468,10 +451,8 @@ async def test_auto_sync_loop_reports_unexpected_errors(tmp_path: Path, monkeypa
         await asyncio.wait_for(got_error.wait(), timeout=1.0)
     finally:
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     assert isinstance(results[0], SyncError)
     assert results[0].code == "unexpected"
@@ -495,7 +476,5 @@ def test_managed_block_gains_newly_managed_lines(tmp_path: Path):
     assert ignored.count("*.lock") == 1
     assert "projects.local.json" in ignored
     assert _git("ls-files", "projects.local.json", cwd=clone) == ""
-    assert (
-        "maintenance_state.jsonl merge=union" in (clone / ".gitattributes").read_text()
-    )
+    assert "maintenance_state.jsonl merge=union" in (clone / ".gitattributes").read_text()
     assert _ensure_managed_repo_setup(clone, timeout=5.0) is False

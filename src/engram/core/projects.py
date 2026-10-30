@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import fcntl
 import json
-import threading
 import logging
 import os
 import subprocess
 import tempfile
+import threading
 from collections.abc import Collection
 from pathlib import Path
 
@@ -43,7 +43,7 @@ def _git(path: Path, *args: str) -> str | None:
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
@@ -86,7 +86,7 @@ def resolve_project(
     if not _looks_like_path(text):
         return normalize_project_name(text), None
 
-    path = Path(os.path.expanduser(text))
+    path = Path(text).expanduser()
     root = repo_root_for_path(path)
     if root is not None:
         return normalize_project_name(root.name), root
@@ -126,16 +126,12 @@ def load_project_roots(data_dir: Path) -> dict[str, Path]:
         return {}
     try:
         raw = json.loads(path.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         logger.warning("Ignoring unreadable %s", path)
         return {}
     if not isinstance(raw, dict):
         return {}
-    return {
-        str(name): Path(root)
-        for name, root in raw.items()
-        if isinstance(root, str) and root
-    }
+    return {str(name): Path(root) for name, root in raw.items() if isinstance(root, str) and root}
 
 
 def record_project_root(data_dir: Path, name: str, root: Path) -> None:
@@ -158,7 +154,7 @@ def record_project_root(data_dir: Path, name: str, root: Path) -> None:
                         indent=2,
                     )
                     fh.write("\n")
-                os.replace(tmp, path)
+                Path(tmp).replace(path)
             except BaseException:
                 Path(tmp).unlink(missing_ok=True)
                 raise
@@ -192,7 +188,7 @@ def find_repo_root(
     if recorded is not None and (recorded / ".git").exists():
         return recorded
     for base in search_roots:
-        base = Path(os.path.expanduser(str(base)))
+        base = Path(base).expanduser()
         found = _search_repo(base, name, _REPO_SEARCH_DEPTH)
         if found is not None:
             return found

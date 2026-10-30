@@ -11,7 +11,7 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
@@ -202,9 +202,7 @@ async def ingest(
                 if fact_id in plan.retire
                 else "replace"
             )
-            unresolved.append(
-                UnresolvedDecision(fact_id=fact_id, action=action, reason=reason)
-            )
+            unresolved.append(UnresolvedDecision(fact_id=fact_id, action=action, reason=reason))
         if not plan.drop_targets(set(applied.skipped)):
             break
         logger.warning(
@@ -300,22 +298,14 @@ class _Plan:
 
     def drop_targets(self, ids: set[str]) -> bool:
         """Remove conflicting decisions for ``ids``; True if any were set."""
-        before = (
-            sum(map(len, self.replaces.values()))
-            + len(self.retire)
-            + len(self.duplicates)
-        )
+        before = sum(map(len, self.replaces.values())) + len(self.retire) + len(self.duplicates)
         self.replaces = {
-            new: [old for old in olds if old not in ids]
-            for new, olds in self.replaces.items()
+            new: [old for old in olds if old not in ids] for new, olds in self.replaces.items()
         }
         self.retire = {i: r for i, r in self.retire.items() if i not in ids}
         self.duplicates = [i for i in self.duplicates if i not in ids]
         return (
-            sum(map(len, self.replaces.values()))
-            + len(self.retire)
-            + len(self.duplicates)
-            < before
+            sum(map(len, self.replaces.values())) + len(self.retire) + len(self.duplicates) < before
         )
 
 
@@ -401,10 +391,8 @@ def _draft_facts(
     Until replacements are validated, ``consolidates`` holds the model's raw
     ``replaces`` IDs so sibling consolidation can merge them.
     """
-    neighbor_by_hash = {
-        content_signature(fact.content): fact.id for fact in neighbors.values()
-    }
-    now = datetime.now(timezone.utc)
+    neighbor_by_hash = {content_signature(fact.content): fact.id for fact in neighbors.values()}
+    now = datetime.now(UTC)
     ttl = timedelta(days=get_settings().ephemeral_ttl_days)
     source_group_id = uuid4().hex[:12]
     drafts: list[Fact] = []
@@ -423,7 +411,7 @@ def _draft_facts(
             )
         expires_at = raw.expires_at
         if expires_at is not None and expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
+            expires_at = expires_at.replace(tzinfo=UTC)
         if expires_at is not None and expires_at <= now:
             logger.warning("Ignoring past expires_at %s", expires_at.isoformat())
             expires_at = None
@@ -435,9 +423,7 @@ def _draft_facts(
                 memory_key=_normalize_memory_key(raw.memory_key),
                 content=raw.content,
                 source=source,
-                project=project
-                if project is not None
-                else canonical_project(raw.project),
+                project=project if project is not None else canonical_project(raw.project),
                 tags=raw.tags,
                 retrieval_hints=raw.retrieval_hints,
                 created_at=now,
@@ -456,9 +442,7 @@ def _draft_facts(
     return drafts
 
 
-def _resolve_replacements(
-    drafts: list[Fact], neighbors: dict[str, Fact]
-) -> dict[str, list[str]]:
+def _resolve_replacements(drafts: list[Fact], neighbors: dict[str, Fact]) -> dict[str, list[str]]:
     """Map each draft ID to the existing IDs it validly replaces.
 
     A replaced ID must be an existing card shown to the model, in the same
@@ -517,9 +501,7 @@ def _resolve_retirements(
     return retire
 
 
-async def _queue_candidates(
-    store: AsyncFactStore, plan: _Plan
-) -> list[MemoryCandidate]:
+async def _queue_candidates(store: AsyncFactStore, plan: _Plan) -> list[MemoryCandidate]:
     review_note = ""
     if plan.retire:
         review_note = "Also suggested retiring: " + "; ".join(
@@ -530,8 +512,7 @@ async def _queue_candidates(
             **fact.model_dump(),
             replaces=plan.replaces.get(fact.id, []),
             replaces_expected={
-                old: plan.neighbors[old].updated_at
-                for old in plan.replaces.get(fact.id, [])
+                old: plan.neighbors[old].updated_at for old in plan.replaces.get(fact.id, [])
             },
             review_note=review_note,
         )
@@ -555,9 +536,9 @@ def _consolidate_batch(facts: list[Fact]) -> list[Fact]:
     deterministic pass preserves every clause when the model returns multiple
     fragments for the same card.
     """
-    by_identity: dict[
-        tuple[str | None, FactCategory, str, datetime | None], list[Fact]
-    ] = defaultdict(list)
+    by_identity: dict[tuple[str | None, FactCategory, str, datetime | None], list[Fact]] = (
+        defaultdict(list)
+    )
     seen_content: set[str] = set()
 
     for fact in facts:
@@ -585,9 +566,7 @@ def _merge_sibling_cards(cards: list[Fact]) -> Fact:
             )[:5],
             "why_store": max((card.why_store for card in cards), key=len),
             "anchors": _ordered_unique(a for card in cards for a in card.anchors),
-            "consolidates": _ordered_unique(
-                i for card in cards for i in card.consolidates
-            ),
+            "consolidates": _ordered_unique(i for card in cards for i in card.consolidates),
         }
     )
 

@@ -7,16 +7,14 @@ from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from engram.dashboard.data import format_confidence, format_timestamp
 from engram.core.models import Fact, MemoryCandidate
+from engram.dashboard.data import format_confidence, format_timestamp
 
 
 class FactDetail(Static):
     """Renders full metadata for a single fact."""
 
-    def __init__(
-        self, fact: Fact | MemoryCandidate | None = None, **kwargs: Any
-    ) -> None:
+    def __init__(self, fact: Fact | MemoryCandidate | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._fact = fact
 
@@ -31,22 +29,16 @@ class FactDetail(Static):
         yield Static("FACT DETAIL", classes="detail-title")
         yield Static(f"[b]ID:[/b]          {f.id}", classes="detail-row")
         yield Static(f"[b]Category:[/b]    {f.category.value}", classes="detail-row")
-        yield Static(
-            f"[b]Project:[/b]     {f.project or '(none)'}", classes="detail-row"
-        )
+        yield Static(f"[b]Project:[/b]     {f.project or '(none)'}", classes="detail-row")
         yield Static(
             f"[b]Confidence:[/b]  {format_confidence(f.confidence)}",
             classes="detail-row",
         )
         yield Static(f"[b]Source:[/b]      {f.source}", classes="detail-row")
-        yield Static(
-            f"[b]Evidence:[/b]    {f.evidence_kind.value}", classes="detail-row"
-        )
+        yield Static(f"[b]Evidence:[/b]    {f.evidence_kind.value}", classes="detail-row")
         if f.source_ref:
             yield Static(f"[b]Source Ref:[/b]  {f.source_ref}", classes="detail-row")
-        yield Static(
-            f"[b]Tags:[/b]        {', '.join(f.tags) or '(none)'}", classes="detail-row"
-        )
+        yield Static(f"[b]Tags:[/b]        {', '.join(f.tags) or '(none)'}", classes="detail-row")
         yield Static(
             f"[b]Created:[/b]     {format_timestamp(f.created_at)}",
             classes="detail-row",
@@ -72,9 +64,7 @@ class FactDetail(Static):
         if isinstance(f, MemoryCandidate):
             yield Static(f"[b]Status:[/b]     {f.status.value}", classes="detail-row")
             if f.review_note:
-                yield Static(
-                    f"[b]Review:[/b]     {f.review_note}", classes="detail-row"
-                )
+                yield Static(f"[b]Review:[/b]     {f.review_note}", classes="detail-row")
         yield Static("")
         yield Static("[b]Content:[/b]", classes="detail-row")
         yield Static(f.content, classes="detail-content")

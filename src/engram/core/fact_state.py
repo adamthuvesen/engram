@@ -1,6 +1,6 @@
 """Shared eligibility policy for materialized fact snapshots."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from engram.core.models import MIN_ACTIVE_CONFIDENCE, Fact, FactLifecycle
 
@@ -13,7 +13,7 @@ def is_fact_eligible(
     min_confidence: float = MIN_ACTIVE_CONFIDENCE,
 ) -> bool:
     """Return whether a fact can participate in active memory workflows."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     return (
         fact.lifecycle is FactLifecycle.active
         and fact.confidence >= min_confidence

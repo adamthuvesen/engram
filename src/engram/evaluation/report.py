@@ -99,6 +99,4 @@ def print_provenance(evidence: ReportProvenance) -> None:
     print(
         f"Selector: {evidence.selector_version}. Code revision: {evidence.code_revision or 'unavailable'}"
     )
-    print(
-        f"Working tree dirty: {evidence.working_tree_dirty}. Live: {evidence.live_status}"
-    )
+    print(f"Working tree dirty: {evidence.working_tree_dirty}. Live: {evidence.live_status}")

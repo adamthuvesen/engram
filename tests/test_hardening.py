@@ -31,13 +31,13 @@ def _make_store() -> FactStore:
 
 
 def _make_fact(**kwargs) -> Fact:
-    defaults = dict(category=FactCategory.preference, content="Test fact")
+    defaults = {"category": FactCategory.preference, "content": "Test fact"}
     defaults.update(kwargs)
     return Fact(**defaults)
 
 
 def _make_candidate(**kwargs) -> MemoryCandidate:
-    defaults = dict(category=FactCategory.preference, content="Test candidate")
+    defaults = {"category": FactCategory.preference, "content": "Test candidate"}
     defaults.update(kwargs)
     return MemoryCandidate(**defaults)
 
@@ -71,9 +71,7 @@ def test_concurrent_append_no_corruption():
     assert len(loaded) == 100
     # Each on-disk line must be parseable. The event-log layout is one meta
     # sentinel followed by one ``created`` event per fact.
-    raw_lines = [
-        line for line in store.facts_path.read_text().splitlines() if line.strip()
-    ]
+    raw_lines = [line for line in store.facts_path.read_text().splitlines() if line.strip()]
     assert len(raw_lines) == 101
     for line in raw_lines:
         json.loads(line)  # must not raise
@@ -95,9 +93,11 @@ def test_rewrite_failure_leaves_no_tmp_files():
         call_count[0] += 1
         raise OSError("Simulated fsync failure")
 
-    with patch("engram.storage.store.os.fsync", side_effect=failing_fsync):
-        with pytest.raises(OSError, match="Simulated fsync failure"):
-            store._rewrite(store.load_facts())
+    with (
+        patch("engram.storage.store.os.fsync", side_effect=failing_fsync),
+        pytest.raises(OSError, match="Simulated fsync failure"),
+    ):
+        store._rewrite(store.load_facts())
 
     tmp_files = list(store.data_dir.glob("*.tmp"))
     assert tmp_files == [], f"Orphaned tmp files: {tmp_files}"
@@ -334,9 +334,7 @@ def test_complete_model_validates_provider_parsed_payload(monkeypatch):
     )
     monkeypatch.setattr(llm, "_client", lambda: sdk)
     result = asyncio.run(
-        llm.complete_model(
-            prompt="test", system="sys", response_model=_HardeningStructuredResponse
-        )
+        llm.complete_model(prompt="test", system="sys", response_model=_HardeningStructuredResponse)
     )
     assert result == _HardeningStructuredResponse(answer=42)
     sdk.close.assert_awaited_once()
@@ -499,9 +497,7 @@ def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
                         "category": "project",
                         "tags": ["storage"],
                         "retrieval_hints": ["Engram MCP storage"],
-                        "covered_claims": [
-                            "Engram routes MCP storage through AsyncFactStore"
-                        ],
+                        "covered_claims": ["Engram routes MCP storage through AsyncFactStore"],
                         "why_store": "Documents the architecture",
                         "expires_at": None,
                     }
@@ -509,9 +505,7 @@ def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
             }
         )
 
-    monkeypatch.setattr(
-        "engram.extraction.observer.complete_model", fake_complete_model
-    )
+    monkeypatch.setattr("engram.extraction.observer.complete_model", fake_complete_model)
 
     store = _make_store()
     result = asyncio.run(import_claude_code_memories(store=AsyncFactStore(store)))

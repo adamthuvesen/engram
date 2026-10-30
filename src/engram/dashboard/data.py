@@ -3,11 +3,11 @@
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from engram.dashboard.constants import MIN_ACTIVE_CONFIDENCE, NO_PROJECT_LABEL
-from engram.core.models import CandidateStatus, Fact, FactLifecycle, MemoryCandidate
 from engram.core.fact_state import is_fact_eligible
+from engram.core.models import CandidateStatus, Fact, FactLifecycle, MemoryCandidate
+from engram.dashboard.constants import MIN_ACTIVE_CONFIDENCE, NO_PROJECT_LABEL
 from engram.storage.store import FactStore
 
 
@@ -76,20 +76,17 @@ def content_hash_for(store: FactStore) -> int:
 def load_dashboard_data(store: FactStore | None = None) -> DashboardData:
     """Load and compute all dashboard aggregations."""
     store = store or FactStore()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     data = DashboardData()
     data.content_hash = content_hash_for(store)
 
     data.all_facts = store.load_facts()
     data.candidates = store.load_candidates()
-    data.pending_candidates = [
-        c for c in data.candidates if c.status == CandidateStatus.pending
-    ]
+    data.pending_candidates = [c for c in data.candidates if c.status == CandidateStatus.pending]
 
     for fact in data.all_facts:
         is_forgotten = (
-            fact.lifecycle is FactLifecycle.forgotten
-            or fact.confidence < MIN_ACTIVE_CONFIDENCE
+            fact.lifecycle is FactLifecycle.forgotten or fact.confidence < MIN_ACTIVE_CONFIDENCE
         )
         if fact.lifecycle is FactLifecycle.superseded:
             data.superseded_count += 1
@@ -100,9 +97,7 @@ def load_dashboard_data(store: FactStore | None = None) -> DashboardData:
         elif is_fact_eligible(fact, now):
             data.active_facts.append(fact)
 
-    midnight = (now + timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     transitions = [
         midnight,
         *(
@@ -117,9 +112,7 @@ def load_dashboard_data(store: FactStore | None = None) -> DashboardData:
     data.forgotten_count = len(data.forgotten_facts)
     data.expired_count = len(data.expired_facts)
     data.pending_count = len(data.pending_candidates)
-    data.storage_bytes = (
-        store.facts_path.stat().st_size if store.facts_path.exists() else 0
-    )
+    data.storage_bytes = store.facts_path.stat().st_size if store.facts_path.exists() else 0
 
     cat_counter = Counter(f.category.value for f in data.active_facts)
     data.by_category = dict(cat_counter.most_common())
@@ -129,9 +122,7 @@ def load_dashboard_data(store: FactStore | None = None) -> DashboardData:
     data.projects = list(data.by_project.keys())
 
     data.daily_created = _daily_counts(data.all_facts, key=lambda f: f.created_at)
-    data.daily_forgotten = _daily_counts(
-        data.forgotten_facts, key=lambda f: f.updated_at
-    )
+    data.daily_forgotten = _daily_counts(data.forgotten_facts, key=lambda f: f.updated_at)
     data.daily_expired = _daily_counts(
         data.expired_facts, key=lambda f: f.expires_at or f.updated_at
     )
@@ -163,7 +154,7 @@ def format_bytes(n: int) -> str:
 
 
 def format_age(dt: datetime) -> str:
-    delta = datetime.now(timezone.utc) - dt
+    delta = datetime.now(UTC) - dt
     if delta.days > 365:
         return f"{delta.days // 365}y"
     if delta.days > 30:
@@ -206,9 +197,7 @@ def shorten_project(project: str | None) -> str:
     return project
 
 
-def _daily_counts(
-    facts: list[Fact], key: Callable[[Fact], datetime | None]
-) -> dict[str, int]:
+def _daily_counts(facts: list[Fact], key: Callable[[Fact], datetime | None]) -> dict[str, int]:
     counter: Counter[str] = Counter()
     for f in facts:
         dt = key(f)
@@ -236,8 +225,7 @@ def _compute_project_health(data: DashboardData, now: datetime) -> None:
         supersedes_ids = set()
         for f in facts:
             is_forgotten = (
-                f.lifecycle is FactLifecycle.forgotten
-                or f.confidence < MIN_ACTIVE_CONFIDENCE
+                f.lifecycle is FactLifecycle.forgotten or f.confidence < MIN_ACTIVE_CONFIDENCE
             )
             if f.lifecycle is FactLifecycle.superseded:
                 health.superseded += 1

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -77,8 +77,7 @@ def _brief_input(facts: list[Fact]) -> list[Fact]:
 
 def _brief_prompt(project: str, facts: list[Fact]) -> str:
     lines = [
-        f"- [{fact.category.value} · {format_observed(fact)}] {fact.content}"
-        for fact in facts
+        f"- [{fact.category.value} · {format_observed(fact)}] {fact.content}" for fact in facts
     ]
     return f"PROJECT: {project}\n\nMEMORY CARDS:\n" + "\n".join(lines)
 
@@ -88,8 +87,7 @@ def is_current_brief(brief: Fact, sources: list[Fact]) -> bool:
     return (
         len(sources) >= MIN_FACTS_FOR_BRIEF
         and brief.brief_source_revisions is not None
-        and brief.brief_source_revisions
-        == {fact.id: fact.updated_at for fact in sources}
+        and brief.brief_source_revisions == {fact.id: fact.updated_at for fact in sources}
     )
 
 
@@ -110,7 +108,7 @@ async def run_briefs(
     """Write or refresh briefs for every project whose facts changed."""
     settings = get_settings()
     # Taken before reading: facts written after this trigger the next refresh.
-    snapshot = max(now, datetime.now(timezone.utc))
+    snapshot = max(now, datetime.now(UTC))
     facts = await store.load_active_facts(project=project, include_global=False)
     by_project: dict[str, list[Fact]] = {}
     # Newest first (load order); more than one only after a concurrent write.
@@ -128,9 +126,7 @@ async def run_briefs(
         for name in sorted(by_project.keys() | previous.keys())
         if (len(by_project.get(name, [])) < MIN_FACTS_FOR_BRIEF and previous.get(name))
         or len(previous.get(name, [])) > 1
-        or _needs_brief(
-            by_project.get(name, []), next(iter(previous.get(name, [])), None)
-        )
+        or _needs_brief(by_project.get(name, []), next(iter(previous.get(name, [])), None))
     ]
     report.bump("projects", len(targets))
     semaphore = asyncio.Semaphore(max(1, settings.maintenance_concurrency))
@@ -140,9 +136,7 @@ async def run_briefs(
         olds = previous.get(name, [])
         if len(sources) < MIN_FACTS_FOR_BRIEF:
             changes = ChangeSet(
-                stale={
-                    old.id: "brief has too few eligible source cards" for old in olds
-                },
+                stale={old.id: "brief has too few eligible source cards" for old in olds},
                 expected={old.id: old.updated_at for old in olds},
                 reason="upkeep: unsupported project brief",
                 actor=BRIEF_SOURCE,
@@ -162,7 +156,7 @@ async def run_briefs(
                     response_model=BriefResponse,
                     reasoning_effort=settings.llm_reasoning_effort,
                 )
-            except Exception as exc:  # noqa: BLE001 - one project must not stop upkeep
+            except Exception as exc:
                 report.errors.append(f"{name}: brief failed ({exc})")
                 return
         brief = Fact(

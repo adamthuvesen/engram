@@ -21,9 +21,9 @@ changes can be detected and migrated.
 from __future__ import annotations
 
 import asyncio
-import os
 import json
-from datetime import datetime, timedelta, timezone
+import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
@@ -32,9 +32,9 @@ from pydantic import BaseModel, Field
 
 from engram.core.interfaces import WarningCode
 from engram.core.models import Durability, Fact, FactCategory
-from engram.llm import OpenAICompletionClient, completion_client
 from engram.evaluation.provider import FixtureCompletionClient
 from engram.evaluation.report import ReportProvenance, provenance_for_bytes
+from engram.llm import OpenAICompletionClient, completion_client
 from engram.recall.retriever import RecallMode, recall_with_provenance
 from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
@@ -84,9 +84,7 @@ class EvalFixture(BaseModel):
     # ``mocked_responses`` supplies (text, input_tokens, cached_tokens) tuples
     # consumed in call order; a selection call parses ``text`` as JSON. Leave
     # empty for lexical-only evals.
-    mocked_responses: list[tuple[str, int | None, int | None]] = Field(
-        default_factory=list
-    )
+    mocked_responses: list[tuple[str, int | None, int | None]] = Field(default_factory=list)
 
 
 class EvalCheck(BaseModel):
@@ -115,7 +113,7 @@ class EvalResult(BaseModel):
 
 
 def materialize_facts(specs: list[EvalFactSpec]) -> list[Fact]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     facts: list[Fact] = []
     for spec in specs:
         observed = now - timedelta(days=spec.observed_days_ago)
@@ -334,9 +332,7 @@ async def run_fixture(
     )
 
 
-def run_fixture_sync(
-    fixture: EvalFixture, *, enable_provider: bool | None = None
-) -> EvalResult:
+def run_fixture_sync(fixture: EvalFixture, *, enable_provider: bool | None = None) -> EvalResult:
     return asyncio.run(run_fixture(fixture, enable_provider=enable_provider))
 
 

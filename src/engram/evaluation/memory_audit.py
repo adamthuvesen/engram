@@ -23,13 +23,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from engram.core.models import MIN_ACTIVE_CONFIDENCE, Fact, FactCategory
 from engram.evaluation.report import (
     ReportProvenance,
-    report_provenance,
     print_provenance,
+    report_provenance,
 )
 from engram.maintenance.memory_audit import audit_facts
-from engram.core.models import Fact, FactCategory, MIN_ACTIVE_CONFIDENCE
 
 DATASET_PATH = Path(__file__).parent / "datasets" / "memory_audit_eval_dataset.json"
 
@@ -192,9 +192,7 @@ def main() -> int:
     if summary.new.precision < MIN_NEW_PRECISION:
         failures.append(f"new precision below floor {_pct(MIN_NEW_PRECISION)}")
     if summary.new.burden_multiplier > MAX_BURDEN_MULTIPLIER:
-        failures.append(
-            f"reviewer burden above {MAX_BURDEN_MULTIPLIER:.2f}x expected issues"
-        )
+        failures.append(f"reviewer burden above {MAX_BURDEN_MULTIPLIER:.2f}x expected issues")
 
     if failures:
         print("")

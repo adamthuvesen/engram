@@ -25,9 +25,7 @@ class TimelineScreen(Container):
         with Horizontal(id="sparkline-row"):
             with Vertical(classes="spark-panel"):
                 yield Label("7-DAY ACTIVITY", classes="panel-title")
-                yield Sparkline(
-                    self._data.activity_7d or [0], summary_function=max, id="spark-7d"
-                )
+                yield Sparkline(self._data.activity_7d or [0], summary_function=max, id="spark-7d")
             with Vertical(classes="spark-panel"):
                 yield Label("30-DAY ACTIVITY", classes="panel-title")
                 yield Sparkline(
@@ -35,12 +33,8 @@ class TimelineScreen(Container):
                 )
             with Vertical(classes="spark-panel"):
                 yield Label("SUMMARY", classes="panel-title")
-                total_7d = (
-                    int(sum(self._data.activity_7d)) if self._data.activity_7d else 0
-                )
-                total_30d = (
-                    int(sum(self._data.activity_30d)) if self._data.activity_30d else 0
-                )
+                total_7d = int(sum(self._data.activity_7d)) if self._data.activity_7d else 0
+                total_30d = int(sum(self._data.activity_30d)) if self._data.activity_30d else 0
                 yield Static(f"Last 7 days:  [b]{total_7d}[/b] facts created")
                 yield Static(f"Last 30 days: [b]{total_30d}[/b] facts created")
                 if total_7d > 0 and total_30d > 0:

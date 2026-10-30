@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from collections.abc import Callable, Coroutine
-from typing import Any, Sequence, TextIO
+from collections.abc import Callable, Coroutine, Sequence
+from typing import Any, TextIO
 
 from engram.core.config import (
     DEFAULT_HTTP_HOST,
@@ -14,43 +14,91 @@ from engram.core.config import (
     configure_logging,
 )
 from engram.core.interfaces import Envelope, validation_error
-from engram.runtime import Runtime
+from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
 from engram.maintenance.upkeep import ALL_STEPS
 from engram.operations import (
-    RECALL_CONTEXT_MODES,
-    RECALL_MODES,
     EXIT_DOCTOR_ERROR,
     EXIT_NOT_FOUND,
     EXIT_OK,
     EXIT_RUNTIME,
     EXIT_VALIDATION,
+    RECALL_CONTEXT_MODES,
+    RECALL_MODES,
     OperationResult,
+)
+from engram.operations import (
     approve_candidates as op_approve_candidates,
+)
+from engram.operations import (
     audit_memories as op_audit_memories,
+)
+from engram.operations import (
     correct_memory as op_correct_memory,
+)
+from engram.operations import (
     doctor as op_doctor,
+)
+from engram.operations import (
     edit_fact as op_edit_fact,
+)
+from engram.operations import (
     forget as op_forget,
+)
+from engram.operations import (
     import_memories as op_import_memories,
+)
+from engram.operations import (
     inspect as op_inspect,
+)
+from engram.operations import (
     list_candidates as op_list_candidates,
+)
+from engram.operations import (
     mark_stale as op_mark_stale,
+)
+from engram.operations import (
     memory_stats as op_memory_stats,
+)
+from engram.operations import (
     merge_memories as op_merge_memories,
+)
+from engram.operations import (
     purge as op_purge,
+)
+from engram.operations import (
     recall as op_recall,
+)
+from engram.operations import (
     recall_context as op_recall_context,
+)
+from engram.operations import (
     recall_stats as op_recall_stats,
+)
+from engram.operations import (
     recall_trace as op_recall_trace,
+)
+from engram.operations import (
     reject_candidates as op_reject_candidates,
+)
+from engram.operations import (
     remember as op_remember,
+)
+from engram.operations import (
     rename_project as op_rename_project,
+)
+from engram.operations import (
     suggest_memories as op_suggest_memories,
+)
+from engram.operations import (
     sync as op_sync,
+)
+from engram.operations import (
     unmark_stale as op_unmark_stale,
+)
+from engram.operations import (
     upkeep as op_upkeep,
 )
-from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
+from engram.runtime import Runtime
 
 CommandHandler = Callable[[argparse.Namespace], Coroutine[Any, Any, OperationResult]]
 
@@ -66,11 +114,7 @@ ALIASES = {
 
 def _emit(result: OperationResult, *, as_json: bool, out: TextIO | None = None) -> int:
     target = (
-        out
-        if out is not None
-        else sys.stderr
-        if result.exit_code and not as_json
-        else sys.stdout
+        out if out is not None else sys.stderr if result.exit_code and not as_json else sys.stdout
     )
     target.write(result.render(as_json=as_json) + "\n")
     target.flush()
@@ -94,8 +138,7 @@ def _parse_edits(values: list[str] | None) -> dict[str, str] | None:
         edits[candidate_id] = content
     if invalid:
         raise ValueError(
-            "--edit values must use id=new content format; invalid: "
-            + ", ".join(invalid)
+            "--edit values must use id=new content format; invalid: " + ", ".join(invalid)
         )
     return edits
 
@@ -320,9 +363,7 @@ CANONICAL_COMMANDS = frozenset(HANDLERS) - frozenset(ALIASES)
 CLI_SUBCOMMANDS = frozenset(HANDLERS) | {"serve"}
 
 
-async def _run_handler(
-    handler: CommandHandler, args: argparse.Namespace
-) -> OperationResult:
+async def _run_handler(handler: CommandHandler, args: argparse.Namespace) -> OperationResult:
     runtime = Runtime()
     try:
         with runtime.bind():
@@ -399,9 +440,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd")
 
     _add_remember_args(sub.add_parser("remember", help="Store memories"))
-    _add_remember_args(
-        sub.add_parser("suggest-memories", help="Queue memory candidates")
-    )
+    _add_remember_args(sub.add_parser("suggest-memories", help="Queue memory candidates"))
 
     p_list = sub.add_parser("list-candidates", help="Browse memory candidates")
     p_list.add_argument("--status", default="pending")
@@ -436,9 +475,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_trace_args(sub.add_parser("recall-trace", help="Run recall debug trace"))
     _add_trace_args(sub.add_parser("trace", help="Alias for recall-trace"))
 
-    p_context = sub.add_parser(
-        "recall-context", help="Recall cards, an answer, or a project brief"
-    )
+    p_context = sub.add_parser("recall-context", help="Recall cards, an answer, or a project brief")
     p_context.add_argument("query", nargs="?", default="")
     p_context.add_argument("--project", default=None)
     p_context.add_argument("--mode", choices=RECALL_CONTEXT_MODES, default="cards")
@@ -512,9 +549,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_recall_stats.add_argument("--include-records", action="store_true")
     _add_json_flag(p_recall_stats)
 
-    p_upkeep = sub.add_parser(
-        "upkeep", help="Consolidate, verify, and brief memories now"
-    )
+    p_upkeep = sub.add_parser("upkeep", help="Consolidate, verify, and brief memories now")
     p_upkeep.add_argument("--project", default=None)
     p_upkeep.add_argument(
         "--step",

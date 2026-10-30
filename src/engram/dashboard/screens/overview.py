@@ -45,9 +45,7 @@ class OverviewScreen(VerticalScroll):
 
         with Vertical(id="activity-panel"):
             yield Label("activity [dim]· last 30 days[/]", classes="panel-title")
-            spark_data = (
-                d.activity_30d if any(v > 0 for v in d.activity_30d) else [0, 0.1]
-            )
+            spark_data = d.activity_30d if any(v > 0 for v in d.activity_30d) else [0, 0.1]
             yield Sparkline(spark_data, summary_function=max)
             total_30d = int(sum(d.activity_30d))
             total_7d = int(sum(d.activity_7d))
@@ -77,14 +75,10 @@ class OverviewScreen(VerticalScroll):
             variables = self.app.get_css_variables()
             return variables.get(var_name, "#7c87f5")
         except Exception:
-            logger.debug(
-                "Unable to read dashboard theme color %s", var_name, exc_info=True
-            )
+            logger.debug("Unable to read dashboard theme color %s", var_name, exc_info=True)
             return "#7c87f5"
 
-    def _bar_options(
-        self, dist: dict[str, int], prefix: str, color_var: str
-    ) -> list[Option]:
+    def _bar_options(self, dist: dict[str, int], prefix: str, color_var: str) -> list[Option]:
         color = self._get_theme_color(color_var)
         if not dist:
             return [Option("[dim](empty)[/]")]
@@ -102,9 +96,7 @@ class OverviewScreen(VerticalScroll):
         if not isinstance(focused, OptionList):
             return
 
-        if event.key == "up" and (
-            focused.highlighted is None or focused.highlighted == 0
-        ):
+        if event.key == "up" and (focused.highlighted is None or focused.highlighted == 0):
             event.prevent_default()
             app = cast("EngramDashboard", self.app)
             app.focus_nav()

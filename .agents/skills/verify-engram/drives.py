@@ -110,9 +110,7 @@ def expect(condition: bool, message: str) -> None:
 
 async def seed(data: Path) -> None:
     store = AsyncFactStore(await run_sync(FactStore, data))
-    await store.append_facts(
-        [Fact(id=i, project=p, category=c, content=t) for i, p, c, t in SEEDS]
-    )
+    await store.append_facts([Fact(id=i, project=p, category=c, content=t) for i, p, c, t in SEEDS])
 
 
 def ids(envelope: dict[str, Any]) -> set[str]:
@@ -202,9 +200,7 @@ def serve_fixture(data: Path, responses: Path) -> None:
         [(json.dumps(r), None, None) for r in json.loads(responses.read_text())]
     )
     settings = Settings(data_dir=data, maintenance_enabled=False, sync_enabled=False)
-    create_mcp(runtime=Runtime(settings=settings, provider=fixture)).run(
-        show_banner=False
-    )
+    create_mcp(runtime=Runtime(settings=settings, provider=fixture)).run(show_banner=False)
 
 
 async def drive_memory(ctx: Context) -> str:
@@ -221,13 +217,9 @@ async def drive_memory(ctx: Context) -> str:
     )
 
     async def call(client: Client[Any], tool: str, **args: Any) -> dict[str, Any]:
-        result = await client.call_tool(
-            tool, {**args, "format": "json"}, raise_on_error=False
-        )
+        result = await client.call_tool(tool, {**args, "format": "json"}, raise_on_error=False)
         envelope = result.structured_content or {}
-        ctx.log(
-            f"mcp-{tool}", json.dumps({"args": args, "envelope": envelope}, indent=2)
-        )
+        ctx.log(f"mcp-{tool}", json.dumps({"args": args, "envelope": envelope}, indent=2))
         return envelope
 
     async with Client(transport, timeout=15) as client:
@@ -243,20 +235,14 @@ async def drive_memory(ctx: Context) -> str:
             f"remember: expected one new card, got {made.get('status')} {sorted(new)}",
         )
         fact_id = new.pop()
-        found = ids(
-            await call(client, "recall", query="heron checklist", project="gamma")
-        )
+        found = ids(await call(client, "recall", query="heron checklist", project="gamma"))
         expect(
             fact_id in found,
             f"recall after remember: expected {fact_id}, got {sorted(found)}",
         )
         gone = await call(client, "forget", fact_id=fact_id)
-        expect(
-            gone.get("status") == "ok", f"forget: expected ok, got {gone.get('status')}"
-        )
-        after = ids(
-            await call(client, "recall", query="heron checklist", project="gamma")
-        )
+        expect(gone.get("status") == "ok", f"forget: expected ok, got {gone.get('status')}")
+        after = ids(await call(client, "recall", query="heron checklist", project="gamma"))
         expect(fact_id not in after, f"recall after forget: {fact_id} still returned")
         queued = await call(
             client,
@@ -306,9 +292,7 @@ async def drive_dashboard(ctx: Context) -> str:
     from engram.dashboard.app import SECTIONS, EngramDashboard
 
     await seed(ctx.data)
-    with settings_scope(
-        Settings(data_dir=ctx.data, maintenance_enabled=False, sync_enabled=False)
-    ):
+    with settings_scope(Settings(data_dir=ctx.data, maintenance_enabled=False, sync_enabled=False)):
         app = EngramDashboard()
         async with app.run_test(size=(140, 40)) as pilot:
 
@@ -328,9 +312,7 @@ async def drive_dashboard(ctx: Context) -> str:
             await pilot.press("3")
             await settle()
             table = app.query_one("#facts-table", DataTable)
-            rows = [
-                " ".join(map(str, table.get_row_at(i))) for i in range(table.row_count)
-            ]
+            rows = [" ".join(map(str, table.get_row_at(i))) for i in range(table.row_count)]
             expect(
                 all(any(s[0] in r for r in rows) for s in SEEDS),
                 f"facts table: expected all seeded ids, got {rows}",
@@ -345,9 +327,7 @@ async def drive_dashboard(ctx: Context) -> str:
             await pilot.press("y")
             await settle()
             app.save_screenshot(str(ctx.evidence / "facts-after-forget.svg"))
-            rows = [
-                " ".join(map(str, table.get_row_at(i))) for i in range(table.row_count)
-            ]
+            rows = [" ".join(map(str, table.get_row_at(i))) for i in range(table.row_count)]
             expect(
                 not any("verifyfact02" in r for r in rows),
                 f"facts table after forget: verifyfact02 still shown: {rows}",
@@ -367,8 +347,7 @@ async def drive_package(ctx: Context) -> str:
         timeout=120,
     )
     expect(
-        result.returncode == 0
-        and "passed: installed wheel transports and assets" in result.stdout,
+        result.returncode == 0 and "passed: installed wheel transports and assets" in result.stdout,
         f"package: expected installed wheel smoke to pass, got exit {result.returncode}: {result.stdout[-400:]}",
     )
     return "wheel builds, installs outside the checkout, and its console serves CLI, stdio, HTTP, and dashboard assets"

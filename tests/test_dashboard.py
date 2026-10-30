@@ -1,13 +1,14 @@
 """Tests for the Textual dashboard — data layer, filtering, actions, and UI."""
 
 import asyncio
-from datetime import datetime, timedelta, timezone
 import threading
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from textual.widgets import DataTable, Static, TabbedContent
 
 from engram.core.config import get_settings
+from engram.core.models import CandidateStatus, Fact, FactCategory, MemoryCandidate
 from engram.dashboard.app import EngramDashboard
 from engram.dashboard.constants import MIN_ACTIVE_CONFIDENCE, NO_PROJECT_LABEL
 from engram.dashboard.data import (
@@ -24,9 +25,7 @@ from engram.dashboard.tables import (
     next_sort_state,
     short_cell,
 )
-from engram.core.models import CandidateStatus, Fact, FactCategory, MemoryCandidate
 from engram.storage.store import FactStore
-
 
 # ── Fixtures ──
 
@@ -47,14 +46,10 @@ def _fact(
     confidence=1.0,
     **kw,
 ):
-    return Fact(
-        category=category, content=content, project=project, confidence=confidence, **kw
-    )
+    return Fact(category=category, content=content, project=project, confidence=confidence, **kw)
 
 
-def _candidate(
-    content="suggestion", project="engram", status=CandidateStatus.pending, **kw
-):
+def _candidate(content="suggestion", project="engram", status=CandidateStatus.pending, **kw):
     return MemoryCandidate(
         category=FactCategory.project,
         content=content,
@@ -94,7 +89,7 @@ def test_forgotten_facts_classified(store):
 
 
 def test_expired_facts_classified(store):
-    past = datetime.now(timezone.utc) - timedelta(days=1)
+    past = datetime.now(UTC) - timedelta(days=1)
     store.append_facts([_fact("active"), _fact("old", expires_at=past)])
     data = load_dashboard_data(store)
     assert data.active_count == 1
@@ -208,22 +203,22 @@ def test_content_hash_stable_when_unchanged(store):
 
 
 def test_format_age_days():
-    dt = datetime.now(timezone.utc) - timedelta(days=5)
+    dt = datetime.now(UTC) - timedelta(days=5)
     assert format_age(dt) == "5d"
 
 
 def test_format_age_hours():
-    dt = datetime.now(timezone.utc) - timedelta(hours=3)
+    dt = datetime.now(UTC) - timedelta(hours=3)
     assert format_age(dt) == "3h"
 
 
 def test_format_age_minutes():
-    dt = datetime.now(timezone.utc) - timedelta(minutes=15)
+    dt = datetime.now(UTC) - timedelta(minutes=15)
     assert format_age(dt) == "15m"
 
 
 def test_format_age_now():
-    dt = datetime.now(timezone.utc) - timedelta(seconds=5)
+    dt = datetime.now(UTC) - timedelta(seconds=5)
     assert format_age(dt) == "now"
 
 
@@ -236,7 +231,7 @@ def test_format_bytes_zero():
 
 
 def test_format_timestamp_includes_utc():
-    dt = datetime(2026, 3, 15, 14, 30, tzinfo=timezone.utc)
+    dt = datetime(2026, 3, 15, 14, 30, tzinfo=UTC)
     result = format_timestamp(dt)
     assert "2026-03-15 14:30 UTC" in result
     assert "ago)" in result
@@ -442,7 +437,7 @@ async def test_dashboard_refreshes_on_expiry_without_file_changes(store, monkeyp
     from engram.dashboard import app as app_module
     from engram.dashboard import data as data_module
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     store.append_facts([_fact("expires soon", expires_at=now + timedelta(minutes=1))])
     app = EngramDashboard()
     async with app.run_test(size=(140, 40)):
@@ -507,9 +502,7 @@ async def test_timeline_uses_required_plotext_widget(store):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["startup", "refresh", "forget", "undo"])
-async def test_dashboard_responds_while_store_lock_is_held(
-    store, monkeypatch, operation
-):
+async def test_dashboard_responds_while_store_lock_is_held(store, monkeypatch, operation):
     from engram.storage.transactions import locked_store
 
     fact = _fact("locked store")
@@ -586,9 +579,7 @@ async def test_dashboard_responds_while_store_lock_is_held(
 
 
 @pytest.mark.anyio
-async def test_failed_refresh_preserves_snapshot_and_retries_unchanged_hash(
-    store, monkeypatch
-):
+async def test_failed_refresh_preserves_snapshot_and_retries_unchanged_hash(store, monkeypatch):
     from engram.dashboard import app as app_module
 
     store.append_facts([_fact("first")])
@@ -646,9 +637,7 @@ async def test_startup_failure_can_retry(store, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_partial_forget_and_failed_undo_keep_successful_undo_entries(
-    store, monkeypatch
-):
+async def test_partial_forget_and_failed_undo_keep_successful_undo_entries(store, monkeypatch):
     first, second = _fact("first"), _fact("second")
     store.append_facts([first, second])
     original_forget = FactStore.forget
@@ -716,9 +705,7 @@ async def test_forget_keeps_undo_when_snapshot_reload_fails(store, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_requested_undo_survives_expiry_while_refresh_owns_storage(
-    store, monkeypatch
-):
+async def test_requested_undo_survives_expiry_while_refresh_owns_storage(store, monkeypatch):
     from engram.dashboard import app as app_module
 
     fact = _fact("queued undo")
@@ -775,9 +762,7 @@ async def test_requested_undo_survives_expiry_while_refresh_owns_storage(
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("cancel_before_start", [True, False])
-async def test_cancelled_undo_does_not_prevent_expiry(
-    store, monkeypatch, cancel_before_start
-):
+async def test_cancelled_undo_does_not_prevent_expiry(store, monkeypatch, cancel_before_start):
     from textual.worker import WorkerCancelled
 
     fact = _fact("cancelled undo")

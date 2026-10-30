@@ -28,7 +28,7 @@ Regenerate references after changing either surface or Settings descriptions.
 | Use the shared lifecycle eligibility policy. | `src/engram/core/fact_state.py`, `tests/test_storage_transactions.py::test_required_dependencies_must_be_eligible_without_revision_change` | 2026-11-04 |
 | Use public storage APIs and async facades. | `src/engram/tooling/boundaries.py`, `tests/test_tooling.py::test_boundary_rejects_private_policies_and_sync_async_bypasses` | 2026-11-04 |
 | Keep runtime resource ownership explicit. | `src/engram/runtime.py`, `tests/test_runtime.py::test_provider_closes_when_final_sync_fails` | 2026-11-04 |
-| Type every module strictly. | `pyproject.toml::strict`, run by `src/engram/tooling/verify.py::commands` | 2026-11-06 |
+| Type every module strictly. | `pyproject.toml::typeCheckingMode`, run by `src/engram/tooling/verify.py::commands` | 2026-11-06 |
 | Keep generated references aligned with source. | `src/engram/tooling/reference.py`, `tests/test_tooling.py::test_generated_references_are_current` | 2026-11-04 |
 | Tests never call a live provider. | `tests/conftest.py`, `tests/test_tooling.py::test_tests_cannot_reach_live_provider` | 2026-07-16 |
 | Live evals refuse without `ENGRAM_EVAL_PROVIDER=1`. | `src/engram/evaluation/extraction_quality.py::extract_live_provider_outputs`, `tests/test_extraction_quality_evals.py::test_live_extraction_refuses_without_approval` | 2026-11-06 |

@@ -10,7 +10,7 @@ uv run --locked python -m engram.evaluation.recall
 ```
 
 The eval command uses fictional committed data and a disabled provider. It does not read your memory store.
-Python 3.13 and 3.14 run the same verification profiles in CI.
+Python 3.14 runs the verification profiles in CI.
 
 ## Run Engram
 

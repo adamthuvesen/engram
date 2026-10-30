@@ -5,7 +5,7 @@ import json
 import tempfile
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -18,9 +18,9 @@ from engram.core.models import (
     RecallRecord,
 )
 from engram.storage.store import (
-    StoreIntegrityError,
     AsyncFactStore,
     FactStore,
+    StoreIntegrityError,
     format_facts_for_llm,
 )
 
@@ -40,9 +40,7 @@ def test_empty_store():
 def test_append_and_load():
     store = _make_store()
     facts = [
-        Fact(
-            category=FactCategory.preference, content="User prefers polars over pandas"
-        ),
+        Fact(category=FactCategory.preference, content="User prefers polars over pandas"),
         Fact(category=FactCategory.personal_info, content="User works on AI team"),
     ]
     store.append_facts(facts)
@@ -302,7 +300,7 @@ def test_update_fact():
 
 def test_stats():
     store = _make_store()
-    past = datetime.now(timezone.utc) - timedelta(days=1)
+    past = datetime.now(UTC) - timedelta(days=1)
     store.append_facts(
         [
             Fact(category=FactCategory.preference, content="Pref 1"),
@@ -474,9 +472,7 @@ def test_candidate_rejection_is_idempotent_and_does_not_reject_approved():
 
 def test_approving_superseding_candidate_removes_old_fact_from_active_recall():
     store = _make_store()
-    old_fact = Fact(
-        id="old123", category=FactCategory.preference, content="User prefers pandas"
-    )
+    old_fact = Fact(id="old123", category=FactCategory.preference, content="User prefers pandas")
     store.append_facts([old_fact])
     candidate = MemoryCandidate(
         id="cand789",
@@ -537,9 +533,7 @@ def test_search_prioritizes_matching_content():
         ]
     )
 
-    hits = store.search_facts(
-        "What dataframe library does the user prefer? polars", limit=2
-    )
+    hits = store.search_facts("What dataframe library does the user prefer? polars", limit=2)
 
     assert len(hits) <= 2
     assert "polars" in hits[0].fact.content.lower()
@@ -577,9 +571,7 @@ def test_search_bigram_and_normalization():
                 category=FactCategory.convention,
                 content="The team uses coding_style based on PEP8",
             ),
-            Fact(
-                category=FactCategory.preference, content="Unrelated fact about pizza"
-            ),
+            Fact(category=FactCategory.preference, content="Unrelated fact about pizza"),
         ]
     )
 
@@ -680,9 +672,7 @@ async def test_async_store_write_does_not_block_unrelated_coroutine():
     start = time.perf_counter()
 
     append_task = asyncio.create_task(
-        async_store.append_facts(
-            [Fact(category=FactCategory.workflow, content="Async append")]
-        )
+        async_store.append_facts([Fact(category=FactCategory.workflow, content="Async append")])
     )
     await asyncio.sleep(0.02)
     elapsed = time.perf_counter() - start
@@ -700,9 +690,7 @@ async def test_async_concurrent_appends_keep_complete_parseable_lines():
 
     await asyncio.gather(
         *[
-            async_store.append_facts(
-                [Fact(category=FactCategory.workflow, content=f"Fact {i}")]
-            )
+            async_store.append_facts([Fact(category=FactCategory.workflow, content=f"Fact {i}")])
             for i in range(30)
         ]
     )
@@ -727,8 +715,7 @@ async def test_async_concurrent_rewrites_leave_parseable_file_and_no_tmp_files()
     store = _make_store()
     async_store = AsyncFactStore(store)
     facts = [
-        Fact(id=f"fact{i}", category=FactCategory.workflow, content=f"Fact {i}")
-        for i in range(10)
+        Fact(id=f"fact{i}", category=FactCategory.workflow, content=f"Fact {i}") for i in range(10)
     ]
     store.append_facts(facts)
 

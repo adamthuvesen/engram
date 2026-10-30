@@ -14,12 +14,12 @@ a real, deterministic recall number see ``engram.evaluation.recall``.
 Run: uv run --locked python -m engram.evaluation.tiers
 """
 
-from tempfile import TemporaryDirectory
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from engram.core.models import Fact, FactCategory
-from engram.evaluation.report import report_provenance, print_provenance
+from engram.evaluation.report import print_provenance, report_provenance
 from engram.recall.retriever import _relevant_hits
 from engram.storage.store import FactStore
 
@@ -27,7 +27,7 @@ from engram.storage.store import FactStore
 # Seed data — realistic cross-project facts
 # ---------------------------------------------------------------------------
 
-NOW = datetime.now(timezone.utc)
+NOW = datetime.now(UTC)
 WEEK_AGO = NOW - timedelta(days=3)
 MONTH_AGO = NOW - timedelta(days=35)
 
@@ -63,9 +63,7 @@ FACTS = [
         FactCategory.personal_info,
         tags=["role"],
     ),
-    _fact(
-        "Alex Chen's manager is Jordan Kim", FactCategory.personal_info, tags=["team"]
-    ),
+    _fact("Alex Chen's manager is Jordan Kim", FactCategory.personal_info, tags=["team"]),
     _fact(
         "Alex Chen works remotely from Portland",
         FactCategory.personal_info,
@@ -86,28 +84,16 @@ FACTS = [
         tags=["python", "ruff"],
     ),
     _fact("The user prefers uv for Python package management", tags=["python", "uv"]),
-    _fact(
-        "The user prefers concise commit messages in conventional format", tags=["git"]
-    ),
-    _fact(
-        "The user prefers TypeScript for frontend work", tags=["typescript", "frontend"]
-    ),
-    _fact(
-        "The user prefers Tailwind CSS over styled-components", tags=["css", "frontend"]
-    ),
-    _fact(
-        "The user prefers FastAPI over Flask for Python APIs", tags=["python", "api"]
-    ),
-    _fact(
-        "The user dislikes verbose AI-generated comments in code", tags=["code-style"]
-    ),
+    _fact("The user prefers concise commit messages in conventional format", tags=["git"]),
+    _fact("The user prefers TypeScript for frontend work", tags=["typescript", "frontend"]),
+    _fact("The user prefers Tailwind CSS over styled-components", tags=["css", "frontend"]),
+    _fact("The user prefers FastAPI over Flask for Python APIs", tags=["python", "api"]),
+    _fact("The user dislikes verbose AI-generated comments in code", tags=["code-style"]),
     _fact(
         "The user prefers explicit error handling over silent failures",
         tags=["code-style"],
     ),
-    _fact(
-        "The user prefers dark mode terminals with Anthropic theme", tags=["terminal"]
-    ),
+    _fact("The user prefers dark mode terminals with Anthropic theme", tags=["terminal"]),
     _fact("The user prefers short PR descriptions with bullet points", tags=["github"]),
     _fact(
         "The user prefers vitest over jest for TypeScript testing",
@@ -342,9 +328,7 @@ FACTS = [
         FactCategory.event,
         tags=["tooling"],
     ),
-    _fact(
-        "Mobile release freeze starts 2026-03-05", FactCategory.event, tags=["release"]
-    ),
+    _fact("Mobile release freeze starts 2026-03-05", FactCategory.event, tags=["release"]),
     # Workflow (8)
     _fact(
         "Use 'uv run pytest tests/ -v' to run engram tests",
@@ -577,12 +561,9 @@ def main() -> None:
 
         print(
             f"Seeded store with {len(FACTS)} facts across "
-            f"{len(set(f.project for f in FACTS if f.project))} projects\n"
+            f"{len({f.project for f in FACTS if f.project})} projects\n"
         )
-        print(
-            f"{'Query':<62} {'Type':<14} {'Hits':>4} {'Cards':>5} {'Top':>6} "
-            f"{'Cov':>5}  LLM"
-        )
+        print(f"{'Query':<62} {'Type':<14} {'Hits':>4} {'Cards':>5} {'Top':>6} {'Cov':>5}  LLM")
         print("-" * 104)
 
         selection_calls = 0

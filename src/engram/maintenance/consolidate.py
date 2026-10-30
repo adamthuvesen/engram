@@ -23,7 +23,7 @@ import logging
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict
 
@@ -197,9 +197,7 @@ def _with_fact_ids(
             "cards": [
                 card.model_copy(
                     update={
-                        "source_ids": [
-                            handles.get(handle, handle) for handle in card.source_ids
-                        ]
+                        "source_ids": [handles.get(handle, handle) for handle in card.source_ids]
                     }
                 )
                 for card in response.cards
@@ -241,14 +239,10 @@ def _cluster_prompt(cluster: list[Fact], scope: str) -> str:
 
 def _source_uses(response: ConsolidationResponse) -> Counter[str]:
     """How many output cards each input id feeds; more than one is a split."""
-    return Counter(
-        source_id for card in response.cards for source_id in set(card.source_ids)
-    )
+    return Counter(source_id for card in response.cards for source_id in set(card.source_ids))
 
 
-def _is_verbatim(
-    card: ConsolidatedCard, by_id: dict[str, Fact], uses: Counter[str]
-) -> bool:
+def _is_verbatim(card: ConsolidatedCard, by_id: dict[str, Fact], uses: Counter[str]) -> bool:
     """True when ``card`` is one unsplit source card with its content unchanged."""
     if len(card.source_ids) != 1 or uses[card.source_ids[0]] != 1:
         return False
@@ -306,8 +300,7 @@ def response_problem(cluster: list[Fact], response: ConsolidationResponse) -> st
     too_long = [
         f"{card.memory_key} ({len(card.content.strip())})"
         for card in response.cards
-        if len(card.content.strip()) > MAX_CARD_CHARS
-        and not _is_verbatim(card, by_id, uses)
+        if len(card.content.strip()) > MAX_CARD_CHARS and not _is_verbatim(card, by_id, uses)
     ]
     if too_long:
         problems.append(
@@ -340,7 +333,7 @@ async def consolidate_cluster(
                 response_model=ConsolidationResponse,
                 reasoning_effort=settings.llm_reasoning_effort,
             )
-        except Exception as exc:  # noqa: BLE001 - one bad cluster must not stop upkeep
+        except Exception as exc:
             problem = f"LLM call failed: {exc}"
             logger.warning("consolidate %s attempt %d: %s", scope, attempt + 1, exc)
             continue
@@ -353,9 +346,7 @@ async def consolidate_cluster(
 
 
 def _unique(values: list[str], limit: int) -> list[str]:
-    return list(dict.fromkeys(value.strip() for value in values if value.strip()))[
-        :limit
-    ]
+    return list(dict.fromkeys(value.strip() for value in values if value.strip()))[:limit]
 
 
 def _same_text(left: str, right: str) -> bool:
@@ -407,9 +398,7 @@ def plan_cluster_changes(
             if card.durability is Durability.ephemeral and source.expires_at is None:
                 fields["expires_at"] = now + ephemeral_ttl
             edits = {
-                name: value
-                for name, value in fields.items()
-                if getattr(source, name) != value
+                name: value for name, value in fields.items() if getattr(source, name) != value
             }
             if edits:
                 changes.edits[source.id] = edits
@@ -439,9 +428,7 @@ def plan_cluster_changes(
             created_at=now,
             updated_at=now,
             observed_at=observed_at,
-            first_observed_at=(
-                oldest_claim_at if oldest_claim_at < observed_at else None
-            ),
+            first_observed_at=(oldest_claim_at if oldest_claim_at < observed_at else None),
             expires_at=expires_at,
             tags=tags,
             retrieval_hints=hints,
@@ -449,9 +436,7 @@ def plan_cluster_changes(
             supersedes=primary.id,
             consolidates=list(
                 dict.fromkeys(
-                    fact_id
-                    for source in sources
-                    for fact_id in [source.id, *source.consolidates]
+                    fact_id for source in sources for fact_id in [source.id, *source.consolidates]
                 )
             ),
             evidence_kind=primary.evidence_kind,
@@ -490,7 +475,7 @@ async def run_consolidation(
     """Consolidate every scope (or just ``project``) that changed."""
     settings = get_settings()
     # Taken before reading: anything written after this is seen next run.
-    snapshot = datetime.now(timezone.utc)
+    snapshot = datetime.now(UTC)
     index = await store.search_index()
     state = await run_sync(load_state, store.data_dir)
     by_scope: dict[str | None, list[Fact]] = {}

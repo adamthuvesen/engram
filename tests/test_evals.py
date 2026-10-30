@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from engram.core.interfaces import WarningCode
+from engram.core.models import FactCategory
 from engram.recall.evals import (
     EvalBudget,
     EvalFactSpec,
@@ -12,9 +14,6 @@ from engram.recall.evals import (
     representative_fixtures,
     run_fixture_sync,
 )
-from engram.core.interfaces import WarningCode
-from engram.core.models import FactCategory
-
 
 # ---------------------------------------------------------------------------
 # 7.6: passing evals
@@ -114,9 +113,7 @@ def _answer_mode_fixture(name: str, budget: EvalBudget) -> EvalFixture:
 
 
 def test_eval_fails_on_tier_budget_exceeded():
-    result = run_fixture_sync(
-        _answer_mode_fixture("tier_budget", EvalBudget(max_tier=0))
-    )
+    result = run_fixture_sync(_answer_mode_fixture("tier_budget", EvalBudget(max_tier=0)))
     assert result.passed is False
     tier_check = next(c for c in result.checks if c.name == "max_tier")
     assert tier_check.passed is False
@@ -124,9 +121,7 @@ def test_eval_fails_on_tier_budget_exceeded():
 
 
 def test_eval_fails_on_llm_call_budget():
-    result = run_fixture_sync(
-        _answer_mode_fixture("llm_budget", EvalBudget(max_llm_calls=0))
-    )
+    result = run_fixture_sync(_answer_mode_fixture("llm_budget", EvalBudget(max_llm_calls=0)))
     assert result.passed is False
     call_check = next(c for c in result.checks if c.name == "max_llm_calls")
     assert call_check.passed is False
@@ -236,9 +231,7 @@ def test_eval_fixture_temp_store_is_cleaned_up(monkeypatch):
             exited = True
             return self._tmp.__exit__(exc_type, exc, tb)
 
-    monkeypatch.setattr(
-        "engram.evaluation.fixtures.TemporaryDirectory", TrackingTemporaryDirectory
-    )
+    monkeypatch.setattr("engram.evaluation.fixtures.TemporaryDirectory", TrackingTemporaryDirectory)
 
     fixture = EvalFixture(
         name="cleanup",

@@ -11,7 +11,11 @@ from engram.core.models import CandidateStatus, FactCategory, MemoryCandidate
 from engram.storage.jsonl import _load_jsonl_records
 from engram.storage.transactions import (
     ensure_trailing_newline,
+)
+from engram.storage.transactions import (
     locked_store as _locked_store,
+)
+from engram.storage.transactions import (
     locked_write as _locked_write,
 )
 
@@ -23,9 +27,7 @@ def _candidate_key(candidate: MemoryCandidate) -> tuple[str | None, FactCategory
 
 
 def _candidate_revision(candidate: MemoryCandidate) -> str:
-    data = candidate.model_dump(
-        mode="json", exclude={"status", "review_note", "updated_at"}
-    )
+    data = candidate.model_dump(mode="json", exclude={"status", "review_note", "updated_at"})
     if candidate.replaces_expected is None:
         data.pop("replaces_expected")
     return hashlib.sha256(
@@ -65,9 +67,7 @@ class CandidateSnapshots:
         strict: bool = True,
     ) -> list[MemoryCandidate]:
         """Load memory candidates filtered by status and project."""
-        loaded, _ = _load_jsonl_records(
-            self.path, MemoryCandidate, "candidate", strict=strict
-        )
+        loaded, _ = _load_jsonl_records(self.path, MemoryCandidate, "candidate", strict=strict)
         by_id: dict[str, list[MemoryCandidate]] = {}
         for candidate in loaded:
             by_id.setdefault(candidate.id, []).append(candidate)
@@ -97,24 +97,19 @@ class CandidateSnapshots:
 
     def append(self, candidates: list[MemoryCandidate]) -> None:
         """Append memory candidates to the queue."""
-        with _locked_store(self.data_dir):
-            with _locked_write(self.path):
-                ensure_trailing_newline(self.path)
-                with self.path.open("a") as f:
-                    for candidate in candidates:
-                        f.write(candidate.model_dump_json() + "\n")
-                    f.flush()
-                    os.fsync(f.fileno())
+        with _locked_store(self.data_dir), _locked_write(self.path):
+            ensure_trailing_newline(self.path)
+            with self.path.open("a") as f:
+                for candidate in candidates:
+                    f.write(candidate.model_dump_json() + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         logger.info("Appended %d memory candidate(s) to queue", len(candidates))
 
-    def append_pending(
-        self, candidates: list[MemoryCandidate]
-    ) -> list[MemoryCandidate]:
+    def append_pending(self, candidates: list[MemoryCandidate]) -> list[MemoryCandidate]:
         """Append new pending content once across all materialized candidate states."""
         with _locked_store(self.data_dir):
-            keys = {
-                _candidate_key(row) for row in self.load(status=CandidateStatus.pending)
-            }
+            keys = {_candidate_key(row) for row in self.load(status=CandidateStatus.pending)}
             added = []
             for candidate in candidates:
                 if candidate.status is not CandidateStatus.pending:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -34,6 +35,50 @@ EXCLUDED: dict[Profile, list[str]] = {
     "sync-transport": [LIVE_PROVIDER],
     "package": [SYNC_TRANSPORT, LIVE_PROVIDER],
 }
+
+
+BASELINE = Path(".basedpyright/baseline.json")
+MAIN_REF = "origin/main"
+
+
+def baseline_error_count(text: str) -> int:
+    """Count the errors a basedpyright baseline file records."""
+    files: dict[str, list[object]] = json.loads(text)["files"]
+    return sum(len(errors) for errors in files.values())
+
+
+def baseline_ratchet(root: Path) -> CheckResult:
+    """Fail when the type-error baseline holds more errors than on origin/main."""
+    name = f"basedpyright baseline does not grow past {MAIN_REF}"
+    path = root / BASELINE
+    count = baseline_error_count(path.read_text()) if path.exists() else 0
+    shown = subprocess.run(
+        ["git", "show", f"{MAIN_REF}:{BASELINE.as_posix()}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if shown.returncode != 0:
+        known = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", MAIN_REF],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+        if known.returncode != 0:
+            return CheckResult(
+                name=name,
+                status="failed",
+                reason=f"{MAIN_REF} is missing. Run git fetch origin main.",
+            )
+        return CheckResult(name=name, status="passed", reason="main has no baseline yet")
+    allowed = baseline_error_count(shown.stdout)
+    if count > allowed:
+        return CheckResult(
+            name=name, status="failed", reason=f"{count} baselined errors, {allowed} on main"
+        )
+    return CheckResult(name=name, status="passed", reason=f"{count} baselined, {allowed} on main")
 
 
 class CheckResult(BaseModel):
@@ -83,7 +128,7 @@ def commands(profile: Profile) -> list[list[str]]:
         ["uv", "lock", "--check"],
         [*prefix, "ruff", "check", "."],
         [*prefix, "ruff", "format", "--check", "."],
-        [*prefix, "mypy"],
+        [*prefix, "basedpyright"],
         [*prefix, "python", "-m", "engram.tooling.reference", "--check"],
         [*prefix, "pytest", "tests/", "-q", "-n", "auto", "-m", FAST_SELECTION],
     ]
@@ -221,14 +266,6 @@ def verify(root: Path, profile: Profile) -> VerificationReport:
                     reason=f"Required executable {executable!r} is missing.",
                 )
             )
-    if sys.version_info < (3, 13):
-        report.checks.append(
-            CheckResult(
-                name="Python version",
-                status="failed",
-                reason="Python 3.13 or newer is required.",
-            )
-        )
     if report.failed:
         return report
     if profile == "check":
@@ -237,12 +274,14 @@ def verify(root: Path, profile: Profile) -> VerificationReport:
             CheckResult(
                 name="storage and async import boundaries",
                 status="failed" if violations else "passed",
-                reason="\n".join(
-                    f"{item.path}:{item.line}: {item.message}" for item in violations
-                ),
+                reason="\n".join(f"{item.path}:{item.line}: {item.message}" for item in violations),
             )
         )
         if violations:
+            return report
+        ratchet = baseline_ratchet(root)
+        report.checks.append(ratchet)
+        if ratchet.status == "failed":
             return report
     for command in commands(profile):
         if not _run(command, root, report):
@@ -264,10 +303,7 @@ def main() -> int:
     report = verify(Path.cwd(), args.profile)
     print(f"Verification profile: {report.profile}. Status: {report.status}")
     for check in report.checks:
-        print(
-            f"{check.status}: {check.name}"
-            + (f". {check.reason}" if check.reason else "")
-        )
+        print(f"{check.status}: {check.name}" + (f". {check.reason}" if check.reason else ""))
     for item in report.excluded:
         print(f"excluded: {item}")
     return int(report.failed)

@@ -10,9 +10,7 @@ def pytest_configure(config):
         "markers",
         "live_provider: permits provider calls only with ENGRAM_EVAL_PROVIDER=1",
     )
-    config.addinivalue_line(
-        "markers", "sync_transport: pushes only to temporary local Git remotes"
-    )
+    config.addinivalue_line("markers", "sync_transport: pushes only to temporary local Git remotes")
     config.addinivalue_line(
         "markers", "subprocess_smoke: starts installed entrypoints; runs in verify only"
     )
@@ -47,9 +45,7 @@ def _no_llm_key(monkeypatch, request):
     """
 
     def reject_provider_connection():
-        raise AssertionError(
-            "Real provider calls are disabled in tests. Inject a fake client."
-        )
+        raise AssertionError("Real provider calls are disabled in tests. Inject a fake client.")
 
     live_allowed = (
         request.node.get_closest_marker("live_provider")

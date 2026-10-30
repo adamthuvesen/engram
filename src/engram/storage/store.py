@@ -1,26 +1,26 @@
 """JSONL-based knowledge store for facts."""
 
 import asyncio
-from copy import deepcopy
 import logging
 import os
 import tempfile
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from functools import wraps
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Concatenate, ParamSpec, TypeVar
-
 from uuid import uuid4
 
-
 from engram.core.config import get_settings
+from engram.core.fact_state import is_fact_eligible
 from engram.core.models import (
     BRIEF_MEMORY_KEY,
     EDITABLE_FACT_FIELDS,
+    MIN_ACTIVE_CONFIDENCE,
     CandidateStatus,
     Durability,
     EventLogMeta,
@@ -29,26 +29,28 @@ from engram.core.models import (
     FactCategory,
     FactEvent,
     FactLifecycle,
-    MIN_ACTIVE_CONFIDENCE,
     MemoryCandidate,
     RecallRecord,
     StoreTransaction,
     TransactionStatus,
     materialize_events,
 )
-
-from engram.core.fact_state import is_fact_eligible
-
 from engram.storage.candidates import CandidateSnapshots, candidate_promotion_id
 from engram.storage.jsonl import _load_jsonl_records
+from engram.storage.search import TOKEN_RE, SearchHit, SearchIndex
 from engram.storage.transactions import (
     StoreIntegrityError as StoreIntegrityError,
+)
+from engram.storage.transactions import (
     StoreTransactions,
     ensure_trailing_newline,
+)
+from engram.storage.transactions import (
     locked_store as _locked_store,
+)
+from engram.storage.transactions import (
     locked_write as _locked_write,
 )
-from engram.storage.search import TOKEN_RE, SearchHit, SearchIndex
 
 logger = logging.getLogger(__name__)
 P = ParamSpec("P")
@@ -205,20 +207,18 @@ def _unique_strings(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
-def _snapshot_read(
-    func: Callable[Concatenate["FactStore", P], R],
-) -> Callable[Concatenate["FactStore", P], R]:
+def _snapshot_read[**P, R](
+    func: Callable[Concatenate[FactStore, P], R],
+) -> Callable[Concatenate[FactStore, P], R]:
     @wraps(func)
-    def locked(store: "FactStore", /, *args: P.args, **kwargs: P.kwargs) -> R:
+    def locked(store: FactStore, /, *args: P.args, **kwargs: P.kwargs) -> R:
         if store.read_only:
             return func(store, *args, **kwargs)
         with _locked_store(store.data_dir):
             if not store._recovering and (
                 store.intent_path.exists() or store._pending_transactions()
             ):
-                raise RuntimeError(
-                    "Interrupted store transaction requires recover_transactions()"
-                )
+                raise RuntimeError("Interrupted store transaction requires recover_transactions()")
             return func(store, *args, **kwargs)
 
     return locked
@@ -272,13 +272,7 @@ class ChangeResult:
 
     @property
     def applied(self) -> bool:
-        return bool(
-            self.created
-            or self.superseded
-            or self.staled
-            or self.edited
-            or self.unstaled
-        )
+        return bool(self.created or self.superseded or self.staled or self.edited or self.unstaled)
 
 
 @dataclass
@@ -308,12 +302,10 @@ class FactStore:
         self._facts_cache: tuple[tuple[int, int, int], list[Fact]] | None = None
         self._index_cache: tuple[tuple[int, int, int], SearchIndex] | None = None
         self._recovering = False
-        self._pending_cache: (
-            tuple[tuple[int, int, int], list[StoreTransaction]] | None
-        ) = None
+        self._pending_cache: tuple[tuple[int, int, int], list[StoreTransaction]] | None = None
 
     @classmethod
-    def open_readonly(cls, data_dir: Path | None = None) -> "FactStore":
+    def open_readonly(cls, data_dir: Path | None = None) -> FactStore:
         """Open diagnostic paths without creating files or recovering transactions."""
         return cls(data_dir, read_only=True)
 
@@ -374,9 +366,7 @@ class FactStore:
     def _replay_facts(self) -> list[Fact]:
         if not self._is_event_log_format():
             if not self.read_only:
-                raise StoreIntegrityError(
-                    self.facts_path, 1, "missing valid event-log sentinel"
-                )
+                raise StoreIntegrityError(self.facts_path, 1, "missing valid event-log sentinel")
             return []
         events = self._load_all_events()
         materialized = materialize_events(events)
@@ -392,9 +382,7 @@ class FactStore:
         project: str | None = None,
         limit: int | None = None,
     ) -> list[MemoryCandidate]:
-        return self.candidate_snapshots.load(
-            status, project, limit, strict=not self.read_only
-        )
+        return self.candidate_snapshots.load(status, project, limit, strict=not self.read_only)
 
     def load_active_facts(
         self,
@@ -410,7 +398,7 @@ class FactStore:
         Stale facts are excluded by default. Pass ``include_stale=True`` for
         inspection workflows that need to see the full set.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         facts = []
         for fact in self.load_facts():
             if not _is_active_fact(
@@ -422,11 +410,12 @@ class FactStore:
                 continue
             if category and fact.category != category:
                 continue
-            if project:
-                if fact.project != project and not (
-                    include_global and fact.project is None
-                ):
-                    continue
+            if (
+                project
+                and fact.project != project
+                and not (include_global and fact.project is None)
+            ):
+                continue
             facts.append(fact)
 
         # Sort by recency
@@ -479,7 +468,7 @@ class FactStore:
         if scope is None:
             scope = _infer_project_from_query(index.facts, query)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         def in_scope(fact: Fact) -> bool:
             if not is_fact_eligible(fact, now):
@@ -543,9 +532,7 @@ class FactStore:
             raise RuntimeError("Read-only store cannot write")
         self.candidate_snapshots.append(candidates)
 
-    def append_pending_candidates(
-        self, candidates: list[MemoryCandidate]
-    ) -> list[MemoryCandidate]:
+    def append_pending_candidates(self, candidates: list[MemoryCandidate]) -> list[MemoryCandidate]:
         if self.read_only:
             raise RuntimeError("Read-only store cannot write")
         return self.candidate_snapshots.append_pending(candidates)
@@ -555,11 +542,7 @@ class FactStore:
 
     def _active_fact_by_id(self, fact_id: str) -> Fact | None:
         fact = self._facts_by_id().get(fact_id)
-        if (
-            fact is None
-            or fact.lifecycle is not FactLifecycle.active
-            or fact.confidence == 0.0
-        ):
+        if fact is None or fact.lifecycle is not FactLifecycle.active or fact.confidence == 0.0:
             return None
         return fact
 
@@ -590,9 +573,7 @@ class FactStore:
                 timestamp=now,
                 payload=updates,
             ),
-            Fact.model_validate(
-                {**existing.model_dump(), **updates, "updated_at": now}
-            ),
+            Fact.model_validate({**existing.model_dump(), **updates, "updated_at": now}),
         )
 
     def _append_fact_event(
@@ -625,20 +606,15 @@ class FactStore:
             existing = self._facts_by_id().get(fact_id)
             if existing is None:
                 return None
-            if (
-                existing.lifecycle is not FactLifecycle.active
-                or existing.confidence == 0.0
-            ):
+            if existing.lifecycle is not FactLifecycle.active or existing.confidence == 0.0:
                 return None
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             event, updated = self._event_and_result_for_update(existing, updates, now)
             self.append_events([event])
             return updated
 
-    def update_candidate(
-        self, candidate_id: str, **updates: Any
-    ) -> MemoryCandidate | None:
+    def update_candidate(self, candidate_id: str, **updates: Any) -> MemoryCandidate | None:
         """Append a validated snapshot for one candidate."""
         with _locked_store(self.data_dir):
             candidate = next(
@@ -650,7 +626,7 @@ class FactStore:
                 {
                     **candidate.model_dump(),
                     **updates,
-                    "updated_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(UTC),
                 }
             )
             if updated.id != candidate_id:
@@ -662,13 +638,10 @@ class FactStore:
         """Rename project scopes through fact events and candidate snapshots."""
         with _locked_store(self.data_dir):
             facts = self.load_facts()
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             events: list[FactEvent] = []
             for fact in facts:
-                if (
-                    fact.project == old_project
-                    and fact.lifecycle is FactLifecycle.active
-                ):
+                if fact.project == old_project and fact.lifecycle is FactLifecycle.active:
                     events.append(
                         FactEvent(
                             event_type=EventType.edited,
@@ -697,11 +670,7 @@ class FactStore:
                     cand_count += 1
             if cand_count > 0:
                 self.append_candidates(
-                    [
-                        candidate
-                        for candidate in candidates
-                        if candidate.project == new_project
-                    ]
+                    [candidate for candidate in candidates if candidate.project == new_project]
                 )
                 logger.info(
                     "Renamed project %s → %s for %d candidate(s)",
@@ -727,7 +696,7 @@ class FactStore:
 
         with _locked_store(self.data_dir):
             facts_by_id = self._facts_by_id()
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             events: list[FactEvent] = []
             updated_facts: list[Fact] = []
 
@@ -736,9 +705,7 @@ class FactStore:
                 if existing is None:
                     continue
 
-                event, updated = self._event_and_result_for_update(
-                    existing, field_updates, now
-                )
+                event, updated = self._event_and_result_for_update(existing, field_updates, now)
                 events.append(event)
                 updated_facts.append(updated)
 
@@ -751,9 +718,7 @@ class FactStore:
                 )
             return updated_facts
 
-    def batch_update_candidates(
-        self, updates: dict[str, dict[str, Any]]
-    ) -> list[MemoryCandidate]:
+    def batch_update_candidates(self, updates: dict[str, dict[str, Any]]) -> list[MemoryCandidate]:
         """Append validated snapshots for multiple candidate updates.
 
         Args:
@@ -774,7 +739,7 @@ class FactStore:
                             {
                                 **candidate.model_dump(),
                                 **updates[candidate.id],
-                                "updated_at": datetime.now(timezone.utc),
+                                "updated_at": datetime.now(UTC),
                             }
                         )
                     )
@@ -787,7 +752,7 @@ class FactStore:
             existing = self._active_fact_by_id(fact_id)
             if existing is None:
                 return None
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             self._append_fact_event(
                 EventType.forgotten,
                 fact_id,
@@ -821,17 +786,15 @@ class FactStore:
             entry = materialized.get(fact_id)
             if entry is None:
                 return None
-            fact, is_active = entry
+            fact, _is_active = entry
             if fact.lifecycle is not FactLifecycle.forgotten:
                 # Only explicit forgetting can be restored.
                 return None
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             self._append_fact_event(EventType.restored, fact_id, now)
             logger.info("Restored fact %s", fact_id)
-            return fact.model_copy(
-                update={"updated_at": now, "lifecycle": FactLifecycle.active}
-            )
+            return fact.model_copy(update={"updated_at": now, "lifecycle": FactLifecycle.active})
 
     def correct_fact(
         self,
@@ -860,15 +823,13 @@ class FactStore:
             if existing is None:
                 return None
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             new_fact = Fact.model_validate(
                 {
                     **existing.model_dump(),
                     "id": uuid4().hex[:12],
                     "category": category or existing.category,
-                    "memory_key": memory_key
-                    if memory_key is not None
-                    else existing.memory_key,
+                    "memory_key": memory_key if memory_key is not None else existing.memory_key,
                     "content": new_content,
                     "created_at": now,
                     "updated_at": now,
@@ -907,11 +868,7 @@ class FactStore:
         sources: list[Fact] = []
         for source_id in source_ids:
             fact = facts_by_id.get(source_id)
-            if (
-                fact is None
-                or fact.lifecycle is not FactLifecycle.active
-                or fact.confidence == 0.0
-            ):
+            if fact is None or fact.lifecycle is not FactLifecycle.active or fact.confidence == 0.0:
                 return None
             sources.append(fact)
         if len({fact.project for fact in sources}) > 1:
@@ -948,22 +905,16 @@ class FactStore:
             retrieval_hints=(
                 _unique_strings(retrieval_hints)[:5]
                 if retrieval_hints is not None
-                else _unique_strings(
-                    hint for fact in sources for hint in fact.retrieval_hints
-                )[:5]
+                else _unique_strings(hint for fact in sources for hint in fact.retrieval_hints)[:5]
             ),
             source_group_id=(
                 primary.source_group_id
-                if all(
-                    fact.source_group_id == primary.source_group_id for fact in sources
-                )
+                if all(fact.source_group_id == primary.source_group_id for fact in sources)
                 else None
             ),
             supersedes=primary.id,
             consolidates=_unique_strings(
-                source_id
-                for fact in sources
-                for source_id in [fact.id, *fact.consolidates]
+                source_id for fact in sources for source_id in [fact.id, *fact.consolidates]
             ),
             evidence_kind=primary.evidence_kind,
             source_ref=primary.source_ref,
@@ -1030,7 +981,7 @@ class FactStore:
             if sources is None:
                 return None
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             new_fact = self._merged_fact(
                 sources,
                 merged_content,
@@ -1053,9 +1004,7 @@ class FactStore:
         logger.info("Merged %d facts -> %s: %s", len(unique_ids), new_fact.id, reason)
         return new_fact, unique_ids
 
-    def apply_changes(
-        self, changes: ChangeSet, *, all_or_nothing: bool = False
-    ) -> ChangeResult:
+    def apply_changes(self, changes: ChangeSet, *, all_or_nothing: bool = False) -> ChangeResult:
         """Append a batch of creations, supersessions, retirements, and edits.
 
         Every event lands in one append under the store lock, so readers never
@@ -1079,7 +1028,7 @@ class FactStore:
                     and fact.confidence > 0.0
                 )
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             targets = [
                 *changes.supersede,
                 *changes.stale,
@@ -1181,7 +1130,7 @@ class FactStore:
             existing = self._active_fact_by_id(fact_id)
             if existing is None:
                 return None
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             self._append_fact_event(
                 EventType.stale,
                 fact_id,
@@ -1199,7 +1148,7 @@ class FactStore:
             existing = self._active_fact_by_id(fact_id)
             if existing is None:
                 return None
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             self._append_fact_event(EventType.unstale, fact_id, now)
             return existing.model_copy(
                 update={"stale": False, "stale_reason": "", "updated_at": now}
@@ -1217,30 +1166,24 @@ class FactStore:
     ) -> ApprovalResult:
         """Approve candidates and return their exact transaction-owned mapping."""
         if edits and (
-            set(edits) - set(candidate_ids)
-            or any(not text.strip() for text in edits.values())
+            set(edits) - set(candidate_ids) or any(not text.strip() for text in edits.values())
         ):
-            raise ValueError(
-                "Candidate edits require requested IDs and nonempty content"
-            )
+            raise ValueError("Candidate edits require requested IDs and nonempty content")
         with _locked_store(self.data_dir):
             self.recover_transactions()
             result = ApprovalResult()
             if edits:
                 pending_ids = {
-                    row.id
-                    for row in self.load_candidates(status=CandidateStatus.pending)
+                    row.id for row in self.load_candidates(status=CandidateStatus.pending)
                 }
                 result.invalid_edit_ids = [
-                    candidate_id
-                    for candidate_id in edits
-                    if candidate_id not in pending_ids
+                    candidate_id for candidate_id in edits if candidate_id not in pending_ids
                 ]
                 if result.invalid_edit_ids:
-                    result.unresolved = {
-                        candidate_id: "Approval aborted because an edited candidate is missing or no longer pending"
-                        for candidate_id in dict.fromkeys(candidate_ids)
-                    }
+                    result.unresolved = dict.fromkeys(
+                        dict.fromkeys(candidate_ids),
+                        "Approval aborted because an edited candidate is missing or no longer pending",
+                    )
                     return result
             transaction = self._prepare_approval_transaction(
                 candidate_ids, edits=edits, unresolved=result.unresolved
@@ -1318,9 +1261,7 @@ class FactStore:
         edits: dict[str, str] | None = None,
         unresolved: dict[str, str] | None = None,
     ) -> StoreTransaction | None:
-        pending_candidates = {
-            c.id: c for c in self.load_candidates(status=CandidateStatus.pending)
-        }
+        pending_candidates = {c.id: c for c in self.load_candidates(status=CandidateStatus.pending)}
 
         unresolved = unresolved if unresolved is not None else {}
         replacements: dict[str, list[str]] = {}
@@ -1329,8 +1270,7 @@ class FactStore:
             if candidate is None:
                 continue
             for source_id in set(
-                candidate.replaces
-                or ([candidate.supersedes] if candidate.supersedes else [])
+                candidate.replaces or ([candidate.supersedes] if candidate.supersedes else [])
             ):
                 replacements.setdefault(source_id, []).append(candidate_id)
         for source_id, competing_ids in sorted(replacements.items()):
@@ -1339,16 +1279,14 @@ class FactStore:
             conflict = f"Source {source_id} has competing replacement candidates: {', '.join(competing_ids)}"
             for candidate_id in competing_ids:
                 previous = unresolved.get(candidate_id)
-                unresolved[candidate_id] = (
-                    f"{previous}. {conflict}" if previous else conflict
-                )
+                unresolved[candidate_id] = f"{previous}. {conflict}" if previous else conflict
 
         facts_by_id = self._facts_by_id()
         fact_updates: dict[str, dict[str, Any]] = {}
         supersessions: dict[str, str] = {}
         candidate_updates: dict[str, dict[str, Any]] = {}
         new_facts: list[Fact] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         seen_ids: set[str] = set()
         selected_ids: list[str] = []
 
@@ -1448,11 +1386,7 @@ class FactStore:
             for old, new in transaction.supersessions.items()
         )
         for fact_id, updates in transaction.fact_updates.items():
-            event_type = (
-                EventType.forgotten
-                if updates == {"confidence": 0.0}
-                else EventType.edited
-            )
+            event_type = EventType.forgotten if updates == {"confidence": 0.0} else EventType.edited
             events.append(
                 FactEvent(
                     event_type=event_type,
@@ -1473,9 +1407,7 @@ class FactStore:
             for candidate_id, updates in transaction.candidate_updates.items()
             if candidate_id in rows
         ]
-        transaction = transaction.model_copy(
-            update={"events": events, "candidates": candidates}
-        )
+        transaction = transaction.model_copy(update={"events": events, "candidates": candidates})
         return transaction
 
     def _apply_approval_transaction(self, transaction: StoreTransaction) -> None:
@@ -1485,23 +1417,17 @@ class FactStore:
         self.append_events(transaction.events)
         existing = {
             row.model_dump_json()
-            for row in _load_jsonl_records(
-                self.candidates_path, MemoryCandidate, "candidate"
-            )[0]
+            for row in _load_jsonl_records(self.candidates_path, MemoryCandidate, "candidate")[0]
         }
         self.append_candidates(
-            [
-                row
-                for row in transaction.candidates
-                if row.model_dump_json() not in existing
-            ]
+            [row for row in transaction.candidates if row.model_dump_json() not in existing]
         )
 
     def _commit_transaction(self, transaction: StoreTransaction) -> None:
         committed = transaction.model_copy(
             update={
                 "status": TransactionStatus.committed,
-                "committed_at": datetime.now(timezone.utc),
+                "committed_at": datetime.now(UTC),
             }
         )
         self._append_transaction(committed)
@@ -1519,9 +1445,7 @@ class FactStore:
             self.transaction_log_path, StoreTransaction, "transaction"
         )
         if corrupt:
-            raise ValueError(
-                "Transaction journal contains invalid records and requires inspection"
-            )
+            raise ValueError("Transaction journal contains invalid records and requires inspection")
         return records
 
     def _pending_transactions(self) -> list[StoreTransaction]:
@@ -1583,7 +1507,7 @@ class FactStore:
             events_before = len(events)
             materialized = materialize_events(events)
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             compacted, tombstones = _compacted_event_log(
                 materialized,
                 keep_tombstones=keep_tombstones,
@@ -1625,7 +1549,7 @@ class FactStore:
         self._require_offline_rewrite()
         with _locked_store(self.data_dir):
             facts = self.load_facts()
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             kept = []
             purged = 0
             for fact in facts:
@@ -1651,21 +1575,16 @@ class FactStore:
     def stats(self) -> dict[str, Any]:
         """Get store statistics."""
         facts = self.load_facts()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         active = [f for f in facts if _is_active_fact(f, now)]
         forgotten = [
             f
             for f in facts
             if f.lifecycle is FactLifecycle.forgotten
-            or (
-                f.lifecycle is FactLifecycle.active
-                and f.confidence < MIN_ACTIVE_CONFIDENCE
-            )
+            or (f.lifecycle is FactLifecycle.active and f.confidence < MIN_ACTIVE_CONFIDENCE)
         ]
         expired = [
-            f
-            for f in facts
-            if f.confidence >= MIN_ACTIVE_CONFIDENCE and _is_expired_fact(f, now)
+            f for f in facts if f.confidence >= MIN_ACTIVE_CONFIDENCE and _is_expired_fact(f, now)
         ]
         by_category = Counter(f.category.value for f in active)
         by_project = Counter(f.project or "(none)" for f in active)
@@ -1674,18 +1593,12 @@ class FactStore:
             "total_facts": len(facts),
             "active_facts": len(active),
             "forgotten_facts": len(forgotten),
-            "superseded_facts": sum(
-                f.lifecycle is FactLifecycle.superseded for f in facts
-            ),
+            "superseded_facts": sum(f.lifecycle is FactLifecycle.superseded for f in facts),
             "expired_facts": len(expired),
             "by_category": dict(by_category.most_common()),
             "by_project": dict(by_project.most_common(10)),
-            "storage_bytes": self.facts_path.stat().st_size
-            if self.facts_path.exists()
-            else 0,
-            "pending_candidates": len(
-                self.load_candidates(status=CandidateStatus.pending)
-            ),
+            "storage_bytes": self.facts_path.stat().st_size if self.facts_path.exists() else 0,
+            "pending_candidates": len(self.load_candidates(status=CandidateStatus.pending)),
         }
 
     def format_candidates_for_review(self, candidates: list[MemoryCandidate]) -> str:
@@ -1712,9 +1625,12 @@ class FactStore:
 
     def log_recall(self, record: RecallRecord) -> None:
         """Append a recall record to the recall log."""
-        with _locked_store(self.data_dir), _locked_write(self.recall_log_path):
-            with self.recall_log_path.open("a") as f:
-                f.write(record.model_dump_json() + "\n")
+        with (
+            _locked_store(self.data_dir),
+            _locked_write(self.recall_log_path),
+            self.recall_log_path.open("a") as f,
+        ):
+            f.write(record.model_dump_json() + "\n")
 
     @_snapshot_read
     def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
@@ -1751,7 +1667,7 @@ class FactStore:
                         fh.write(event.model_dump_json() + "\n")
                     fh.flush()
                     os.fsync(fh.fileno())
-                os.replace(tmp_path, self.facts_path)
+                tmp_path.replace(self.facts_path)
                 tmp_path = None
             finally:
                 if tmp_path and tmp_path.exists():
@@ -1810,9 +1726,7 @@ class FactStore:
 
         return result
 
-    def _rewrite(
-        self, records: Sequence[Fact | MemoryCandidate], path: Path | None = None
-    ) -> None:
+    def _rewrite(self, records: Sequence[Fact | MemoryCandidate], path: Path | None = None) -> None:
         """Rewrite a store JSONL file atomically with fsync and a unique temp path."""
         target_path = path or self.facts_path
         if target_path == self.facts_path:
@@ -1842,14 +1756,14 @@ class FactStore:
                         f.write(record.model_dump_json() + "\n")
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp_path, target_path)
+                tmp_path.replace(target_path)
                 tmp_path = None  # Successfully replaced; don't clean up
             finally:
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
 
 
-async def run_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+async def run_sync[**P, R](func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
     """Wait for an in-flight thread before propagating caller cancellation."""
     worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
     try:
@@ -1974,19 +1888,13 @@ class AsyncFactStore:
     ) -> list[MemoryCandidate]:
         return await self._run(self.sync_store.batch_update_candidates, updates)
 
-    async def update_candidate(
-        self, candidate_id: str, **updates: Any
-    ) -> MemoryCandidate | None:
-        return await self._run(
-            self.sync_store.update_candidate, candidate_id, **updates
-        )
+    async def update_candidate(self, candidate_id: str, **updates: Any) -> MemoryCandidate | None:
+        return await self._run(self.sync_store.update_candidate, candidate_id, **updates)
 
     async def rename_project(self, old_project: str, new_project: str) -> int:
         return await self._run(self.sync_store.rename_project, old_project, new_project)
 
-    async def batch_update_facts(
-        self, updates: dict[str, dict[str, Any]]
-    ) -> list[Fact]:
+    async def batch_update_facts(self, updates: dict[str, dict[str, Any]]) -> list[Fact]:
         return await self._run(self.sync_store.batch_update_facts, updates)
 
     async def forget(self, fact_id: str, reason: str = "") -> Fact | None:
@@ -1998,9 +1906,7 @@ class AsyncFactStore:
         new_content: str,
         **kwargs: Any,
     ) -> Fact | None:
-        return await self._run(
-            self.sync_store.correct_fact, fact_id, new_content, **kwargs
-        )
+        return await self._run(self.sync_store.correct_fact, fact_id, new_content, **kwargs)
 
     async def merge_facts(
         self,
@@ -2008,9 +1914,7 @@ class AsyncFactStore:
         merged_content: str,
         **kwargs: Any,
     ) -> tuple[Fact, list[str]] | None:
-        return await self._run(
-            self.sync_store.merge_facts, source_ids, merged_content, **kwargs
-        )
+        return await self._run(self.sync_store.merge_facts, source_ids, merged_content, **kwargs)
 
     async def mark_stale(self, fact_id: str, reason: str = "") -> Fact | None:
         return await self._run(self.sync_store.mark_stale, fact_id, reason)

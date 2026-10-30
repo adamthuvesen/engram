@@ -18,18 +18,19 @@ import logging
 import os
 import subprocess
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
 from engram.core.config import get_settings
+from engram.core.fact_state import is_fact_eligible
 from engram.core.models import (
+    MIN_ACTIVE_CONFIDENCE,
     CandidateStatus,
     Durability,
     Fact,
-    MIN_ACTIVE_CONFIDENCE,
     MemoryCandidate,
     RecallRecord,
     StateLine,
@@ -38,7 +39,6 @@ from engram.core.models import (
 )
 from engram.storage.store import AsyncFactStore, FactStore
 from engram.storage.transactions import scan_event_log
-from engram.core.fact_state import is_fact_eligible
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +46,7 @@ logger = logging.getLogger(__name__)
 class DoctorIssue(BaseModel):
     code: str
     severity: str  # "info" | "warning" | "error"
-    category: (
-        str  # "storage" | "config" | "provider" | "recall_log" | "facts" | "candidates"
-    )
+    category: str  # "storage" | "config" | "provider" | "recall_log" | "facts" | "candidates"
     message: str
     ids: list[str] = Field(default_factory=list)
     repair: str | None = None
@@ -141,7 +139,7 @@ def _check_jsonl_integrity(
             try:
                 model_cls.model_validate_json(line)
                 valid += 1
-            except (ValueError, ValidationError):
+            except ValueError, ValidationError:
                 corrupt.append(lineno)
     if corrupt:
         _append_jsonl_issue(path, label, corrupt, issues)
@@ -208,7 +206,7 @@ def _check_transactions(store: FactStore, issues: list[DoctorIssue]) -> None:
                 continue
             try:
                 transactions.append(StoreTransaction.model_validate_json(line))
-            except (ValueError, ValidationError):
+            except ValueError, ValidationError:
                 issues.append(
                     DoctorIssue(
                         code="transaction_log_corrupt",
@@ -232,9 +230,7 @@ def _check_transactions(store: FactStore, issues: list[DoctorIssue]) -> None:
                 code="prepared_transactions_pending",
                 severity="warning",
                 category="storage",
-                message=(
-                    f"{len(pending)} prepared transaction(s) need to be rolled forward."
-                ),
+                message=(f"{len(pending)} prepared transaction(s) need to be rolled forward."),
                 ids=pending,
                 repair="Run `engram doctor --recover-transactions` (or any store write) to roll forward.",
                 repairable=True,
@@ -254,7 +250,7 @@ def _check_recall_log(store: FactStore, issues: list[DoctorIssue]) -> None:
                 continue
             try:
                 RecallRecord.model_validate_json(line)
-            except (ValueError, ValidationError):
+            except ValueError, ValidationError:
                 bad.append(lineno)
     if bad:
         issues.append(
@@ -351,9 +347,7 @@ def _check_facts_relationships(
 
 def _fact_relationship_issues(facts: list[Fact]) -> list[DoctorIssue | None]:
     fact_ids = {fact.id for fact in facts}
-    edges: dict[str, str] = {
-        fact.id: fact.supersedes for fact in facts if fact.supersedes
-    }
+    edges: dict[str, str] = {fact.id: fact.supersedes for fact in facts if fact.supersedes}
     return [
         _duplicate_fact_issue(facts),
         _orphaned_supersession_issue(facts, fact_ids),
@@ -394,9 +388,7 @@ def _orphaned_supersession_issue(
     facts: list[Fact],
     fact_ids: set[str],
 ) -> DoctorIssue | None:
-    orphans = [
-        fact.id for fact in facts if fact.supersedes and fact.supersedes not in fact_ids
-    ]
+    orphans = [fact.id for fact in facts if fact.supersedes and fact.supersedes not in fact_ids]
     if not orphans:
         return None
     return DoctorIssue(
@@ -457,9 +449,7 @@ def _check_candidates(
     if not candidates:
         return
     conflicted = [
-        candidate.id
-        for candidate in candidates
-        if candidate.status is CandidateStatus.conflicted
+        candidate.id for candidate in candidates if candidate.status is CandidateStatus.conflicted
     ]
     if conflicted:
         issues.append(
@@ -472,7 +462,7 @@ def _check_candidates(
                 repair="Review the candidate snapshots before changing their status.",
             )
         )
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stale_pending = [
         c.id
         for c in candidates
@@ -484,9 +474,7 @@ def _check_candidates(
                 code="stale_pending_candidates",
                 severity="info",
                 category="candidates",
-                message=(
-                    f"{len(stale_pending)} candidate(s) have been pending for over 30 days."
-                ),
+                message=(f"{len(stale_pending)} candidate(s) have been pending for over 30 days."),
                 ids=stale_pending,
                 repair="Approve, reject, or delete via the maintenance tools.",
             )
@@ -556,7 +544,7 @@ def _doctor_counts(
     candidates_valid: int,
     issues: list[DoctorIssue],
 ) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "facts_valid": facts_valid,
         "candidates_valid": candidates_valid,
@@ -571,9 +559,7 @@ _VOLUME_TOP_PROJECTS = 10
 _DELIVERY_WINDOW_DAYS = 90
 
 
-def _volume_counts(
-    facts: list[Fact], recalls: list[RecallRecord], now: datetime
-) -> dict[str, Any]:
+def _volume_counts(facts: list[Fact], recalls: list[RecallRecord], now: datetime) -> dict[str, Any]:
     """How big memory is, where it sits, and how much of it recall never uses."""
     active = [fact for fact in facts if is_fact_eligible(fact, now)]
     per_project = Counter(fact.project or "(global)" for fact in active)
@@ -584,17 +570,14 @@ def _volume_counts(
         "active_by_project": dict(per_project.most_common(_VOLUME_TOP_PROJECTS)),
         "ephemeral_share": (
             round(
-                sum(fact.durability is Durability.ephemeral for fact in active)
-                / len(active),
+                sum(fact.durability is Durability.ephemeral for fact in active) / len(active),
                 3,
             )
             if active
             else 0.0
         ),
         "suspect_facts": sum(1 for fact in active if fact.suspect_reason),
-        "recalls_with_delivery_90d": sum(
-            1 for record in recent if record.delivered_ids
-        ),
+        "recalls_with_delivery_90d": sum(1 for record in recent if record.delivered_ids),
         "never_delivered_90d": sum(1 for fact in active if fact.id not in delivered),
     }
 
@@ -643,12 +626,9 @@ def run_doctor(
     checks_run.append("config")
 
     facts_available = not any(
-        issue.code.startswith("facts_") and issue.severity == "error"
-        for issue in issues
+        issue.code.startswith("facts_") and issue.severity == "error" for issue in issues
     )
-    candidates_available = not any(
-        issue.code == "candidates_jsonl_corrupt" for issue in issues
-    )
+    candidates_available = not any(issue.code == "candidates_jsonl_corrupt" for issue in issues)
     try:
         facts = sync_store.load_facts() if facts_available else []
     except (ValueError, OSError) as exc:
@@ -699,9 +679,7 @@ def run_doctor(
         for key in ("active_facts", "stale_facts", "forgotten_facts"):
             counts[key] = None
     counts["volume"] = (
-        _volume_counts(
-            facts, sync_store.load_recall_log(limit=None), datetime.now(timezone.utc)
-        )
+        _volume_counts(facts, sync_store.load_recall_log(limit=None), datetime.now(UTC))
         if facts_available
         else None
     )
@@ -744,9 +722,7 @@ def repair_store(
         facts = sync_store.load_facts()
         fact_ids = {fact.id for fact in facts}
         orphan_ids = [
-            fact.id
-            for fact in facts
-            if fact.supersedes and fact.supersedes not in fact_ids
+            fact.id for fact in facts if fact.supersedes and fact.supersedes not in fact_ids
         ]
         updated = sync_store.batch_update_facts(
             {fact_id: {"supersedes": None} for fact_id in orphan_ids}
@@ -763,7 +739,7 @@ __all__ = [
     "DoctorIssue",
     "DoctorReport",
     "check_provider",
-    "repair_store",
     "inspect_data_dir",
+    "repair_store",
     "run_doctor",
 ]

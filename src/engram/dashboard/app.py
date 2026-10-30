@@ -1,17 +1,17 @@
 """Engram terminal dashboard — main app."""
 
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import logging
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import ClassVar, Protocol, cast
 
 from rich.markup import escape
 from textual import events, on, work
 from textual.app import App, ComposeResult
-from textual.binding import Binding
+from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.theme import Theme
@@ -115,9 +115,7 @@ class RefreshableDashboardScreen(Protocol):
 
 
 SECTIONS = (
-    DashboardSection(
-        "overview", "overview", OverviewScreen, "#cat-list", lambda d: d.active_count
-    ),
+    DashboardSection("overview", "overview", OverviewScreen, "#cat-list", lambda d: d.active_count),
     DashboardSection(
         "projects",
         "projects",
@@ -125,9 +123,7 @@ SECTIONS = (
         "#proj-overview-table",
         lambda d: len(d.projects),
     ),
-    DashboardSection(
-        "facts", "facts", FactsScreen, "#facts-table", lambda d: d.active_count
-    ),
+    DashboardSection("facts", "facts", FactsScreen, "#facts-table", lambda d: d.active_count),
     DashboardSection("timeline", "timeline", TimelineScreen),
 )
 SECTION_BY_ID = {section.id: section for section in SECTIONS}
@@ -142,7 +138,7 @@ class EngramDashboard(App[None]):
     SUB_TITLE = "memory dashboard"
     CSS_PATH = CSS_PATH
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         *[
             Binding(str(index), f"show_tab('{section.id}')", section.title, show=False)
             for index, section in enumerate(SECTIONS, start=1)
@@ -184,9 +180,7 @@ class EngramDashboard(App[None]):
                 with TabbedContent(initial=SECTIONS[0].id, id="tabs"):
                     for section in SECTIONS:
                         with TabPane(section.title, id=section.id):
-                            factory = cast(
-                                Callable[[DashboardData], Widget], section.screen
-                            )
+                            factory = cast(Callable[[DashboardData], Widget], section.screen)
                             yield factory(d)
             yield Label(FOOTER_HINTS["default"], id="dynamic-footer")
 
@@ -196,9 +190,7 @@ class EngramDashboard(App[None]):
         for i, section in enumerate(SECTIONS, start=1):
             count = section.count(d) if section.count else None
             suffix = f"  [dim]{count}[/]" if count is not None else ""
-            options.append(
-                Option(f"[dim]{i}[/]  {section.title}{suffix}", id=f"nav-{section.id}")
-            )
+            options.append(Option(f"[dim]{i}[/]  {section.title}{suffix}", id=f"nav-{section.id}"))
         return options
 
     def _status_text(self) -> str:
@@ -222,9 +214,7 @@ class EngramDashboard(App[None]):
             try:
                 self.query_one(section.screen).border_title = section.title
             except Exception:
-                logger.debug(
-                    "Unable to set border title for %s", section.id, exc_info=True
-                )
+                logger.debug("Unable to set border title for %s", section.id, exc_info=True)
 
     def on_mount(self) -> None:
         self._set_screen_titles()
@@ -264,9 +254,7 @@ class EngramDashboard(App[None]):
         except Exception:
             logger.debug("Unable to sync nav highlight", exc_info=True)
 
-    def on_tabbed_content_tab_activated(
-        self, event: TabbedContent.TabActivated
-    ) -> None:
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         tab_id = event.pane.id or ""
         if tab_id in self._dirty_tabs:
             self._dirty_tabs.discard(tab_id)
@@ -307,9 +295,7 @@ class EngramDashboard(App[None]):
             try:
                 self.query_one(section.focus).focus()
             except Exception:
-                logger.debug(
-                    "Unable to focus widget for dashboard tab %s", tab_id, exc_info=True
-                )
+                logger.debug("Unable to focus widget for dashboard tab %s", tab_id, exc_info=True)
 
     def _open_store(self) -> FactStore:
         if self._store is None:
@@ -325,7 +311,7 @@ class EngramDashboard(App[None]):
         if (
             not force
             and current_hash == self._last_hash
-            and (refresh_at is None or datetime.now(timezone.utc) < refresh_at)
+            and (refresh_at is None or datetime.now(UTC) < refresh_at)
         ):
             return None
         return load_dashboard_data(store)
@@ -380,9 +366,7 @@ class EngramDashboard(App[None]):
         section = SECTION_BY_ID.get(tab_id)
         if section:
             try:
-                screen = cast(
-                    RefreshableDashboardScreen, self.query_one(section.screen)
-                )
+                screen = cast(RefreshableDashboardScreen, self.query_one(section.screen))
                 screen.refresh_data(self._data)
             except Exception:
                 logger.exception("Unable to refresh dashboard tab %s", tab_id)
@@ -447,9 +431,7 @@ class EngramDashboard(App[None]):
             try:
                 store = await run_sync(self._open_store)
                 for fid in fact_ids:
-                    result = await run_sync(
-                        store.forget, fid, reason="Forgotten via dashboard"
-                    )
+                    result = await run_sync(store.forget, fid, reason="Forgotten via dashboard")
                     if result is not None:
                         undo_entries.append(fid)
                         self._undo_stack = undo_entries.copy()
@@ -478,9 +460,7 @@ class EngramDashboard(App[None]):
 
     def _expire_undo(self) -> None:
         if any(
-            worker.name == "_undo_worker"
-            and not worker.is_cancelled
-            and not worker.is_finished
+            worker.name == "_undo_worker" and not worker.is_cancelled and not worker.is_finished
             for worker in self.workers
         ):
             self._schedule_undo_expiry()
@@ -539,7 +519,7 @@ class EngramDashboard(App[None]):
 class ConfirmScreen(ModalScreen[bool]):
     """Simple yes/no confirmation dialog."""
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[BindingType]] = [
         ("y", "confirm", "Yes"),
         ("n", "cancel", "No"),
         ("escape", "cancel", "Cancel"),

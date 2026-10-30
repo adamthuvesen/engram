@@ -21,7 +21,6 @@ from pydantic import BaseModel, Field
 from engram.core.interfaces import EnvelopeWarning
 from engram.core.models import Fact
 
-
 # Default truncation limits for trace excerpts. Trace must be cheap by default
 # so agents can call it without flooding their context window.
 DEFAULT_PROMPT_EXCERPT_CHARS = 2000

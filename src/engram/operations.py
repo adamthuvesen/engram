@@ -4,25 +4,14 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from math import isfinite
 from typing import Any
 
-from pydantic import JsonValue, ValidationError
 from openai import OpenAIError
-from datetime import datetime, timezone
+from pydantic import JsonValue, ValidationError
 
-from engram.core.operation_models import (
-    CandidatePayload,
-    CandidateReviewPayload,
-    DoctorPayload,
-    FactPayload,
-    IngestPayload,
-    RecallPayload,
-    SuggestPayload,
-)
-from engram.core.projects import canonical_project, register_project
-from engram.maintenance.doctor import check_provider, repair_store, run_doctor
-from engram.extraction.importer import import_claude_code_memories
+from engram.core.config import get_settings
 from engram.core.interfaces import (
     Envelope,
     EnvelopeError,
@@ -34,10 +23,6 @@ from engram.core.interfaces import (
     storage_error,
     validation_error,
 )
-from engram.maintenance.memory_audit import (
-    audit_memory_store as _audit_memory_store,
-    format_audit_result,
-)
 from engram.core.models import (
     BRIEF_MEMORY_KEY,
     CandidateStatus,
@@ -46,8 +31,27 @@ from engram.core.models import (
     MemoryCandidate,
     RecallRecord,
 )
-from engram.extraction.observer import IngestResult, ingest
+from engram.core.operation_models import (
+    CandidatePayload,
+    CandidateReviewPayload,
+    DoctorPayload,
+    FactPayload,
+    IngestPayload,
+    RecallPayload,
+    SuggestPayload,
+)
+from engram.core.projects import canonical_project, register_project
 from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
+from engram.extraction.importer import import_claude_code_memories
+from engram.extraction.observer import IngestResult, ingest
+from engram.llm import ProviderResponseError
+from engram.maintenance.doctor import check_provider, repair_store, run_doctor
+from engram.maintenance.memory_audit import (
+    audit_memory_store as _audit_memory_store,
+)
+from engram.maintenance.memory_audit import (
+    format_audit_result,
+)
 from engram.maintenance.upkeep import (
     ALL_STEPS,
     UpkeepStep,
@@ -57,8 +61,11 @@ from engram.maintenance.upkeep import (
 )
 from engram.recall.retriever import (
     RecallMode,
+)
+from engram.recall.retriever import (
     recall_result as _recall_result,
 )
+from engram.runtime import current_runtime
 from engram.storage.store import (
     AsyncFactStore,
     FactStore,
@@ -66,12 +73,11 @@ from engram.storage.store import (
     format_fact_line,
     run_sync,
 )
-from engram.runtime import current_runtime
-from engram.core.config import get_settings
-from engram.llm import ProviderResponseError
 from engram.storage.sync import (
     DEFAULT_GIT_TIMEOUT_SECONDS,
     SyncError,
+)
+from engram.storage.sync import (
     sync as _sync,
 )
 
@@ -172,13 +178,9 @@ def exception_result(exc: Exception) -> OperationResult:
     else:
         code = ErrorCode.internal_error
     return failure_result(
-        EnvelopeError(
-            code=code, message=str(exc), details={"exception_type": type(exc).__name__}
-        ),
+        EnvelopeError(code=code, message=str(exc), details={"exception_type": type(exc).__name__}),
         text=str(exc),
-        exit_code=EXIT_VALIDATION
-        if code is ErrorCode.validation_error
-        else EXIT_RUNTIME,
+        exit_code=EXIT_VALIDATION if code is ErrorCode.validation_error else EXIT_RUNTIME,
     )
 
 
@@ -274,14 +276,11 @@ def _ingest_lines(result: IngestResult) -> list[str]:
             lines.append(line)
     if result.retired:
         lines.append("Retired as no longer true:")
-        lines.extend(
-            f"- {fact_id}: {reason}" for fact_id, reason in result.retired.items()
-        )
+        lines.extend(f"- {fact_id}: {reason}" for fact_id, reason in result.retired.items())
     if result.duplicates:
         lines.append(f"Already known: {', '.join(result.duplicates)}")
     lines.extend(
-        f"Unapplied {item.action} {item.fact_id}: {item.reason}"
-        for item in result.unresolved
+        f"Unapplied {item.action} {item.fact_id}: {item.reason}" for item in result.unresolved
     )
     lines.extend(f"Error: {message}" for message in result.errors)
     if not lines:
@@ -360,19 +359,18 @@ async def suggest_memories(
     )
     for candidate in candidates:
         why = candidate.why_store or "useful future context"
-        line = f"- [{candidate.category.value}] {candidate.content} (id: {candidate.id}, why: {why})"
+        line = (
+            f"- [{candidate.category.value}] {candidate.content} (id: {candidate.id}, why: {why})"
+        )
         if candidate.replaces:
             line += f" replaces {', '.join(candidate.replaces)}"
         lines.append(line)
     lines.extend(
-        f"Unapplied {item.action} {item.fact_id}: {item.reason}"
-        for item in result.unresolved
+        f"Unapplied {item.action} {item.fact_id}: {item.reason}" for item in result.unresolved
     )
     lines.extend(f"Error: {message}" for message in result.errors)
     payload = SuggestPayload(
-        candidates=[
-            CandidatePayload.model_validate(candidate) for candidate in candidates
-        ],
+        candidates=[CandidatePayload.model_validate(candidate) for candidate in candidates],
         unresolved=result.unresolved,
         message=lines[0] if not candidates else None,
     )
@@ -419,9 +417,7 @@ async def list_candidates(
 
     if search:
         search_lower = search.lower()
-        all_candidates = [
-            c for c in all_candidates if search_lower in c.content.lower()
-        ]
+        all_candidates = [c for c in all_candidates if search_lower in c.content.lower()]
     candidates = all_candidates[:limit]
     total = len(all_candidates)
     truncated = total > limit
@@ -452,9 +448,7 @@ async def approve_candidates(
     edits: dict[str, str] | None = None,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    if not candidate_ids or any(
-        not candidate_id.strip() for candidate_id in candidate_ids
-    ):
+    if not candidate_ids or any(not candidate_id.strip() for candidate_id in candidate_ids):
         return validation_result("candidate_ids must contain nonempty IDs")
     if edits and any(not content.strip() for content in edits.values()):
         return validation_result("candidate edit content must not be empty")
@@ -470,9 +464,7 @@ async def approve_candidates(
     store_obj = await resolve_store(store)
     approval = await store_obj.approve_candidates_result(candidate_ids, edits=edits)
     if approval.invalid_edit_ids:
-        return missing_result(
-            "Candidate(s) not pending for --edit", ids=approval.invalid_edit_ids
-        )
+        return missing_result("Candidate(s) not pending for --edit", ids=approval.invalid_edit_ids)
     facts = approval.facts
     if not facts:
         text = "No matching candidates were approved."
@@ -513,22 +505,15 @@ async def reject_candidates(
     reason: str = "",
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    if not candidate_ids or any(
-        not candidate_id.strip() for candidate_id in candidate_ids
-    ):
+    if not candidate_ids or any(not candidate_id.strip() for candidate_id in candidate_ids):
         return validation_result("candidate_ids must contain nonempty IDs")
-    rejected = await (await resolve_store(store)).reject_candidates(
-        candidate_ids, reason=reason
-    )
+    rejected = await (await resolve_store(store)).reject_candidates(candidate_ids, reason=reason)
     if not rejected:
         text = "No matching candidates were rejected."
     else:
         lines = [f"Rejected {len(rejected)} candidate(s):\n"]
         for candidate in rejected:
-            lines.append(
-                f"- [{candidate.category.value}] {candidate.content} "
-                f"(id: {candidate.id})"
-            )
+            lines.append(f"- [{candidate.category.value}] {candidate.content} (id: {candidate.id})")
         text = "\n".join(lines)
     applied_ids = [candidate.id for candidate in rejected]
     unresolved_ids = [
@@ -547,9 +532,7 @@ async def reject_candidates(
     if unresolved_ids:
         text += "\nUnapplied: " + ", ".join(unresolved_ids)
     payload = CandidateReviewPayload(
-        candidates=[
-            CandidatePayload.model_validate(candidate) for candidate in rejected
-        ],
+        candidates=[CandidatePayload.model_validate(candidate) for candidate in rejected],
         requested_ids=candidate_ids,
         applied_ids=applied_ids,
         unresolved_ids=unresolved_ids,
@@ -733,9 +716,7 @@ async def recall_context(
     if mode == "brief":
         return await _project_brief_result(store_obj, scope)
 
-    result = await _recall_result(
-        query, project=scope, store=store_obj, mode=_recall_mode(mode)
-    )
+    result = await _recall_result(query, project=scope, store=store_obj, mode=_recall_mode(mode))
     answer, provenance = result.text, result.provenance
     return OperationResult(
         envelope=Envelope.success(
@@ -750,18 +731,14 @@ async def recall_context(
     )
 
 
-async def _project_brief_result(
-    store: AsyncFactStore, project: str | None
-) -> OperationResult:
+async def _project_brief_result(store: AsyncFactStore, project: str | None) -> OperationResult:
     if project is None:
         return validation_result("mode 'brief' requires a project")
     brief = await project_brief(store, project)
     if brief is not None:
         text = f"# {project} brief ({brief.observed_at.date().isoformat()})\n\n{brief.content}"
         return OperationResult(
-            envelope=Envelope.success(
-                data={"mode": "brief", "brief": fact_payload(brief)}
-            ),
+            envelope=Envelope.success(data={"mode": "brief", "brief": fact_payload(brief)}),
             text=text,
         )
 
@@ -920,9 +897,7 @@ async def inspect(
             if fact.stale:
                 meta_str += " [stale]"
             created = fact.created_at.strftime("%Y-%m-%d")
-            lines.append(
-                f"- {meta_str} {fact.content} (id: {fact.id}, created: {created})"
-            )
+            lines.append(f"- {meta_str} {fact.content} (id: {fact.id}, created: {created})")
         text = "\n".join(lines)
     return OperationResult(envelope=Envelope.success(data=data, meta=meta), text=text)
 
@@ -1108,9 +1083,7 @@ async def import_memories(
             text=result["message"],
         )
 
-    lines = [
-        f"Imported {result['total_facts']} facts from {result['imported_files']} files:\n"
-    ]
+    lines = [f"Imported {result['total_facts']} facts from {result['imported_files']} files:\n"]
     for detail in result.get("details", []):
         if detail.get("error"):
             lines.append(f"- {detail['file']}: error: {detail['error']}")
@@ -1154,9 +1127,7 @@ async def rename_project(
     if count == 0:
         text = f"No facts or candidates found with project '{old_project}'."
     else:
-        text = (
-            f"Renamed {count} record(s) from project '{old_project}' → '{new_project}'."
-        )
+        text = f"Renamed {count} record(s) from project '{old_project}' → '{new_project}'."
     return OperationResult(
         envelope=Envelope.success(
             data={
@@ -1221,9 +1192,7 @@ async def doctor(
         provider_issue=provider_issue,
     )
     repair_summary = None
-    if repair_requested and (
-        repair_jsonl or recover_transactions or repair_orphaned_supersessions
-    ):
+    if repair_requested and (repair_jsonl or recover_transactions or repair_orphaned_supersessions):
         # Repair must inspect damaged storage before any recovery or write.
         write_store = store or await run_sync(FactStore, data_dir)
         repair_summary = await run_sync(
@@ -1235,9 +1204,7 @@ async def doctor(
         )
     text_lines = [f"Doctor: {report.status}"]
     for issue in report.issues:
-        text_lines.append(
-            f"  [{issue.severity}] {issue.category}/{issue.code}: {issue.message}"
-        )
+        text_lines.append(f"  [{issue.severity}] {issue.category}/{issue.code}: {issue.message}")
         if issue.repair:
             text_lines.append(f"    repair: {issue.repair}")
     return OperationResult(
@@ -1297,9 +1264,7 @@ def _recall_stats_payload(records: list[RecallRecord]) -> dict[str, Any]:
     sum_input = sum(input_totals)
     sum_cached = sum(cached_totals)
     cache_hit_ratio = (sum_cached / sum_input) if sum_input > 0 else None
-    selector_versions = sorted(
-        {r.selector_version for r in records if r.selector_version}
-    )
+    selector_versions = sorted({r.selector_version for r in records if r.selector_version})
 
     return {
         "total_queries": total,
@@ -1357,9 +1322,7 @@ def _format_recall_summary(records: list[RecallRecord], heading: str) -> list[st
     token_usage = payload["token_usage"]
     lines.append("\n## Token Usage")
     llm_calls = token_usage["llm_calls"]
-    lines.append(
-        f"- LLM calls (reported): {llm_calls if llm_calls is not None else '-'}"
-    )
+    lines.append(f"- LLM calls (reported): {llm_calls if llm_calls is not None else '-'}")
     lines.append(
         f"- Input tokens: {token_usage['input_tokens']:,}"
         if token_usage["input_tokens"] is not None
@@ -1386,7 +1349,7 @@ def _parse_since(value: str | datetime | None) -> datetime | None:
         except ValueError as exc:
             raise ValueError("since must be an ISO-8601 datetime or date") from exc
     if parsed and parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -1421,18 +1384,14 @@ def _empty_recall_stats_result(
     )
 
 
-def _recall_stats_lines(
-    records: list[RecallRecord], payload: dict[str, Any]
-) -> list[str]:
+def _recall_stats_lines(records: list[RecallRecord], payload: dict[str, Any]) -> list[str]:
     lines = _format_recall_summary(records, "# Recall Stats\n")
     selector_versions = payload["selector_versions"]
     if len(selector_versions) >= 2:
         for version in selector_versions:
             subset = [r for r in records if r.selector_version == version]
             lines.append("")
-            lines.extend(
-                _format_recall_summary(subset, heading=f"# Selector {version}\n")
-            )
+            lines.extend(_format_recall_summary(subset, heading=f"# Selector {version}\n"))
     elif selector_versions:
         lines.insert(1, f"*Selector version:* `{selector_versions[0]}`")
     return lines
@@ -1455,9 +1414,7 @@ async def recall_stats(
 
     all_records = await (await resolve_store(store)).load_recall_log(limit=None)
     filtered_records = [
-        record
-        for record in all_records
-        if since_dt is None or record.timestamp >= since_dt
+        record for record in all_records if since_dt is None or record.timestamp >= since_dt
     ]
     records = filtered_records[:limit]
     if not records:
@@ -1545,9 +1502,7 @@ async def sync(
         details: dict[str, Any] = {"sync_error_code": exc.code}
         if exc.git_stderr:
             details["git_stderr"] = exc.git_stderr
-        return failure_result(
-            storage_error(exc.message, details=details), text=exc.message
-        )
+        return failure_result(storage_error(exc.message, details=details), text=exc.message)
 
     if result.get("status") == "skipped":
         text = f"Sync skipped: {result.get('reason', 'unknown')}."
@@ -1568,8 +1523,8 @@ __all__ = [
     "EXIT_VALIDATION",
     "OperationResult",
     "approve_candidates",
-    "audit_memories",
     "async_store",
+    "audit_memories",
     "correct_memory",
     "doctor",
     "edit_fact",

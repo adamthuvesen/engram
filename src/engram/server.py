@@ -17,38 +17,87 @@ from engram.core.config import (
     configure_logging,
 )
 from engram.core.interfaces import Envelope, validation_error
+from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
 from engram.operations import (
     EXIT_VALIDATION,
     OperationResult,
+    exception_result,
+    invalid_format_result,
+)
+from engram.operations import (
     approve_candidates as op_approve_candidates,
+)
+from engram.operations import (
     audit_memories as op_audit_memories,
+)
+from engram.operations import (
     correct_memory as op_correct_memory,
+)
+from engram.operations import (
     doctor as op_doctor,
+)
+from engram.operations import (
     edit_fact as op_edit_fact,
+)
+from engram.operations import (
     forget as op_forget,
+)
+from engram.operations import (
     import_memories as op_import_memories,
+)
+from engram.operations import (
     inspect as op_inspect,
+)
+from engram.operations import (
     list_candidates as op_list_candidates,
+)
+from engram.operations import (
     mark_stale as op_mark_stale,
+)
+from engram.operations import (
     memory_stats as op_memory_stats,
+)
+from engram.operations import (
     merge_memories as op_merge_memories,
+)
+from engram.operations import (
     purge as op_purge,
+)
+from engram.operations import (
     recall as op_recall,
+)
+from engram.operations import (
     recall_context as op_recall_context,
+)
+from engram.operations import (
     recall_stats as op_recall_stats,
+)
+from engram.operations import (
     recall_trace as op_recall_trace,
+)
+from engram.operations import (
     reject_candidates as op_reject_candidates,
+)
+from engram.operations import (
     remember as op_remember,
+)
+from engram.operations import (
     rename_project as op_rename_project,
+)
+from engram.operations import (
     suggest_memories as op_suggest_memories,
+)
+from engram.operations import (
     sync as op_sync,
+)
+from engram.operations import (
     unmark_stale as op_unmark_stale,
+)
+from engram.operations import (
     upkeep as op_upkeep,
 )
-from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
-from engram.storage.store import AsyncFactStore, FactStore
 from engram.runtime import Runtime
-from engram.operations import exception_result, invalid_format_result
+from engram.storage.store import AsyncFactStore, FactStore
 
 INSTRUCTIONS = """Engram — durable, cross-project memory for coding agents.
 
@@ -96,14 +145,9 @@ def _resolve_recall_max_sources(
 
 
 def _recall_limit_conflict_result() -> OperationResult:
-    message = (
-        "Cannot pass limit and max_sources with different values; "
-        "use one or set them equal."
-    )
+    message = "Cannot pass limit and max_sources with different values; use one or set them equal."
     return OperationResult(
-        envelope=Envelope.failure(
-            validation_error(message, details={"parameter": "limit"})
-        ),
+        envelope=Envelope.failure(validation_error(message, details={"parameter": "limit"})),
         text=message,
         exit_code=EXIT_VALIDATION,
     )
@@ -115,9 +159,7 @@ def _tool_result(
     format: str = "text",
     force_json_text: bool = False,
 ) -> ToolResult:
-    text = (
-        result.envelope.to_json() if force_json_text else _render(result, format=format)
-    )
+    text = result.envelope.to_json() if force_json_text else _render(result, format=format)
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=result.envelope.model_dump(mode="json"),
@@ -302,9 +344,7 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
             resolved_max_sources = _resolve_recall_max_sources(max_sources, limit)
         except ValueError:
             result = _recall_limit_conflict_result()
-            return _tool_result(
-                result, format=format, force_json_text=bool(result.exit_code)
-            )
+            return _tool_result(result, format=format, force_json_text=bool(result.exit_code))
         result = await op_recall(
             query,
             project=project,
@@ -314,9 +354,7 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
             max_sources=resolved_max_sources,
             max_prefilter_matches=max_prefilter_matches,
         )
-        return _tool_result(
-            result, format=format, force_json_text=bool(result.exit_code)
-        )
+        return _tool_result(result, format=format, force_json_text=bool(result.exit_code))
 
     @_tool(app, get_store)
     async def recall_trace(
@@ -561,10 +599,7 @@ def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
         result = await op_doctor(
             check_provider_flag=check_provider_flag,
             repair=(
-                repair
-                or repair_jsonl
-                or recover_transactions
-                or repair_orphaned_supersessions
+                repair or repair_jsonl or recover_transactions or repair_orphaned_supersessions
             ),
             repair_jsonl=repair_jsonl,
             recover_transactions=recover_transactions,

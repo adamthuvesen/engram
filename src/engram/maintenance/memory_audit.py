@@ -8,13 +8,13 @@ import shlex
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from itertools import combinations
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from engram.core.models import Fact, MIN_ACTIVE_CONFIDENCE
+from engram.core.models import MIN_ACTIVE_CONFIDENCE, Fact
 from engram.storage.search import term_set
 from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
@@ -156,11 +156,9 @@ def audit_facts(
     The audit is deliberately conservative: it proposes commands for human
     review, and leaves execution to existing explicit maintenance tools.
     """
-    checked_at = _aware(now or datetime.now(timezone.utc))
+    checked_at = _aware(now or datetime.now(UTC))
     reviewable = [
-        fact
-        for fact in facts
-        if fact.confidence >= MIN_ACTIVE_CONFIDENCE and not fact.stale
+        fact for fact in facts if fact.confidence >= MIN_ACTIVE_CONFIDENCE and not fact.stale
     ]
     active = [fact for fact in reviewable if not _is_expired(fact, checked_at)]
 
@@ -249,9 +247,7 @@ def _duplicate_suggestions(facts: Sequence[Fact]) -> list[MemoryAuditSuggestion]
                     kind="duplicate",
                     action="merge_memories",
                     fact_ids=ordered_ids,
-                    confidence=min(
-                        0.98, max(0.80, _duplicate_confidence(ordered_ids, reasons))
-                    ),
+                    confidence=min(0.98, max(0.80, _duplicate_confidence(ordered_ids, reasons))),
                     reason=reason,
                     suggested_content=content,
                     suggested_command=_merge_command(ordered_ids, content),
@@ -373,10 +369,7 @@ def _stale_reason(
     observed_at = _aware(fact.observed_at)
     age_days = (now - observed_at).days
     if age_days >= stale_after_days and _TEMPORAL_STALE_RE.search(fact.content):
-        return (
-            f"time-bound wording is {age_days} days old "
-            f"(threshold {stale_after_days} days)"
-        )
+        return f"time-bound wording is {age_days} days old (threshold {stale_after_days} days)"
 
     for match in _DATED_WINDOW_RE.finditer(fact.content):
         try:
@@ -451,9 +444,7 @@ def _order_for_review(facts: Sequence[Fact]) -> list[Fact]:
 
 
 def _suggested_merge_content(facts: Sequence[Fact]) -> str:
-    return max(
-        facts, key=lambda fact: (len(_tokens(fact.content)), len(fact.content))
-    ).content
+    return max(facts, key=lambda fact: (len(_tokens(fact.content)), len(fact.content))).content
 
 
 def _duplicate_reason(
@@ -506,5 +497,5 @@ def _kind_order(kind: SuggestionKind) -> int:
 
 def _aware(value: datetime) -> datetime:
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

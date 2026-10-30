@@ -65,9 +65,10 @@ def test_dataset_covers_required_memory_shapes():
 
     correction_unit = cases_by_kind["correction-update"].canonical_memory_units[0]
     assert correction_unit.expected_supersedes is not None
-    assert {
-        unit.project for unit in cases_by_kind["project-scope"].canonical_memory_units
-    } == {"atlas", "beacon"}
+    assert {unit.project for unit in cases_by_kind["project-scope"].canonical_memory_units} == {
+        "atlas",
+        "beacon",
+    }
 
     for case in dataset.cases:
         assert case.raw_input
@@ -137,9 +138,7 @@ def test_transient_claim_is_counted_and_makes_card_imprecise():
     summary = evaluate(extracted_cards_by_case=outputs)
 
     result = next(
-        result
-        for result in summary.results
-        if result.case_id == "durable-rule-with-progress"
+        result for result in summary.results if result.case_id == "durable-rule-with-progress"
     )
     assert summary.forbidden_transient_claims == 1
     assert result.precise_cards == result.emitted_cards - 1
@@ -161,9 +160,7 @@ def test_merged_related_memories_fail_coherent_unit_separation():
 
     summary = evaluate(extracted_cards_by_case=outputs)
     result = next(
-        result
-        for result in summary.results
-        if result.case_id == "related-resilience-decisions"
+        result for result in summary.results if result.case_id == "related-resilience-decisions"
     )
 
     assert result.merged_card_indexes == [1]
@@ -203,9 +200,7 @@ def test_live_cli_reports_provider_failure_without_traceback(monkeypatch, capsys
     )
 
     assert main(live=True) == 2
-    assert capsys.readouterr().err == (
-        "Live extraction eval failed: provider unavailable\n"
-    )
+    assert capsys.readouterr().err == ("Live extraction eval failed: provider unavailable\n")
 
 
 @pytest.mark.skipif(
@@ -219,9 +214,7 @@ def test_live_provider_meets_extraction_quality_gates():
     summary = evaluate(extracted_cards_by_case=outputs)
 
     failures = [
-        result.model_dump(
-            include={"case_id", "uncovered_claims", "forbidden_transient_hits"}
-        )
+        result.model_dump(include={"case_id", "uncovered_claims", "forbidden_transient_hits"})
         for result in summary.results
         if result.uncovered_claims or result.forbidden_transient_hits
     ]

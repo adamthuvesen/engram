@@ -1,6 +1,6 @@
 """Fact browser screen — filterable, sortable table with detail pane."""
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from textual import events, on
 from textual.app import ComposeResult
@@ -8,6 +8,7 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.timer import Timer
 from textual.widgets import DataTable, Input, Select
 
+from engram.core.models import Fact, FactCategory
 from engram.dashboard.constants import NO_PROJECT_LABEL
 from engram.dashboard.data import DashboardData, format_age, shorten_project
 from engram.dashboard.tables import (
@@ -21,7 +22,6 @@ from engram.dashboard.tables import (
     sort_by_column,
 )
 from engram.dashboard.widgets.fact_detail import FactDetail
-from engram.core.models import Fact, FactCategory
 
 if TYPE_CHECKING:
     from engram.dashboard.app import EngramDashboard
@@ -30,7 +30,13 @@ if TYPE_CHECKING:
 class FactsScreen(Container):
     """Browse, filter, sort, and inspect facts."""
 
-    SORT_COLUMNS = ["created_at", "category", "project", "content", "confidence"]
+    SORT_COLUMNS: ClassVar[list[str]] = [
+        "created_at",
+        "category",
+        "project",
+        "content",
+        "confidence",
+    ]
 
     def __init__(self, data: DashboardData) -> None:
         super().__init__()
@@ -47,20 +53,18 @@ class FactsScreen(Container):
 
     def compose(self) -> ComposeResult:
         cat_options = [(c.value, c.value) for c in FactCategory]
-        proj_options = (
-            [(p, p) for p in self._data.projects] if self._data.projects else []
-        )
+        proj_options = [(p, p) for p in self._data.projects] if self._data.projects else []
 
         with Horizontal(id="filter-bar", classes="filter-bar"):
             yield Input(placeholder="Search facts...", id="search-input")
             yield Select(
-                [("All categories", "all")] + cat_options,
+                [("All categories", "all"), *cat_options],
                 value="all",
                 id="cat-filter",
                 allow_blank=False,
             )
             yield Select(
-                [("All projects", "all")] + proj_options,
+                [("All projects", "all"), *proj_options],
                 value="all",
                 id="proj-filter",
                 allow_blank=False,
@@ -73,9 +77,7 @@ class FactsScreen(Container):
 
     def on_mount(self) -> None:
         table = self.query_one("#facts-table", DataTable)
-        table.add_columns(
-            "", "id", "category", "project", "content", "conf", "tags", "created"
-        )
+        table.add_columns("", "id", "category", "project", "content", "conf", "tags", "created")
         self._populate_table()
 
     def _populate_table(self) -> None:
@@ -101,11 +103,7 @@ class FactsScreen(Container):
         if self._filter_category and self._filter_category != "all":
             facts = [f for f in facts if f.category.value == self._filter_category]
         if self._filter_project and self._filter_project != "all":
-            target = (
-                None
-                if self._filter_project == NO_PROJECT_LABEL
-                else self._filter_project
-            )
+            target = None if self._filter_project == NO_PROJECT_LABEL else self._filter_project
             facts = [f for f in facts if f.project == target]
         facts = filter_facts_by_text(facts, self._filter_text)
 
@@ -118,9 +116,7 @@ class FactsScreen(Container):
         self._populate_table()
 
     def _schedule_filter(self) -> None:
-        self._search_timer = schedule_filter_timer(
-            self, self._search_timer, self._apply_filters
-        )
+        self._search_timer = schedule_filter_timer(self, self._search_timer, self._apply_filters)
 
     @on(Input.Changed, "#search-input")
     def on_search(self, event: Input.Changed) -> None:
@@ -194,11 +190,14 @@ class FactsScreen(Container):
                 self.query_one("#proj-filter", Select).focus()
             return
 
-        if isinstance(focused, Input) and event.key == "right":
-            if focused.cursor_position == len(focused.value):
-                event.prevent_default()
-                self.query_one("#cat-filter", Select).focus()
-                return
+        if (
+            isinstance(focused, Input)
+            and event.key == "right"
+            and focused.cursor_position == len(focused.value)
+        ):
+            event.prevent_default()
+            self.query_one("#cat-filter", Select).focus()
+            return
 
         if event.key == "slash" and not isinstance(focused, Input):
             event.prevent_default()

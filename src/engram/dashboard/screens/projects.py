@@ -1,6 +1,7 @@
 """Projects screen — list projects, drill into detail with search."""
 
-from typing import TYPE_CHECKING, cast
+import contextlib
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from textual import events, on
 from textual.app import ComposeResult
@@ -8,6 +9,7 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.timer import Timer
 from textual.widgets import DataTable, Input, Label, Static
 
+from engram.core.models import Fact
 from engram.dashboard.data import (
     DashboardData,
     ProjectHealth,
@@ -23,7 +25,6 @@ from engram.dashboard.tables import (
     short_cell,
 )
 from engram.dashboard.widgets.fact_detail import FactDetail
-from engram.core.models import Fact
 
 if TYPE_CHECKING:
     from engram.dashboard.app import EngramDashboard
@@ -32,9 +33,7 @@ if TYPE_CHECKING:
 class ProjectDetailView(Container):
     """Drill-in view for a single project with search."""
 
-    def __init__(
-        self, project: str, health: ProjectHealth, data: DashboardData
-    ) -> None:
+    def __init__(self, project: str, health: ProjectHealth, data: DashboardData) -> None:
         super().__init__()
         self._project = project
         self._health = health
@@ -59,16 +58,8 @@ class ProjectDetailView(Container):
                 yield Static(f"Supersessions: [b]{h.supersession_depth}[/b]")
             with Vertical(classes="proj-stat-box"):
                 yield Label("[b]Age[/b]")
-                yield Static(
-                    f"Oldest: [b]{format_age(h.oldest)}[/b]"
-                    if h.oldest
-                    else "Oldest: —"
-                )
-                yield Static(
-                    f"Newest: [b]{format_age(h.newest)}[/b]"
-                    if h.newest
-                    else "Newest: —"
-                )
+                yield Static(f"Oldest: [b]{format_age(h.oldest)}[/b]" if h.oldest else "Oldest: —")
+                yield Static(f"Newest: [b]{format_age(h.newest)}[/b]" if h.newest else "Newest: —")
             with Vertical(classes="proj-stat-box"):
                 yield Label("[b]Categories[/b]")
                 for cat, count in sorted(h.categories.items(), key=lambda x: -x[1])[:4]:
@@ -103,16 +94,12 @@ class ProjectDetailView(Container):
             )
 
     def _apply_filters(self) -> None:
-        facts = filter_facts_by_text(
-            self._all_facts, self._filter_text, include_project=False
-        )
+        facts = filter_facts_by_text(self._all_facts, self._filter_text, include_project=False)
         self._filtered_facts = facts
         self._populate_table()
 
     def _schedule_filter(self) -> None:
-        self._search_timer = schedule_filter_timer(
-            self, self._search_timer, self._apply_filters
-        )
+        self._search_timer = schedule_filter_timer(self, self._search_timer, self._apply_filters)
 
     @on(Input.Changed, "#proj-search-input")
     def on_search(self, event: Input.Changed) -> None:
@@ -173,7 +160,7 @@ class ProjectDetailView(Container):
 class ProjectsScreen(Container):
     """List all projects with health indicators, drill into detail."""
 
-    SORT_COLUMNS = ["active", "forgotten", "expired", "total", "name"]
+    SORT_COLUMNS: ClassVar[list[str]] = ["active", "forgotten", "expired", "total", "name"]
 
     def __init__(self, data: DashboardData) -> None:
         super().__init__()
@@ -284,10 +271,8 @@ class ProjectsScreen(Container):
             self._detail_view.remove()
             self._detail_view = None
             self.query_one("#proj-list-view").display = True
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one("#proj-overview-table", DataTable).focus()
-            except Exception:
-                pass
 
     def key_escape(self) -> None:
         self._close_detail()

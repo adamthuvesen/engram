@@ -1,7 +1,7 @@
 """Tests for the append-only event-log model: event ids and replay."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -39,7 +39,7 @@ def _created_event(fact: Fact, ts: datetime | None = None) -> FactEvent:
 
 
 def _at(seconds: int) -> datetime:
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
     return base + timedelta(seconds=seconds)
 
 
@@ -291,9 +291,7 @@ def test_replay_stale_then_unstale():
     assert result.stale_reason == "outdated"
     assert is_active is True, "stale facts remain active in the lifecycle sense"
 
-    events.append(
-        FactEvent(event_type=EventType.unstale, fact_id="fact_a", timestamp=_at(2))
-    )
+    events.append(FactEvent(event_type=EventType.unstale, fact_id="fact_a", timestamp=_at(2)))
     result, _ = replay_fact(events)
     assert result is not None
     assert result.stale is False
@@ -409,7 +407,7 @@ def test_materialize_supersession_chain():
     ]
     materialized = materialize_events(events)
     assert set(materialized) == {"fact_old", "fact_new"}
-    old_fact, old_active = materialized["fact_old"]
+    _old_fact, old_active = materialized["fact_old"]
     new_fact, new_active = materialized["fact_new"]
     assert old_active is False
     assert new_active is True
@@ -492,9 +490,7 @@ def test_compaction_failure_leaves_original_intact(tmp_path, monkeypatch):
     from engram.storage.store import FactStore
 
     store = FactStore(data_dir=Path(tempfile.mkdtemp(dir=tmp_path)))
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="hello")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="hello")])
     before_bytes = store.facts_path.read_bytes()
 
     def boom(src, dst):

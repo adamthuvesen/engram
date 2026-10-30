@@ -1,6 +1,9 @@
 """Help modal — shows all keybindings organized by context."""
 
+from typing import ClassVar
+
 from textual.app import ComposeResult
+from textual.binding import BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Label, Static
@@ -47,15 +50,11 @@ FOOTER_HINTS: dict[str, str] = {
         "[$accent]↑↓[/] nav · [$accent]↵[/] drill in · [$accent]s[/] sort"
     ),
     "proj-detail-table": _hint(
-        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]/[/] search · "
-        "[$accent]esc[/] back"
+        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]/[/] search · [$accent]esc[/] back"
     ),
-    "cat-detail-table": _hint(
-        "[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]/[/] search"
-    ),
+    "cat-detail-table": _hint("[$accent]↑↓[/] nav · [$accent]↵[/] detail · [$accent]/[/] search"),
     "search-input": _hint(
-        "type to filter · [$accent]↓[/] or [$accent]tab[/] to table · "
-        "[$accent]esc[/] close"
+        "type to filter · [$accent]↓[/] or [$accent]tab[/] to table · [$accent]esc[/] close"
     ),
     "filter": _hint("[$accent]← →[/] switch filters · [$accent]↓[/] to table"),
     "default": "[$accent]1-4[/] tabs · [$accent]t[/] theme · [$accent]?[/] help · [$accent]q[/] quit",
@@ -65,7 +64,10 @@ FOOTER_HINTS: dict[str, str] = {
 class HelpScreen(ModalScreen[None]):
     """Full keybinding reference, pushed as modal."""
 
-    BINDINGS = [("escape", "dismiss", "Close"), ("question_mark", "dismiss", "Close")]
+    BINDINGS: ClassVar[list[BindingType]] = [
+        ("escape", "dismiss", "Close"),
+        ("question_mark", "dismiss", "Close"),
+    ]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="help-container"):
@@ -76,7 +78,5 @@ class HelpScreen(ModalScreen[None]):
                     if context != current_section:
                         current_section = context
                         yield Static(f"\n[b]{context}[/b]", classes="help-section")
-                    yield Static(
-                        f"  [bold $accent]{key:<12}[/]  {desc}", classes="help-row"
-                    )
+                    yield Static(f"  [bold $accent]{key:<12}[/]  {desc}", classes="help-row")
             yield Label("[dim]Press Esc or ? to close[/]", classes="help-hint")

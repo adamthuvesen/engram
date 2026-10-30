@@ -22,14 +22,12 @@ from pydantic import BaseModel, Field
 from engram.evaluation.fixtures import EvalFactSpec, materialize_facts
 from engram.evaluation.report import (
     ReportProvenance,
-    report_provenance,
     print_provenance,
+    report_provenance,
 )
 from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
-DATASET_PATH = (
-    Path(__file__).parent / "datasets" / "cross_project_recall_eval_dataset.json"
-)
+DATASET_PATH = Path(__file__).parent / "datasets" / "cross_project_recall_eval_dataset.json"
 
 BASELINE_QUALITY_SCORE = 0.4166666666666667
 MIN_QUALITY_SCORE = 0.88
@@ -109,9 +107,9 @@ def _score_query(
 
 
 async def _run_query(store: AsyncFactStore, lq: LabeledQuery) -> QueryResult:
-    from engram.recall.retriever import recall_with_provenance
     from engram.evaluation.provider import FixtureCompletionClient
     from engram.llm import completion_client
+    from engram.recall.retriever import recall_with_provenance
 
     with completion_client(FixtureCompletionClient()):
         _, _, provenance, _ = await recall_with_provenance(lq.query, store=store)
@@ -210,7 +208,7 @@ def main() -> int:
     print(f"{'recall@5':<28}{_pct(summary.recall_at_5):>8}")
     print(f"{'candidate recall':<28}{_pct(summary.hit_rate):>8}")
     print(f"{'bad-evidence query rate':<28}{_pct(summary.bad_evidence_rate):>8}")
-    print(f"{'no-match clean':<28}{str(summary.nomatch_ok):>8}")
+    print(f"{'no-match clean':<28}{summary.nomatch_ok!s:>8}")
     print()
     print("mean score by kind:")
     for kind, scores in sorted(summary.score_by_kind.items()):

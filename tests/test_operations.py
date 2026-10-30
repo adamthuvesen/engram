@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from engram import operations
@@ -71,9 +71,7 @@ def test_list_candidates_metadata_is_exact_at_limit():
         ]
     )
 
-    result = asyncio.run(
-        operations.list_candidates(limit=2, store=AsyncFactStore(store))
-    )
+    result = asyncio.run(operations.list_candidates(limit=2, store=AsyncFactStore(store)))
 
     assert result.envelope.meta.returned == 2
     assert result.envelope.meta.total == 2
@@ -98,9 +96,7 @@ def test_candidate_review_operations_use_shared_payloads():
     )
 
     assert approved.exit_code == operations.EXIT_OK
-    assert approved.envelope.data["facts"][0]["content"] == (
-        "Use the shared operation layer"
-    )
+    assert approved.envelope.data["facts"][0]["content"] == ("Use the shared operation layer")
     assert "Approved 1 candidate" in approved.text
 
 
@@ -181,7 +177,7 @@ def test_recall_stats_json_defaults_to_aggregate_only():
 
 def test_recall_stats_can_include_records_and_filter_window():
     store = _store()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     store.log_recall(
         RecallRecord(
             query="old",

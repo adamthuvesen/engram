@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import re
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -25,17 +25,15 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from engram.core.models import Fact, FactCategory
-from engram.extraction.observer import ingest
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
 from engram.evaluation.report import (
     ReportProvenance,
-    report_provenance,
     print_provenance,
+    report_provenance,
 )
+from engram.extraction.observer import ingest
+from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
-DATASET_PATH = (
-    Path(__file__).parent / "datasets" / "extraction_quality_eval_dataset.json"
-)
+DATASET_PATH = Path(__file__).parent / "datasets" / "extraction_quality_eval_dataset.json"
 
 MIN_DURABLE_CLAIM_COVERAGE = 0.95
 MIN_EMITTED_CARD_PRECISION = 0.90
@@ -132,9 +130,7 @@ def load_dataset(path: Path = DATASET_PATH) -> ExtractionEvalDataset:
         raise ValueError("Policy regression must label exactly one canonical unit")
     policy_claims = policy_case.canonical_memory_units[0].required_durable_claims
     if len(policy_claims) != POLICY_REQUIRED_CLAUSES:
-        raise ValueError(
-            f"Policy regression must label {POLICY_REQUIRED_CLAUSES} durable clauses"
-        )
+        raise ValueError(f"Policy regression must label {POLICY_REQUIRED_CLAUSES} durable clauses")
     return dataset
 
 
@@ -153,21 +149,15 @@ def evaluate(
     covered_claims = sum(result.covered_claims for result in results)
     precise_cards = sum(result.precise_cards for result in results)
     card_unit_assignments = sum(result.card_unit_assignments for result in results)
-    forbidden_transient_claims = sum(
-        len(result.forbidden_transient_hits) for result in results
-    )
+    forbidden_transient_claims = sum(len(result.forbidden_transient_hits) for result in results)
 
     durable_claim_coverage = covered_claims / required_claims
     emitted_card_precision = precise_cards / emitted_cards if emitted_cards else 1.0
     fragmentation = card_unit_assignments / canonical_units
     policy_regression_ok = all(
-        result.policy_regression_ok is True
-        for result in results
-        if result.policy_regression
+        result.policy_regression_ok is True for result in results if result.policy_regression
     )
-    coherent_unit_separation_ok = all(
-        not result.merged_card_indexes for result in results
-    )
+    coherent_unit_separation_ok = all(not result.merged_card_indexes for result in results)
     card_metadata_ok = all(
         card.memory_key and 1 <= len(card.retrieval_hints) <= 5
         for cards in outputs.values()
@@ -184,9 +174,7 @@ def evaluate(
     )
 
     return EvalSummary(
-        provenance=report_provenance(
-            dataset_path, supplied=extracted_cards_by_case is not None
-        ),
+        provenance=report_provenance(dataset_path, supplied=extracted_cards_by_case is not None),
         cases=len(results),
         canonical_units=canonical_units,
         emitted_cards=emitted_cards,
@@ -285,8 +273,7 @@ def _score_case(case: ExtractionEvalCase, cards: list[ExtractedCard]) -> CaseSco
             matching_indexes = {
                 index
                 for index, card in enumerate(cards)
-                if _card_aligns_with_unit(card, unit)
-                and _contains(normalized_cards[index], claim)
+                if _card_aligns_with_unit(card, unit) and _contains(normalized_cards[index], claim)
             }
             if matching_indexes:
                 covered_claims += 1
@@ -300,15 +287,11 @@ def _score_case(case: ExtractionEvalCase, cards: list[ExtractedCard]) -> CaseSco
     forbidden_transient_hits: list[str] = []
     for index, normalized_card in enumerate(normalized_cards):
         hits = [
-            claim
-            for claim in case.forbidden_transient_claims
-            if _contains(normalized_card, claim)
+            claim for claim in case.forbidden_transient_claims if _contains(normalized_card, claim)
         ]
         if hits:
             forbidden_hits_by_card[index] = hits
-            forbidden_transient_hits.extend(
-                f"card {index + 1}: {claim}" for claim in hits
-            )
+            forbidden_transient_hits.extend(f"card {index + 1}: {claim}" for claim in hits)
 
     merged_card_indexes = [
         index + 1 for index, unit_ids in card_unit_ids.items() if len(unit_ids) > 1
@@ -318,9 +301,7 @@ def _score_case(case: ExtractionEvalCase, cards: list[ExtractedCard]) -> CaseSco
         for index in range(len(cards))
     )
     card_unit_assignments = sum(len(indexes) for indexes in unit_card_indexes.values())
-    required_claims = sum(
-        len(unit.required_durable_claims) for unit in case.canonical_memory_units
-    )
+    required_claims = sum(len(unit.required_durable_claims) for unit in case.canonical_memory_units)
 
     policy_regression_ok: bool | None = None
     if case.policy_regression:
@@ -394,39 +375,17 @@ def main(*, live: bool = False) -> int:
     print("")
     print(f"{'metric':<32}{'value':>10}{'gate':>12}")
     print("-" * 54)
-    print(
-        f"{'durable claim coverage':<32}"
-        f"{_pct(summary.durable_claim_coverage):>10}"
-        f"{'>= 95%':>12}"
-    )
-    print(
-        f"{'emitted-card precision':<32}"
-        f"{_pct(summary.emitted_card_precision):>10}"
-        f"{'>= 90%':>12}"
-    )
-    print(
-        f"{'cards per canonical unit':<32}{summary.fragmentation:>10.2f}{'<= 1.25':>12}"
-    )
-    print(
-        f"{'policy regression':<32}"
-        f"{str(summary.policy_regression_ok):>10}"
-        f"{'one card':>12}"
-    )
-    print(
-        f"{'forbidden transient claims':<32}"
-        f"{summary.forbidden_transient_claims:>10}"
-        f"{'zero':>12}"
-    )
+    print(f"{'durable claim coverage':<32}{_pct(summary.durable_claim_coverage):>10}{'>= 95%':>12}")
+    print(f"{'emitted-card precision':<32}{_pct(summary.emitted_card_precision):>10}{'>= 90%':>12}")
+    print(f"{'cards per canonical unit':<32}{summary.fragmentation:>10.2f}{'<= 1.25':>12}")
+    print(f"{'policy regression':<32}{summary.policy_regression_ok!s:>10}{'one card':>12}")
+    print(f"{'forbidden transient claims':<32}{summary.forbidden_transient_claims:>10}{'zero':>12}")
     print(
         f"{'canonical units stay separate':<32}"
-        f"{str(summary.coherent_unit_separation_ok):>10}"
+        f"{summary.coherent_unit_separation_ok!s:>10}"
         f"{'required':>12}"
     )
-    print(
-        f"{'keys and retrieval hints':<32}"
-        f"{str(summary.card_metadata_ok):>10}"
-        f"{'required':>12}"
-    )
+    print(f"{'keys and retrieval hints':<32}{summary.card_metadata_ok!s:>10}{'required':>12}")
 
     if summary.passes_gates:
         return 0

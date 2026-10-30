@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -128,9 +128,7 @@ def test_cli_trace_json_no_match(cli_env, capsys):
     assert exit_code == cli.EXIT_OK
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["status"] == "ok"
-    assert (
-        parsed["data"]["trace"] is not None
-    )  # tier-0 still emits a (possibly empty) trace
+    assert parsed["data"]["trace"] is not None  # tier-0 still emits a (possibly empty) trace
     assert parsed["data"]["quality"] in ("none", "low")
 
 
@@ -163,9 +161,7 @@ def test_cli_doctor_json_with_corrupt_jsonl(cli_env, capsys):
     # This keeps the test focused on event-log corruption rather than a wholly
     # invalid facts file.
     store = FactStore(data_dir=cli_env)
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")])
     with store.facts_path.open("a") as fh:
         fh.write("not json\n")
 
@@ -190,9 +186,7 @@ def test_cli_doctor_repairs_orphaned_supersessions(cli_env, capsys):
         ]
     )
 
-    exit_code = cli.run(
-        ["doctor", "--repair", "--repair-orphaned-supersessions", "--json"]
-    )
+    exit_code = cli.run(["doctor", "--repair", "--repair-orphaned-supersessions", "--json"])
     parsed = json.loads(capsys.readouterr().out)
     repaired = FactStore(data_dir=cli_env).load_facts()[0]
 
@@ -232,7 +226,7 @@ def test_cli_correct_json_not_found(cli_env, capsys):
 
 def test_cli_recall_stats_aggregate_and_include_records(cli_env, capsys):
     store = FactStore(data_dir=cli_env)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     store.log_recall(
         RecallRecord(
             query="old",

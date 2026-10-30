@@ -13,9 +13,7 @@ T = TypeVar("T", bound=BaseModel)
 class FixtureCompletionClient:
     """Consume fixture responses. An empty fixture disables provider selection."""
 
-    def __init__(
-        self, responses: list[tuple[str, int | None, int | None]] | None = None
-    ) -> None:
+    def __init__(self, responses: list[tuple[str, int | None, int | None]] | None = None) -> None:
         self._responses = deque(responses or [])
         self.available = bool(self._responses)
 

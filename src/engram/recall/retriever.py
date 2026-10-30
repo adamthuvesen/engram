@@ -228,9 +228,7 @@ def _record_completion(
 def _validate_references(ids: list[str], candidate_ids: set[str]) -> list[str]:
     unknown = set(ids) - candidate_ids
     if unknown:
-        raise ProviderResponseError(
-            "Provider referenced facts outside the supplied evidence."
-        )
+        raise ProviderResponseError("Provider referenced facts outside the supplied evidence.")
     return list(dict.fromkeys(ids))
 
 
@@ -258,9 +256,7 @@ async def _select_relevant(
     _record_completion(usage, completion)
     selection = completion.value
     by_id = {hit.fact.id: hit for hit in candidates}
-    selected = [
-        by_id[fid] for fid in _validate_references(selection.relevant_ids, set(by_id))
-    ]
+    selected = [by_id[fid] for fid in _validate_references(selection.relevant_ids, set(by_id))]
     if not with_trace:
         return selected, None, False
     trace, truncated = _call_trace(
@@ -296,9 +292,7 @@ def _render_answer(answer: RecallAnswer, facts: list[Fact]) -> tuple[str, list[F
             )
         refs = _validate_references(claim.fact_ids, set(by_id))
         if not refs and answer.quality != "none":
-            raise ProviderResponseError(
-                "An answer claim has no supporting fact references."
-            )
+            raise ProviderResponseError("An answer claim has no supporting fact references.")
         cited_ids.extend(fid for fid in refs if fid not in cited_ids)
         citations = "".join(f" (id: {fid})" for fid in refs)
         lines.append(claim.text.strip() + citations)
@@ -549,9 +543,7 @@ async def recall_result(
     latency_ms = (time.monotonic() - t0) * 1000
     tier = 1 if usage.llm_calls else 0
     evidence = {
-        hit.fact.id: RecallEvidence(
-            fact=hit.fact, score=hit.score, coverage=hit.coverage
-        )
+        hit.fact.id: RecallEvidence(fact=hit.fact, score=hit.score, coverage=hit.coverage)
         for hit in hits
     }
     delivered = [evidence[fact.id] for fact in outcome.delivered]
@@ -716,12 +708,12 @@ __all__ = [
     "ANSWER_SYSTEM",
     "MIN_COVERAGE",
     "RELATIVE_CUTOFF",
+    "ZERO_HIT_MAX_CANDIDATES",
     "AnswerClaim",
     "RecallAnswer",
     "RecallMode",
     "RecallResult",
-    "ZERO_HIT_MAX_CANDIDATES",
     "recall",
-    "recall_with_provenance",
     "recall_result",
+    "recall_with_provenance",
 ]
