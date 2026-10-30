@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  check:
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: ${{ matrix.python }}
@@ -19,21 +19,59 @@ jobs:
       matrix:
         python: ["3.13", "3.14"]
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python }}
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           enable-cache: true
-      - name: Install locked dependencies
-        run: uv sync --locked --extra dev
+      - run: uv sync --locked --extra dev
       - name: Fast lane (same entrypoint as just check)
         run: uv run --locked --extra dev python -m engram.tooling.verify check
-      - name: Full offline verification (same entrypoint as just verify)
+
+  verify:
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - name: Subprocess and installed-wheel smokes (just smoke)
         run: uv run --locked --extra dev python -m engram.tooling.verify verify
+      - name: Drive the real CLI, MCP server, dashboard, and wheel (verify-engram)
+        run: .agents/skills/verify-engram/verify all
+      - name: Verify control observes FAIL
+        run: .agents/skills/verify-engram/verify control
+
+  sync-transport:
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked --extra dev
       - name: Temporary local Git transport integration
         run: uv run --locked --extra dev python -m engram.tooling.verify sync-transport

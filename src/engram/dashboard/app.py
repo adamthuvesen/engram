@@ -522,7 +522,11 @@ class EngramDashboard(App[None]):
         self._refresh_data()
 
     def _apply_data_to_tabs(self) -> None:
-        active_tab = self.query_one("#tabs", TabbedContent).active
+        tabs = next(iter(self.query("#tabs").results(TabbedContent)), None)
+        if tabs is None:
+            # A refresh worker can finish after the app has closed its screen.
+            return
+        active_tab = tabs.active
         self._dirty_tabs |= SECTION_IDS - {active_tab}
         self._refresh_screen(active_tab)
         self._update_nav_labels()

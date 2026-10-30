@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Drive Engram's real CLI, MCP server, dashboard, and wheel against a throwaway store.
+
+verify | verify all | verify <drive>... | verify list | verify control
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
+from fnmatch import fnmatch
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+HELPER = Path(__file__).resolve()
+if Path(sys.prefix).resolve() != (ROOT / ".venv").resolve():
+    uv = ["uv", "run", "--quiet", "--locked", "--extra", "dev", "--project", str(ROOT)]
+    os.execvp("uv", [*uv, "python", str(HELPER), *sys.argv[1:]])
+
+import engram  # noqa: E402
+
+from drives import DRIVES, SMOKE, Context, Failure, control  # noqa: E402
+
+GLOBAL_PATHS = ["pyproject.toml", "uv.lock", ".agents/skills/verify-engram/*"]
+REDACT = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def git(*args: str) -> str:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    result = subprocess.run(
+        ["git", *args], cwd=ROOT, env=env, capture_output=True, text=True
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def changed_files() -> set[str]:
+    base = git("merge-base", "HEAD", "main") or git("merge-base", "HEAD", "origin/main")
+    files = set(git("diff", "--name-only", base).splitlines()) if base else set()
+    for line in git("status", "--porcelain", "--untracked-files=all").splitlines():
+        files.add(line[3:].split(" -> ")[-1])
+    return {f for f in files if f}
+
+
+def select(files: set[str]) -> list[str]:
+    if any(fnmatch(f, g) for f in files for g in GLOBAL_PATHS):
+        return list(DRIVES)
+    picked = [
+        n
+        for n, d in DRIVES.items()
+        if any(fnmatch(f, g) for f in files for g in d.paths)
+    ]
+    return picked or [SMOKE]
+
+
+def child_env(scratch: Path) -> dict[str, str]:
+    keep = ("PATH", "LANG", "LC_ALL", "TERM", "TMPDIR", "UV_PYTHON")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    home = scratch / "home"
+    env.update(
+        HOME=str(home),
+        XDG_CONFIG_HOME=str(home / ".config"),
+        XDG_DATA_HOME=str(home / ".local/share"),
+        XDG_CACHE_HOME=str(home / ".cache"),
+        XDG_STATE_HOME=str(home / ".local/state"),
+        UV_CACHE_DIR=subprocess.run(
+            ["uv", "cache", "dir"], capture_output=True, text=True
+        ).stdout.strip(),
+        ENGRAM_MAINTENANCE_ENABLED="false",
+        ENGRAM_SYNC_ENABLED="false",
+        ENGRAM_LOG_LEVEL="WARNING",
+        ENGRAM_REPO_SEARCH_ROOTS=json.dumps([str(scratch / "repos")]),
+        ENGRAM_CLAUDE_PROJECTS_DIR=str(home / ".claude/projects"),
+        OPENAI_API_KEY="engram-verify-synthetic-key",
+        OPENAI_BASE_URL="http://127.0.0.1:1/v1",
+        FASTMCP_CHECK_FOR_UPDATES="off",
+    )
+    for path in (home / ".config", scratch / "repos"):
+        path.mkdir(parents=True, exist_ok=True)
+    return env
+
+
+def preflight(env: dict[str, str], scratch: Path) -> None:
+    src = Path(engram.__file__).resolve()
+    if not src.is_relative_to(ROOT / "src"):
+        sys.exit(f"preflight: engram imports from {src}, not this checkout's src/")
+    if not Path(sys.executable).with_name("engram").is_file():
+        sys.exit(
+            "preflight: the engram console script is missing; run uv sync --locked --extra dev"
+        )
+    probe = scratch / "probe-data"
+    probe_env = {**env, "ENGRAM_DATA_DIR": str(probe)}
+    code = "from engram.core.config import Settings as S; s=S(); print(s.data_dir, s.sync_enabled, s.maintenance_enabled)"
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        env=probe_env,
+        cwd=scratch,
+        capture_output=True,
+        text=True,
+    )
+    if out.stdout.split() != [str(probe), "False", "False"]:
+        sys.exit(
+            f"preflight: child settings are not isolated: {out.stdout.strip()} {out.stderr[-300:]}"
+        )
+    if not env["OPENAI_BASE_URL"].startswith("http://127.0.0.1:1/"):
+        sys.exit("preflight: the provider endpoint is not blocked")
+
+
+def run_dir() -> Path:
+    sha = git("rev-parse", "--short=7", "HEAD") or "nogit"
+    dirty = "-dirty" if git("status", "--porcelain") else ""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = ROOT / ".verify" / "runs" / f"{stamp}-{sha}{dirty}"
+    path.mkdir(parents=True, exist_ok=False)
+    return path
+
+
+async def run_one(
+    name: str, fn: Callable[[Context], Awaitable[str]], ctx: Context, timeout: float
+) -> tuple[str, float, str]:
+    start = time.monotonic()
+    saved = os.dup(2)
+    with (ctx.evidence / "stderr.log").open("w") as log:
+        os.dup2(log.fileno(), 2)
+    try:
+        detail = await asyncio.wait_for(fn(ctx), timeout)
+        result = "PASS"
+    except Failure as exc:
+        result, detail = "FAIL", str(exc)
+    except TimeoutError:
+        result, detail = "FAIL", f"timed out after {timeout:.0f}s"
+    except Exception as exc:  # a crash inside a drive is a FAIL with its reason
+        result, detail = "FAIL", f"{type(exc).__name__}: {exc}"
+    finally:
+        ctx.stop_processes()
+        os.dup2(saved, 2)
+        os.close(saved)
+    seconds = time.monotonic() - start
+    print(f"{result} {name} {seconds:.1f}s {detail}", flush=True)
+    return result, seconds, detail
+
+
+def main(argv: list[str]) -> int:
+    command = argv[0] if argv else ""
+    if command == "list":
+        for name, drive in DRIVES.items():
+            print(
+                f"{name}{' (smoke)' if name == SMOKE else ''}: {drive.proves}\n  paths: {', '.join(drive.paths)}"
+            )
+        return 0
+    if command == "control":
+        names = ["control"]
+    elif command == "all":
+        names = list(DRIVES)
+    elif argv:
+        unknown = [n for n in argv if n not in DRIVES]
+        if unknown:
+            print(
+                f"unknown drive(s): {', '.join(unknown)}. Run verify list.",
+                file=sys.stderr,
+            )
+            return 2
+        names = argv
+    else:
+        names = select(changed_files())
+    evidence = run_dir()
+    results: list[dict[str, object]] = []
+    with tempfile.TemporaryDirectory(prefix="engram-verify-") as temporary:
+        scratch = Path(temporary)
+        env = child_env(scratch)
+        preflight(env, scratch)
+        (evidence / "env.json").write_text(
+            json.dumps(
+                {
+                    k: "<redacted>" if any(r in k for r in REDACT) else v
+                    for k, v in env.items()
+                },
+                indent=2,
+            )
+        )
+        for name in names:
+            if name == "control":
+                fn, timeout = control, 30.0
+            else:
+                fn, timeout = DRIVES[name].run, DRIVES[name].timeout
+            ctx = Context(
+                name=name,
+                scratch=scratch / name,
+                evidence=evidence / name,
+                env=env,
+                helper=HELPER,
+                root=ROOT,
+            )
+            result, seconds, detail = asyncio.run(run_one(name, fn, ctx, timeout))
+            results.append(
+                {
+                    "drive": name,
+                    "result": result,
+                    "seconds": round(seconds, 2),
+                    "detail": detail,
+                }
+            )
+    summary = {
+        "sha": git("rev-parse", "HEAD"),
+        "dirty": bool(git("status", "--porcelain")),
+        "drives": results,
+    }
+    (evidence / "summary.json").write_text(json.dumps(summary, indent=2))
+    print(f"evidence: {evidence}")
+    failed = any(r["result"] == "FAIL" for r in results)
+    if command == "control":
+        print(
+            "control: FAIL observed"
+            if failed
+            else "control: the wrong expectation passed, so the drive asserts nothing"
+        )
+        return 0 if failed else 1
+    return int(failed)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["_serve-fixture"]:
+        from drives import serve_fixture
+
+        serve_fixture(Path(sys.argv[2]), Path(sys.argv[3]))
+    else:
+        sys.exit(main(sys.argv[1:]))

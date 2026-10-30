@@ -5,7 +5,6 @@ Recall ranks dated memory cards with BM25. Saving extracts and reconciles cards 
 
 ```bash
 uv sync --locked --extra dev
-just check
 uv run --locked engram --help
 uv run --locked python -m engram.evaluation.recall
 ```
@@ -61,33 +60,8 @@ The dashboard uses the shared lifecycle policy and distinguishes forgotten facts
 
 ## Verify changes
 
-```bash
-just check           # focused offline checks
-just verify          # full offline suite and installed-wheel smoke
-just verify-package  # installed-wheel smoke only
-just reference       # regenerate configuration and tool references
-```
-
-`just check` runs lock consistency, lint, format, types, generated references, import boundaries, and focused tests.
-`just verify` adds the full offline test suite and installs a wheel outside the checkout.
-The wheel smoke checks stdio, loopback HTTP, restart persistence, dashboard CSS, packaged datasets, and the headless dashboard.
-Smoke runtimes use temporary data and disable maintenance and sync.
-Injected runtimes use a disabled provider. Installed console smokes use a synthetic key and a blocked loopback provider endpoint.
-
-Default pytest runs exclude live provider tests and sync transport tests.
-The sync transport tests also require `--run-sync-transport`, so changing the marker expression cannot enable a push.
-Safe sync unit, snapshot, merge, and cancellation tests remain in the offline profile.
-
-```bash
-just verify-sync     # additional integration profile, pushes to temporary local Git remotes
-```
-
-Run that profile only where Git pushes are allowed. The local push safeguard can prohibit it.
-The verification report lists excluded profiles and reports `passed_with_limits` when they remain unverified.
-CI runs the offline profile and the temporary-remote integration profile separately on both Python versions.
-
-Git hooks use Ruff from `uv.lock`. Install them with `uv run --locked --extra dev pre-commit install`.
-The build also uses the locked Hatchling dependency through `uv build --no-build-isolation`.
+[AGENTS.md](AGENTS.md) lists the verification commands and what each one covers.
+Install the Git hooks with `uv run --locked --extra dev pre-commit install`.
 
 ## Evaluate quality
 
@@ -107,10 +81,10 @@ Reports record the dataset SHA256, selector version, code revision, dirty-tree s
 A missing code revision is explicit when an installed wheel runs outside a Git checkout.
 Fixture scores verify deterministic contracts. They do not establish live model quality.
 
-Live extraction requires an explicit opt-in and provider credentials:
+Live extraction spends provider tokens. Without the opt-in it refuses and prints the approved command:
 
 ```bash
-ENGRAM_EVAL_PROVIDER=1 uv run --locked python -m engram.evaluation.extraction_quality --live
+uv run --locked python -m engram.evaluation.extraction_quality --live
 ```
 
 ## Configuration and storage

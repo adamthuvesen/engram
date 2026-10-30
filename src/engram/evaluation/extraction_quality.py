@@ -210,7 +210,11 @@ async def extract_live_provider_outputs(
 ) -> dict[str, list[ExtractedCard]]:
     """Run the real ingest path with the configured provider."""
     if os.environ.get("ENGRAM_EVAL_PROVIDER") != "1":
-        raise ValueError("Live extraction requires ENGRAM_EVAL_PROVIDER=1.")
+        raise ValueError(
+            "Live extraction spends provider tokens. To approve, run: "
+            "ENGRAM_EVAL_PROVIDER=1 uv run --locked python -m "
+            "engram.evaluation.extraction_quality --live"
+        )
     dataset = load_dataset(dataset_path)
     outputs: dict[str, list[ExtractedCard]] = {}
 

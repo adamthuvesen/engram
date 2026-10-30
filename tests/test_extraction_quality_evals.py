@@ -226,3 +226,13 @@ def test_live_provider_meets_extraction_quality_gates():
         if result.uncovered_claims or result.forbidden_transient_hits
     ]
     assert summary.passes_gates, failures
+
+
+def test_live_extraction_refuses_without_approval(monkeypatch):
+    import asyncio
+
+    from engram.evaluation.extraction_quality import extract_live_provider_outputs
+
+    monkeypatch.delenv("ENGRAM_EVAL_PROVIDER", raising=False)
+    with pytest.raises(ValueError, match="ENGRAM_EVAL_PROVIDER=1 uv run"):
+        asyncio.run(extract_live_provider_outputs())

@@ -3,6 +3,8 @@
 .ruff_cache/
 __pycache__/
 *.py[cod]
-.claude/
+.claude/*
+!.claude/skills
+.verify/
 test_live.py
 .DS_Store

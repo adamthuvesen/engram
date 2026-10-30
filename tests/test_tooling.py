@@ -12,13 +12,14 @@ from engram.evaluation.recall import DATASET_PATH, evaluate
 from engram.tooling.boundaries import check_source
 from engram.tooling.reference import configuration_markdown, update_references
 from engram.tooling.smoke import child_environment, run_smoke
-from engram.tooling.verify import CheckResult, VerificationReport, commands
+from engram.tooling.verify import EXCLUDED, CheckResult, VerificationReport, commands
 from tests.conftest import pytest_collection_modifyitems
 
 
 def test_default_verification_excludes_billable_and_push_profiles():
-    command = next(command for command in commands("verify") if "pytest" in command)
-    assert command[-2:] == ["-m", "not live_provider and not sync_transport"]
+    for profile in ("check", "verify"):
+        command = next(command for command in commands(profile) if "pytest" in command)
+        assert command[-1].startswith("not live_provider and not sync_transport and ")
     explicit = commands("sync-transport")[0]
     assert explicit[-3:] == ["-m", "sync_transport", "--run-sync-transport"]
 
@@ -45,16 +46,14 @@ def test_wrong_marker_expression_cannot_enable_git_push_fixtures():
     assert applied == []
 
 
-def test_skipped_required_profile_is_visible():
+def test_excluded_profiles_are_listed_without_changing_status():
     report = VerificationReport(
         profile="verify",
-        checks=[
-            CheckResult(
-                name="sync transport", status="skipped", reason="requires opt-in"
-            )
-        ],
+        checks=[CheckResult(name="pytest", status="passed")],
+        excluded=EXCLUDED["verify"],
     )
-    assert report.status == "passed_with_limits"
+    assert report.status == "passed"
+    assert any("verify-sync" in item for item in report.excluded)
     assert not report.failed
     report.checks.append(CheckResult(name="mypy", status="failed"))
     assert report.status == "failed"
@@ -307,16 +306,19 @@ def test_enforced_rules_cite_existing_paths():
 
     root = Path(__file__).resolve().parents[1]
     agents = (root / "AGENTS.md").read_text()
-    table = agents.split("## Enforced Rules", 1)[1].split("\n\n| Rule")[1]
-    rows = [row for row in table.splitlines() if row.startswith("| ")][1:]
+    assert "\n## Enforced Rules\n" in agents, (
+        "AGENTS.md lost its ## Enforced Rules section."
+    )
+    section = agents.split("\n## Enforced Rules\n", 1)[1].split("\n## ", 1)[0]
+    rows = [row for row in section.splitlines() if row.startswith("| ")][2:]
     assert rows, "AGENTS.md Enforced Rules table has no rows."
     for row in rows:
         cited = re.findall(r"`([\w./-]+\.\w+)(?:::(\w+))?`", row.split("|")[2])
         assert cited, f"Enforced Rules row cites no path: {row}"
-        for path, test_name in cited:
+        for path, name in cited:
             target = root / path
             assert target.is_file(), f"AGENTS.md cites missing path {path}."
-            if test_name:
-                assert re.search(rf"def {test_name}\(", target.read_text()), (
-                    f"AGENTS.md cites missing test {path}::{test_name}."
-                )
+            defined = rf"^\s*(?:(?:async\s+)?def|class)\s+{name}\b|^{name}\s*="
+            assert not name or re.search(defined, target.read_text(), re.M), (
+                f"AGENTS.md cites {path}::{name}, but {path} does not define {name}."
+            )

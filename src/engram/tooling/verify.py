@@ -1,4 +1,8 @@
-"""Run the same locked, offline verification profiles locally and in CI."""
+"""Run the same locked, offline verification profiles locally and in CI.
+
+``check`` runs static checks, then the offline suite on parallel pytest workers.
+``verify`` adds only what ``check`` leaves out: subprocess smokes and the installed wheel.
+"""
 
 from __future__ import annotations
 
@@ -18,25 +22,30 @@ from engram.tooling.boundaries import check_boundaries
 Profile = Literal["check", "verify", "sync-transport", "package"]
 OFFLINE_SELECTION = "not live_provider and not sync_transport"
 FAST_SELECTION = f"{OFFLINE_SELECTION} and not subprocess_smoke"
-FOCUSED_TESTS = [
-    "tests/test_models.py",
-    "tests/test_event_log.py",
-    "tests/test_interfaces.py",
-    "tests/test_retriever.py",
-    "tests/test_llm.py",
-    "tests/test_tooling.py",
-]
+SYNC_TRANSPORT = "sync transport: just verify-sync. It pushes to temporary local Git remotes, which a local push freeze can refuse."
+LIVE_PROVIDER = "live provider evaluation: needs ENGRAM_EVAL_PROVIDER=1 and credentials. Offline checks do not prove live model quality."
+EXCLUDED: dict[Profile, list[str]] = {
+    "check": [
+        "subprocess smokes and installed wheel: just smoke.",
+        SYNC_TRANSPORT,
+        LIVE_PROVIDER,
+    ],
+    "verify": [SYNC_TRANSPORT, LIVE_PROVIDER],
+    "sync-transport": [LIVE_PROVIDER],
+    "package": [SYNC_TRANSPORT, LIVE_PROVIDER],
+}
 
 
 class CheckResult(BaseModel):
     name: str
-    status: Literal["passed", "failed", "skipped"]
+    status: Literal["passed", "failed"]
     reason: str = ""
 
 
 class VerificationReport(BaseModel):
     profile: Profile
     checks: list[CheckResult] = Field(default_factory=list)
+    excluded: list[str] = Field(default_factory=list)
 
     @property
     def failed(self) -> bool:
@@ -44,13 +53,7 @@ class VerificationReport(BaseModel):
 
     @property
     def status(self) -> str:
-        if self.failed:
-            return "failed"
-        return (
-            "passed_with_limits"
-            if any(check.status == "skipped" for check in self.checks)
-            else "passed"
-        )
+        return "failed" if self.failed else "passed"
 
 
 def commands(profile: Profile) -> list[list[str]]:
@@ -73,18 +76,16 @@ def commands(profile: Profile) -> list[list[str]]:
     if profile == "package":
         return []
     prefix = ["uv", "run", "--locked", "--extra", "dev"]
-    tests, selection = (
-        (FOCUSED_TESTS, FAST_SELECTION)
-        if profile == "check"
-        else (["tests/"], OFFLINE_SELECTION)
-    )
+    if profile == "verify":
+        smoke = f"{OFFLINE_SELECTION} and subprocess_smoke"
+        return [[*prefix, "pytest", "tests/", "-q", "-m", smoke]]
     return [
         ["uv", "lock", "--check"],
         [*prefix, "ruff", "check", "."],
         [*prefix, "ruff", "format", "--check", "."],
         [*prefix, "mypy"],
         [*prefix, "python", "-m", "engram.tooling.reference", "--check"],
-        [*prefix, "pytest", *tests, "-q", "-m", selection],
+        [*prefix, "pytest", "tests/", "-q", "-n", "auto", "-m", FAST_SELECTION],
     ]
 
 
@@ -210,7 +211,7 @@ def package_smoke(root: Path, report: VerificationReport) -> None:
 
 
 def verify(root: Path, profile: Profile) -> VerificationReport:
-    report = VerificationReport(profile=profile)
+    report = VerificationReport(profile=profile, excluded=EXCLUDED[profile])
     for executable in ("uv", "git"):
         if shutil.which(executable) is None:
             report.checks.append(
@@ -230,7 +231,7 @@ def verify(root: Path, profile: Profile) -> VerificationReport:
         )
     if report.failed:
         return report
-    if profile in ("check", "verify"):
+    if profile == "check":
         violations = check_boundaries(root)
         report.checks.append(
             CheckResult(
@@ -248,21 +249,6 @@ def verify(root: Path, profile: Profile) -> VerificationReport:
             return report
     if profile in ("verify", "package"):
         package_smoke(root, report)
-    if profile != "sync-transport":
-        report.checks.extend(
-            [
-                CheckResult(
-                    name="sync transport integration",
-                    status="skipped",
-                    reason="Required additional profile: just verify-sync. It performs Git pushes to temporary local remotes. The local push safeguard can prohibit it.",
-                ),
-                CheckResult(
-                    name="live provider evaluation",
-                    status="skipped",
-                    reason="Requires explicit ENGRAM_EVAL_PROVIDER=1 and credentials. Offline checks do not prove live model quality.",
-                ),
-            ]
-        )
     return report
 
 
@@ -282,6 +268,8 @@ def main() -> int:
             f"{check.status}: {check.name}"
             + (f". {check.reason}" if check.reason else "")
         )
+    for item in report.excluded:
+        print(f"excluded: {item}")
     return int(report.failed)
 
 
