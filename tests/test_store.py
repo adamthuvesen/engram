@@ -17,7 +17,12 @@ from engram.core.models import (
     MemoryCandidate,
     RecallRecord,
 )
-from engram.storage.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.storage.store import (
+    StoreIntegrityError,
+    AsyncFactStore,
+    FactStore,
+    format_facts_for_llm,
+)
 
 
 def _make_store() -> FactStore:
@@ -48,9 +53,9 @@ def test_append_and_load():
     assert loaded[1].content == "User works on AI team"
 
 
-def test_non_event_log_file_loads_empty(tmp_path):
+def test_non_event_log_file_fails_with_integrity_error(tmp_path):
     """A plain fact-record file (no event-log sentinel) is invalid data:
-    load_facts returns empty rather than auto-migrating."""
+    load_facts reports the invalid sentinel rather than auto-migrating."""
     data_dir = tmp_path / "store"
     data_dir.mkdir()
     fact = Fact(
@@ -61,7 +66,8 @@ def test_non_event_log_file_loads_empty(tmp_path):
     (data_dir / "facts.jsonl").write_text(fact.model_dump_json() + "\n")
 
     store = FactStore(data_dir=data_dir)
-    assert store.load_facts() == []
+    with pytest.raises(StoreIntegrityError, match="sentinel"):
+        store.load_facts()
 
 
 def test_filter_by_category():

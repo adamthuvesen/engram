@@ -7,10 +7,14 @@ All data lives under `~/.engram/data/` by default:
   `FactEvent` records (`created`, `edited`, `forgotten`, `restored`, `stale`,
   `unstale`, `superseded`). Current state per `fact_id` comes from replaying
   events in order.
-- `candidates.jsonl`: suggested memories pending review.
+- `candidates.jsonl`: append-only candidate snapshots, including review decisions.
 - `recall_log.jsonl`: recall quality and latency history.
 - `transactions.jsonl`: prepared/committed markers for crash-safe candidate
-  approval.
+  approval. New prepared entries include exact fact events and candidate snapshots.
+- `.transaction-intent.json`: durable local intent for a fact-event batch. It holds
+  exact event IDs, timestamps, and payloads until the batch is complete. Not synced.
+- `.transaction-intent.tmp`: temporary intent file used before atomic replacement.
+  Not synced.
 - `maintenance_state.jsonl`: upkeep progress (last run, per-project
   consolidation snapshot time, retry seeds, own writes). Append-only, synced
   with `merge=union`; the latest line per key wins.
@@ -54,6 +58,12 @@ prefix.
 
 ## Event-log invariant
 
+New logs use the canonical `{"meta":"event-log-v1"}` sentinel without a creation timestamp.
+Readers preserve creation timestamps from legacy headers.
+Readers accept valid duplicate v1 sentinels retained by legacy union merges.
+Loading, doctor, and repair use the same decoder. Unknown versions and malformed sentinels remain invalid.
+Ordinary appends preserve existing log bytes.
+
 Storage is an append-only event log. Mutations (`forget`, `edit_fact`,
 `mark_stale`, etc.) append typed `FactEvent` records rather than rewriting the
 file. The only paths that rewrite `facts.jsonl` are `purge`, `repair`, and
@@ -61,3 +71,63 @@ file. The only paths that rewrite `facts.jsonl` are `purge`, `repair`, and
 starts with a valid event-log sentinel. If that sentinel is missing or invalid,
 repair refuses to change the file; restore it from backup or inspect and move it
 aside before starting a new store.
+
+
+## Snapshot and recovery contracts
+
+`FactStore.load_facts()` returns independent snapshots, including nested collections.
+Changing a returned fact cannot change the cache or another reader's result.
+Materialized facts expose `lifecycle` as `active`, `forgotten`, or `superseded`.
+These fields do not change persisted v1 fact rows.
+Inactive public snapshots retain the confidence-zero compatibility projection.
+Replay preserves the stored confidence, so restoration can recover its original value.
+Only forgotten facts can be restored. Superseded facts remain inactive.
+`core.fact_state.is_fact_eligible` supplies the shared active-memory policy.
+
+One per-directory lock serializes snapshots, writes, recovery, and sync.
+`ChangeSet.expected` checks every recorded source revision under that lock.
+`ChangeSet.require_eligible=True` also checks each source against the shared eligibility policy at one timestamp.
+The default remains false so explicit stale restoration can retain its existing behavior.
+A fact batch writes and fsyncs its local intent before appending events.
+Recovery appends missing event IDs with their original timestamps and payloads.
+Repeated recovery preserves the same events.
+An interrupted JSON row remains an integrity error until explicit repair removes it.
+Recovery retains the intent while that error remains unresolved.
+Ordinary snapshots report the corrupt file and line through `StoreIntegrityError`.
+Corrupt recall-log rows make `recall_stats` fail with `storage_error`.
+Doctor can inspect valid recall rows and report the corrupt line numbers.
+Diagnostic readers can inspect valid rows without recovering transactions or creating files.
+
+Constructing `FactStore` does not recover transactions.
+Runtime startup must call `recover_transactions()` before serving reads or writes.
+`FactStore.open_readonly()` creates no directory or lock files and never recovers transactions.
+Prepared approval journals block ordinary snapshots until explicit recovery completes them.
+Unknown transaction types remain unresolved and raise an error.
+Legacy approval journals retain their recorded fact IDs during recovery.
+
+## Candidate review history
+
+Normal candidate updates append complete snapshots in the existing row format.
+Readers materialize one snapshot per candidate ID before applying status filters.
+The latest `updated_at` wins. Equal timestamps use terminal status and a canonical row order.
+Conflicting approval and rejection decisions for one revision produce `conflicted` status.
+Conflicted candidates remain inspectable and cannot be approved as pending candidates.
+Rejection does not forget an already promoted fact.
+
+New approvals derive fact identity from the candidate ID and promotable content revision.
+Two offline approvals of the same revision therefore produce one materialized fact.
+Approval edits and pending status checks share one storage transaction.
+An unavailable edit target aborts the complete approval request before any edit or promotion.
+Candidates that replace the same source in one request remain pending with explicit conflicts.
+Independent candidates in that request can still be approved.
+The prepared journal holds the exact edited candidate snapshot and promoted fact.
+Approval results report only the candidate IDs and edits that transaction applied.
+New replacement proposals record all source revisions in `replaces_expected`.
+Approval rejects incomplete maps and sources that changed or became ineligible, including through expiry alone.
+Legacy proposals with no map retain their earlier approval behavior and deterministic promoted identities.
+Pending proposal deduplication runs under the same lock and reads the complete pending queue.
+Rejected content can be proposed again.
+Upgrade all writers before concurrent review. Older writers can still rewrite candidate history.
+
+Purge and compaction refuse stores with a Git repository.
+Synced history rewrites need a coordinated offline procedure across every replica.

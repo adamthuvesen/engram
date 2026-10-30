@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections import Counter
 from dataclasses import dataclass
+from math import isfinite
+
+from pydantic import JsonValue, ValidationError
+from openai import OpenAIError
 from datetime import datetime, timezone
 
+from engram.core.operation_models import (
+    CandidatePayload,
+    CandidateReviewPayload,
+    DoctorPayload,
+    FactPayload,
+    IngestPayload,
+    RecallPayload,
+    SuggestPayload,
+)
 from engram.core.projects import canonical_project, register_project
 from engram.maintenance.doctor import check_provider, repair_store, run_doctor
 from engram.extraction.importer import import_claude_code_memories
@@ -14,6 +26,8 @@ from engram.core.interfaces import (
     Envelope,
     EnvelopeError,
     EnvelopeMeta,
+    EnvelopeStatus,
+    ErrorCode,
     not_found_error,
     provider_error,
     storage_error,
@@ -24,6 +38,7 @@ from engram.maintenance.memory_audit import (
     format_audit_result,
 )
 from engram.core.models import (
+    BRIEF_MEMORY_KEY,
     CandidateStatus,
     FactBase,
     FactCategory,
@@ -41,9 +56,18 @@ from engram.maintenance.upkeep import (
 )
 from engram.recall.retriever import (
     RecallMode,
-    recall_with_provenance as _recall_with_provenance,
+    recall_result as _recall_result,
 )
-from engram.storage.store import AsyncFactStore, FactStore, format_fact_line
+from engram.storage.store import (
+    AsyncFactStore,
+    FactStore,
+    StoreIntegrityError,
+    format_fact_line,
+    run_sync,
+)
+from engram.runtime import current_runtime
+from engram.core.config import get_settings
+from engram.llm import ProviderResponseError
 from engram.storage.sync import (
     DEFAULT_GIT_TIMEOUT_SECONDS,
     SyncError,
@@ -64,6 +88,21 @@ class OperationResult:
     envelope: Envelope
     text: str
     exit_code: int = EXIT_OK
+
+    def __post_init__(self) -> None:
+        if self.exit_code == EXIT_OK and self.envelope.status is not EnvelopeStatus.ok:
+            codes = {error.code for error in self.envelope.errors}
+            self.exit_code = (
+                EXIT_VALIDATION
+                if codes == {ErrorCode.validation_error}
+                else EXIT_NOT_FOUND
+                if codes == {ErrorCode.not_found}
+                else EXIT_RUNTIME
+            )
+
+    @property
+    def is_error(self) -> bool:
+        return self.envelope.status is not EnvelopeStatus.ok
 
     def render(self, *, as_json: bool) -> str:
         return self.envelope.to_json() if as_json else self.text
@@ -103,12 +142,43 @@ def missing_result(
     )
 
 
-def async_store(store: FactStore | AsyncFactStore | None = None) -> AsyncFactStore:
-    if store is None:
-        return AsyncFactStore()
-    if isinstance(store, AsyncFactStore):
-        return store
-    return AsyncFactStore(store)
+def async_store(store: FactStore | AsyncFactStore) -> AsyncFactStore:
+    return store if isinstance(store, AsyncFactStore) else AsyncFactStore(store)
+
+
+async def resolve_store(
+    store: FactStore | AsyncFactStore | None = None,
+) -> AsyncFactStore:
+    if store is not None:
+        return async_store(store)
+    runtime = current_runtime()
+    if runtime is not None:
+        return await runtime.store()
+    result = AsyncFactStore(await run_sync(FactStore))
+    await result.recover_transactions()
+    return result
+
+
+def exception_result(exc: Exception) -> OperationResult:
+    if isinstance(exc, (OpenAIError, ProviderResponseError)):
+        code = ErrorCode.provider_error
+    elif isinstance(exc, TimeoutError):
+        code = ErrorCode.timeout
+    elif isinstance(exc, (OSError, StoreIntegrityError, SyncError)):
+        code = ErrorCode.storage_error
+    elif isinstance(exc, (ValidationError, ValueError)):
+        code = ErrorCode.validation_error
+    else:
+        code = ErrorCode.internal_error
+    return failure_result(
+        EnvelopeError(
+            code=code, message=str(exc), details={"exception_type": type(exc).__name__}
+        ),
+        text=str(exc),
+        exit_code=EXIT_VALIDATION
+        if code is ErrorCode.validation_error
+        else EXIT_RUNTIME,
+    )
 
 
 def category_from_value(value: str | None) -> FactCategory | None:
@@ -142,43 +212,41 @@ def invalid_positive_int_result(parameter: str) -> OperationResult:
     return validation_result(message, details={"parameter": parameter})
 
 
-def fact_payload(fact: FactBase) -> dict:
-    return {
-        "id": fact.id,
-        "category": fact.category.value,
-        "project": fact.project,
-        "memory_key": fact.memory_key,
-        "content": fact.content,
-        "confidence": fact.confidence,
-        "stale": fact.stale,
-        "stale_reason": fact.stale_reason,
-        "supersedes": fact.supersedes,
-        "consolidates": fact.consolidates,
-        "tags": fact.tags,
-        "retrieval_hints": fact.retrieval_hints,
-        "source_group_id": fact.source_group_id,
-        "durability": fact.durability.value,
-        "anchors": fact.anchors,
-        "suspect_reason": fact.suspect_reason,
-        "expires_at": fact.expires_at.isoformat() if fact.expires_at else None,
-        "observed_at": fact.observed_at.isoformat(),
-        "first_observed_at": (
-            fact.first_observed_at.isoformat() if fact.first_observed_at else None
+def fact_payload(fact: FactBase) -> dict[str, JsonValue]:
+    return FactPayload.model_validate(fact).model_dump(mode="json")
+
+
+def candidate_payload(candidate: MemoryCandidate) -> dict[str, JsonValue]:
+    return CandidatePayload.model_validate(candidate).model_dump(mode="json")
+
+
+def _ingest_errors(result: IngestResult) -> list[EnvelopeError]:
+    return [
+        *(provider_error(message) for message in result.errors),
+        *(
+            EnvelopeError(
+                code=ErrorCode.conflict,
+                message=item.reason,
+                ids=[item.fact_id],
+                details={"action": item.action},
+            )
+            for item in result.unresolved
         ),
-        "created_at": fact.created_at.isoformat(),
-        "updated_at": fact.updated_at.isoformat(),
-    }
+    ]
 
 
-def candidate_payload(candidate: MemoryCandidate) -> dict:
-    data = fact_payload(candidate)
-    data.update(
-        status=candidate.status.value,
-        review_note=candidate.review_note,
-        why_store=candidate.why_store,
-        replaces=candidate.replaces,
+def _outcome_envelope(
+    data: dict[str, JsonValue], errors: list[EnvelopeError], *, applied: bool = False
+) -> Envelope:
+    return Envelope(
+        status=EnvelopeStatus.partial
+        if errors and applied
+        else EnvelopeStatus.error
+        if errors
+        else EnvelopeStatus.ok,
+        data=data,
+        errors=errors,
     )
-    return data
 
 
 async def scope_project(store: AsyncFactStore, project: str | None) -> str | None:
@@ -188,7 +256,7 @@ async def scope_project(store: AsyncFactStore, project: str | None) -> str | Non
     """
     if project is None:
         return None
-    return await asyncio.to_thread(register_project, store.data_dir, project)
+    return await run_sync(register_project, store.data_dir, project)
 
 
 def _ingest_lines(result: IngestResult) -> list[str]:
@@ -210,6 +278,11 @@ def _ingest_lines(result: IngestResult) -> list[str]:
         )
     if result.duplicates:
         lines.append(f"Already known: {', '.join(result.duplicates)}")
+    lines.extend(
+        f"Unapplied {item.action} {item.fact_id}: {item.reason}"
+        for item in result.unresolved
+    )
+    lines.extend(f"Error: {message}" for message in result.errors)
     if not lines:
         lines.append("Nothing new worth storing in the input.")
     if result.excluded:
@@ -224,9 +297,9 @@ async def remember(
     project: str | None = None,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    store_obj = async_store(store)
     if not content.strip():
         return validation_result("content must not be empty")
+    store_obj = await resolve_store(store)
     try:
         result = await ingest(
             content,
@@ -235,24 +308,25 @@ async def remember(
             store=store_obj,
         )
     except Exception as exc:
-        return failure_result(
-            provider_error(
-                f"Memory extraction failed: {exc}",
-                details={"exception_type": type(exc).__name__},
-            ),
-            text=f"Memory extraction failed: {exc}",
-        )
+        return exception_result(exc)
 
-    data = {
-        "facts": [fact_payload(fact) for fact in result.created],
-        "superseded": result.superseded,
-        "retired": result.retired,
-        "duplicates": result.duplicates,
-        "excluded": [claim.model_dump() for claim in result.excluded],
-    }
+    data = IngestPayload(
+        facts=[FactPayload.model_validate(fact) for fact in result.created],
+        superseded=result.superseded,
+        retired=result.retired,
+        duplicates=result.duplicates,
+        excluded=result.excluded,
+        unresolved=result.unresolved,
+    ).model_dump(mode="json")
+    errors = _ingest_errors(result)
     return OperationResult(
-        envelope=Envelope.success(data=data),
+        envelope=_outcome_envelope(
+            data,
+            errors,
+            applied=bool(result.created or result.superseded or result.retired),
+        ),
         text="\n".join(_ingest_lines(result)),
+        exit_code=EXIT_RUNTIME if errors else EXIT_OK,
     )
 
 
@@ -263,9 +337,9 @@ async def suggest_memories(
     project: str | None = None,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    store_obj = async_store(store)
     if not content.strip():
         return validation_result("content must not be empty")
+    store_obj = await resolve_store(store)
     try:
         result = await ingest(
             content,
@@ -275,37 +349,41 @@ async def suggest_memories(
             queue_for_review=True,
         )
     except Exception as exc:
-        return failure_result(
-            provider_error(
-                f"Memory suggestion failed: {exc}",
-                details={"exception_type": type(exc).__name__},
-            ),
-            text=f"Memory suggestion failed: {exc}",
-        )
+        return exception_result(exc)
 
     candidates = result.candidates
-    if not candidates:
-        text = "No memory candidates were proposed from the input."
-        return OperationResult(
-            envelope=Envelope.success(data={"candidates": [], "message": text}),
-            text=text,
-        )
-
-    lines = [f"Queued {len(candidates)} memory candidate(s):\n"]
+    lines = (
+        [f"Queued {len(candidates)} memory candidate(s):"]
+        if candidates
+        else ["No memory candidates were proposed from the input."]
+    )
     for candidate in candidates:
         why = candidate.why_store or "useful future context"
-        line = (
-            f"- [{candidate.category.value}] {candidate.content} "
-            f"(id: {candidate.id}, why: {why})"
-        )
+        line = f"- [{candidate.category.value}] {candidate.content} (id: {candidate.id}, why: {why})"
         if candidate.replaces:
-            line += f" — would replace {', '.join(candidate.replaces)}"
+            line += f" replaces {', '.join(candidate.replaces)}"
         lines.append(line)
+    lines.extend(
+        f"Unapplied {item.action} {item.fact_id}: {item.reason}"
+        for item in result.unresolved
+    )
+    lines.extend(f"Error: {message}" for message in result.errors)
+    payload = SuggestPayload(
+        candidates=[
+            CandidatePayload.model_validate(candidate) for candidate in candidates
+        ],
+        unresolved=result.unresolved,
+        message=lines[0] if not candidates else None,
+    )
+    errors = _ingest_errors(result)
     return OperationResult(
-        envelope=Envelope.success(
-            data={"candidates": [candidate_payload(c) for c in candidates]}
+        envelope=_outcome_envelope(
+            payload.model_dump(mode="json", exclude_none=True),
+            errors,
+            applied=bool(candidates),
         ),
         text="\n".join(lines),
+        exit_code=EXIT_RUNTIME if errors else EXIT_OK,
     )
 
 
@@ -330,8 +408,8 @@ async def list_candidates(
             details={"valid": [item.value for item in CandidateStatus]},
         )
 
-    store_obj = async_store(store)
-    project = await asyncio.to_thread(canonical_project, project)
+    store_obj = await resolve_store(store)
+    project = await run_sync(canonical_project, project)
     all_candidates = await store_obj.load_candidates(
         status=candidate_status,
         project=project,
@@ -373,7 +451,12 @@ async def approve_candidates(
     edits: dict[str, str] | None = None,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    store_obj = async_store(store)
+    if not candidate_ids or any(
+        not candidate_id.strip() for candidate_id in candidate_ids
+    ):
+        return validation_result("candidate_ids must contain nonempty IDs")
+    if edits and any(not content.strip() for content in edits.values()):
+        return validation_result("candidate edit content must not be empty")
     if edits:
         stray = [eid for eid in edits if eid not in candidate_ids]
         if stray:
@@ -383,22 +466,13 @@ async def approve_candidates(
                 ids=stray,
                 details={"stray_edit_ids": stray},
             )
-        # Edits rewrite candidates.jsonl outside the approval transaction; a
-        # crash mid-loop leaves edits applied but candidates un-approved (safe
-        # to retry — approval is idempotent on edited content).
-        missing: list[str] = []
-        for candidate_id, content in edits.items():
-            updated = await store_obj.update_candidate(candidate_id, content=content)
-            if updated is None:
-                missing.append(candidate_id)
-        if missing:
-            return missing_result(
-                "Candidate(s) not found for --edit",
-                text=f"Candidate(s) not found: {', '.join(missing)}",
-                ids=missing,
-            )
-
-    facts = await store_obj.approve_candidates(candidate_ids)
+    store_obj = await resolve_store(store)
+    approval = await store_obj.approve_candidates_result(candidate_ids, edits=edits)
+    if approval.invalid_edit_ids:
+        return missing_result(
+            "Candidate(s) not pending for --edit", ids=approval.invalid_edit_ids
+        )
+    facts = approval.facts
     if not facts:
         text = "No matching candidates were approved."
     else:
@@ -407,8 +481,27 @@ async def approve_candidates(
             lines.append(f"- [{fact.category.value}] {fact.content} (id: {fact.id})")
         text = "\n".join(lines)
 
+    applied_ids = list(approval.approved)
+    unresolved_ids = list(approval.unresolved)
+    errors = [
+        EnvelopeError(code=ErrorCode.conflict, message=reason, ids=[candidate_id])
+        for candidate_id, reason in approval.unresolved.items()
+    ]
+    if unresolved_ids:
+        text += "\nUnapplied: " + ", ".join(unresolved_ids)
+    payload = CandidateReviewPayload(
+        facts=[FactPayload.model_validate(fact) for fact in facts],
+        requested_ids=candidate_ids,
+        applied_ids=applied_ids,
+        unresolved_ids=unresolved_ids,
+        edited_ids=approval.edited,
+    )
     return OperationResult(
-        envelope=Envelope.success(data={"facts": [fact_payload(f) for f in facts]}),
+        envelope=_outcome_envelope(
+            payload.model_dump(mode="json", exclude_none=True),
+            errors,
+            applied=bool(facts or approval.edited),
+        ),
         text=text,
     )
 
@@ -419,7 +512,13 @@ async def reject_candidates(
     reason: str = "",
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    rejected = await async_store(store).reject_candidates(candidate_ids, reason=reason)
+    if not candidate_ids or any(
+        not candidate_id.strip() for candidate_id in candidate_ids
+    ):
+        return validation_result("candidate_ids must contain nonempty IDs")
+    rejected = await (await resolve_store(store)).reject_candidates(
+        candidate_ids, reason=reason
+    )
     if not rejected:
         text = "No matching candidates were rejected."
     else:
@@ -430,9 +529,35 @@ async def reject_candidates(
                 f"(id: {candidate.id})"
             )
         text = "\n".join(lines)
+    applied_ids = [candidate.id for candidate in rejected]
+    unresolved_ids = [
+        candidate_id
+        for candidate_id in dict.fromkeys(candidate_ids)
+        if candidate_id not in applied_ids
+    ]
+    errors = [
+        EnvelopeError(
+            code=ErrorCode.conflict,
+            message="Candidate is missing or no longer pending",
+            ids=[candidate_id],
+        )
+        for candidate_id in unresolved_ids
+    ]
+    if unresolved_ids:
+        text += "\nUnapplied: " + ", ".join(unresolved_ids)
+    payload = CandidateReviewPayload(
+        candidates=[
+            CandidatePayload.model_validate(candidate) for candidate in rejected
+        ],
+        requested_ids=candidate_ids,
+        applied_ids=applied_ids,
+        unresolved_ids=unresolved_ids,
+    )
     return OperationResult(
-        envelope=Envelope.success(
-            data={"candidates": [candidate_payload(c) for c in rejected]}
+        envelope=_outcome_envelope(
+            payload.model_dump(mode="json", exclude_none=True),
+            errors,
+            applied=bool(rejected),
         ),
         text=text,
     )
@@ -464,9 +589,11 @@ async def recall(
         return invalid_positive_int_result("max_prefilter_matches")
     if mode not in RECALL_MODES:
         return _invalid_mode_result(mode, RECALL_MODES)
+    if not query.strip():
+        return validation_result("query must not be empty")
 
-    store_obj = async_store(store)
-    answer, quality, provenance, _ = await _recall_with_provenance(
+    store_obj = await resolve_store(store)
+    result = await _recall_result(
         query,
         project=await scope_project(store_obj, project),
         store=store_obj,
@@ -474,45 +601,35 @@ async def recall(
         max_sources=max_sources,
         max_prefilter_matches=max_prefilter_matches,
     )
-    if format == "text":
-        return OperationResult(
-            envelope=Envelope.success(
-                data={"answer": answer}, warnings=provenance.warnings
-            ),
-            text=answer,
-        )
-
-    delivered = set(provenance.cited_fact_ids)
-    data: dict = {
-        "answer": answer,
-        "mode": mode,
-        "quality": quality,
-        "tier": provenance.tier,
-        "facts": [
-            source.model_dump(mode="json")
-            for source in provenance.sources
-            if source.id in delivered
-        ],
-        "source_fact_ids": provenance.source_fact_ids,
-        "cited_fact_ids": provenance.cited_fact_ids,
-        "usage": provenance.usage.model_dump(),
-        "latency_ms": provenance.latency_ms,
-    }
-    if with_provenance:
-        data["provenance"] = provenance.model_dump(mode="json")
-
-    relevant = provenance.selected_decision.relevant_count
-    truncated = relevant > len(delivered)
+    provenance = result.provenance
+    delivered = {item.fact.id for item in result.delivered}
+    payload = RecallPayload(
+        answer=result.text,
+        mode=_recall_mode(mode),
+        quality=result.quality,
+        tier=provenance.tier,
+        facts=[source for source in provenance.sources if source.id in delivered],
+        source_fact_ids=provenance.source_fact_ids,
+        cited_fact_ids=provenance.cited_fact_ids,
+        usage=provenance.usage,
+        latency_ms=provenance.latency_ms,
+        provenance=provenance if with_provenance else None,
+    )
+    total = max(len(result.selected), provenance.selected_decision.relevant_count)
     meta = EnvelopeMeta(
         limit=max_sources,
-        returned=len(delivered),
-        total=relevant,
-        truncated=truncated,
-        truncation_reason="max_sources" if truncated else None,
+        returned=len(result.delivered),
+        total=total,
+        truncated=total > len(result.delivered),
+        truncation_reason="max_sources" if total > max_sources else None,
     )
     return OperationResult(
-        envelope=Envelope.success(data=data, warnings=provenance.warnings, meta=meta),
-        text=answer,
+        envelope=Envelope.success(
+            data=payload.model_dump(mode="json", exclude_none=True),
+            warnings=provenance.warnings,
+            meta=meta,
+        ),
+        text=result.text,
     )
 
 
@@ -533,9 +650,11 @@ async def recall_trace(
 
     if mode not in RECALL_MODES:
         return _invalid_mode_result(mode, RECALL_MODES)
-    store_obj = async_store(store)
+    if not query.strip():
+        return validation_result("query must not be empty")
+    store_obj = await resolve_store(store)
     try:
-        answer, quality, provenance, trace = await _recall_with_provenance(
+        result = await _recall_result(
             query,
             project=await scope_project(store_obj, project),
             store=store_obj,
@@ -546,14 +665,14 @@ async def recall_trace(
             max_prefilter_matches=max_prefilter_matches,
         )
     except Exception as exc:
-        return failure_result(
-            provider_error(
-                f"Recall trace failed: {exc}",
-                details={"exception_type": type(exc).__name__},
-            ),
-            text=f"Recall trace failed: {exc}",
-        )
+        return exception_result(exc)
 
+    answer, quality, provenance, trace = (
+        result.text,
+        result.quality,
+        result.provenance,
+        result.trace,
+    )
     data = {
         "query": query,
         "answer": answer,
@@ -603,17 +722,20 @@ async def recall_context(
     """
     if mode not in RECALL_CONTEXT_MODES:
         return _invalid_mode_result(mode, RECALL_CONTEXT_MODES)
-    store_obj = async_store(store)
+    if mode == "brief" and not project:
+        return validation_result("mode 'brief' requires a project")
+    if mode != "brief" and not query.strip():
+        return validation_result("query must not be empty unless mode is 'brief'")
+    store_obj = await resolve_store(store)
     scope = await scope_project(store_obj, project)
 
     if mode == "brief":
         return await _project_brief_result(store_obj, scope)
 
-    if not query.strip():
-        return validation_result("query must not be empty unless mode is 'brief'")
-    answer, _quality, provenance, _ = await _recall_with_provenance(
+    result = await _recall_result(
         query, project=scope, store=store_obj, mode=_recall_mode(mode)
     )
+    answer, provenance = result.text, result.provenance
     return OperationResult(
         envelope=Envelope.success(
             data={
@@ -646,7 +768,7 @@ async def _project_brief_result(
     facts = [
         fact
         for fact in await store.load_active_facts(project=project, include_global=False)
-        if fact.durability.value != "ephemeral"
+        if fact.durability.value != "ephemeral" and fact.memory_key != BRIEF_MEMORY_KEY
     ][:BRIEF_FALLBACK_CARDS]
     if not facts:
         text = f"No memories stored for project {project!r} yet."
@@ -673,7 +795,7 @@ async def forget(
     reason: str = "",
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    fact = await async_store(store).forget(fact_id, reason)
+    fact = await (await resolve_store(store)).forget(fact_id, reason)
     if fact is None:
         return missing_result(
             f"Fact {fact_id} not found",
@@ -699,6 +821,8 @@ async def edit_fact(
 ) -> OperationResult:
     updates: dict = {}
     if content is not None:
+        if not content.strip():
+            return validation_result("content must not be empty")
         updates["content"] = content
     if category is not None:
         cat = category_from_value(category)
@@ -712,12 +836,12 @@ async def edit_fact(
     if retrieval_hints is not None:
         updates["retrieval_hints"] = retrieval_hints
     if project is not None:
-        updates["project"] = await asyncio.to_thread(canonical_project, project)
+        updates["project"] = await run_sync(canonical_project, project)
 
     if not updates:
         return validation_result("No changes specified.")
 
-    store_obj = async_store(store)
+    store_obj = await resolve_store(store)
     all_facts = await store_obj.load_facts()
     existing = next((f for f in all_facts if f.id == fact_id), None)
     if existing is None:
@@ -767,8 +891,8 @@ async def inspect(
     if category and cat is None:
         return invalid_category_result(category)
 
-    project = await asyncio.to_thread(canonical_project, project)
-    facts = await async_store(store).load_active_facts(
+    project = await run_sync(canonical_project, project)
+    facts = await (await resolve_store(store)).load_active_facts(
         category=cat,
         project=project,
         limit=None,
@@ -814,12 +938,15 @@ async def correct_memory(
     reason: str = "",
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
+    if not new_content.strip():
+        return validation_result("content must not be empty")
+
     cat = category_from_value(category)
     if category and cat is None:
         return invalid_category_result(category)
 
-    project = await asyncio.to_thread(canonical_project, project)
-    new_fact = await async_store(store).correct_fact(
+    project = await run_sync(canonical_project, project)
+    new_fact = await (await resolve_store(store)).correct_fact(
         fact_id,
         new_content,
         category=cat,
@@ -866,6 +993,9 @@ async def merge_memories(
     reason: str = "",
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
+    if not merged_content.strip():
+        return validation_result("content must not be empty")
+
     if len(source_ids) < 2:
         return validation_result(
             "merge_memories requires at least two source IDs",
@@ -877,8 +1007,8 @@ async def merge_memories(
     if category and cat is None:
         return invalid_category_result(category)
 
-    project = await asyncio.to_thread(canonical_project, project)
-    result = await async_store(store).merge_facts(
+    project = await run_sync(canonical_project, project)
+    result = await (await resolve_store(store)).merge_facts(
         source_ids,
         merged_content,
         category=cat,
@@ -919,7 +1049,7 @@ async def mark_stale(
     reason: str = "",
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    fact = await async_store(store).mark_stale(fact_id, reason)
+    fact = await (await resolve_store(store)).mark_stale(fact_id, reason)
     if fact is None:
         return missing_result(
             f"Fact {fact_id} not found",
@@ -943,7 +1073,7 @@ async def unmark_stale(
     *,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    fact = await async_store(store).unmark_stale(fact_id)
+    fact = await (await resolve_store(store)).unmark_stale(fact_id)
     if fact is None:
         return missing_result(
             f"Fact {fact_id} not found",
@@ -968,7 +1098,7 @@ async def import_memories(
             details={"parameter": "source", "value": source},
         )
 
-    result = await import_claude_code_memories(store=async_store(store))
+    result = await import_claude_code_memories(store=await resolve_store(store))
     if "error" in result:
         return failure_result(storage_error(result["error"]), text=result["error"])
     if result.get("message") and result.get("total_facts", 0) == 0:
@@ -981,17 +1111,29 @@ async def import_memories(
         f"Imported {result['total_facts']} facts from {result['imported_files']} files:\n"
     ]
     for detail in result.get("details", []):
-        lines.append(
-            f"- {detail['file']} ({detail['project']}): {detail['facts_extracted']} facts"
-        )
+        if detail.get("error"):
+            lines.append(f"- {detail['file']}: error: {detail['error']}")
+        else:
+            lines.append(
+                f"- {detail['file']} ({detail['project']}): {detail['facts_extracted']} facts"
+            )
+            lines.extend(
+                f"  Unapplied {item['action']} {item['fact_id']}: {item['reason']}"
+                for item in detail.get("unresolved", [])
+            )
+    incomplete = result.get("status") == "partial"
     return OperationResult(
-        envelope=Envelope.success(data=result),
+        envelope=Envelope(
+            status=EnvelopeStatus.partial if incomplete else EnvelopeStatus.ok,
+            data=result,
+        ),
         text="\n".join(lines),
+        exit_code=EXIT_RUNTIME if incomplete else EXIT_OK,
     )
 
 
 async def purge(store: FactStore | AsyncFactStore | None = None) -> OperationResult:
-    result = await async_store(store).purge()
+    result = await (await resolve_store(store)).purge()
     if result["purged"] == 0:
         text = "Nothing to purge — store is clean."
     else:
@@ -1005,7 +1147,9 @@ async def rename_project(
     *,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    count = await async_store(store).rename_project(old_project, new_project)
+    if not old_project.strip() or not new_project.strip():
+        return validation_result("project names must not be empty")
+    count = await (await resolve_store(store)).rename_project(old_project, new_project)
     if count == 0:
         text = f"No facts or candidates found with project '{old_project}'."
     else:
@@ -1030,8 +1174,8 @@ async def audit_memories(
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
     result = await _audit_memory_store(
-        project=await asyncio.to_thread(canonical_project, project),
-        store=async_store(store),
+        project=await run_sync(canonical_project, project),
+        store=await resolve_store(store),
     )
     data = result.model_dump(mode="json")
     data.update(
@@ -1056,30 +1200,38 @@ async def doctor(
     repair_orphaned_supersessions: bool = False,
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    store_obj = async_store(store)
-    provider_issue = None
-    if check_provider_flag:
-        provider_issue = await check_provider()
-    report = run_doctor(
-        store_obj,
-        check_provider_flag=check_provider_flag,
-        provider_issue=provider_issue,
-    )
-
-    repair_summary = None
+    provider_issue = await check_provider() if check_provider_flag else None
     repair_requested = (
         repair or repair_jsonl or recover_transactions or repair_orphaned_supersessions
     )
+    runtime = current_runtime()
+    data_dir = (
+        store.data_dir
+        if store is not None
+        else runtime.settings.data_dir
+        if runtime
+        else get_settings().data_dir
+    )
+    readonly = await run_sync(FactStore.open_readonly, data_dir)
+    report = await run_sync(
+        run_doctor,
+        readonly,
+        check_provider_flag=check_provider_flag,
+        provider_issue=provider_issue,
+    )
+    repair_summary = None
     if repair_requested and (
         repair_jsonl or recover_transactions or repair_orphaned_supersessions
     ):
-        repair_summary = repair_store(
-            store_obj,
+        # Repair must inspect damaged storage before any recovery or write.
+        write_store = store or await run_sync(FactStore, data_dir)
+        repair_summary = await run_sync(
+            repair_store,
+            write_store,
             repair_jsonl=repair_jsonl,
             recover_transactions=recover_transactions,
             repair_orphaned_supersessions=repair_orphaned_supersessions,
         )
-
     text_lines = [f"Doctor: {report.status}"]
     for issue in report.issues:
         text_lines.append(
@@ -1089,7 +1241,9 @@ async def doctor(
             text_lines.append(f"    repair: {issue.repair}")
     return OperationResult(
         envelope=Envelope.success(
-            data={"report": report.model_dump(mode="json"), "repair": repair_summary}
+            data=DoctorPayload(
+                report=report.model_dump(mode="json"), repair=repair_summary
+            ).model_dump(mode="json")
         ),
         text="\n".join(text_lines),
         exit_code=EXIT_DOCTOR_ERROR if report.status == "error" else EXIT_OK,
@@ -1099,7 +1253,7 @@ async def doctor(
 async def memory_stats(
     store: FactStore | AsyncFactStore | None = None,
 ) -> OperationResult:
-    stats = await async_store(store).stats()
+    stats = await (await resolve_store(store)).stats()
     lines = [
         "# Engram Stats\n",
         f"**Total facts:** {stats['total_facts']}",
@@ -1296,7 +1450,7 @@ async def recall_stats(
     except ValueError as exc:
         return validation_result(str(exc), details={"parameter": "since"})
 
-    all_records = await async_store(store).load_recall_log(limit=None)
+    all_records = await (await resolve_store(store)).load_recall_log(limit=None)
     filtered_records = [
         record
         for record in all_records
@@ -1345,7 +1499,7 @@ async def upkeep(
             f"Unknown upkeep step(s): {', '.join(unknown)}. Use: {', '.join(valid)}.",
             details={"parameter": "steps", "valid": valid},
         )
-    store_obj = async_store(store)
+    store_obj = await resolve_store(store)
     report = await run_upkeep(
         store_obj,
         project=await scope_project(store_obj, project),
@@ -1354,8 +1508,17 @@ async def upkeep(
         full=full,
     )
     return OperationResult(
-        envelope=Envelope.success(data=report.model_dump(mode="json")),
+        envelope=Envelope(
+            status=EnvelopeStatus.partial if report.partial else EnvelopeStatus.ok,
+            data=report.model_dump(mode="json"),
+            errors=[
+                EnvelopeError(code=ErrorCode.conflict, message=reason, ids=[fact_id])
+                for step in report.steps
+                for fact_id, reason in step.conflicts.items()
+            ],
+        ),
         text=format_upkeep_report(report),
+        exit_code=EXIT_RUNTIME if report.partial else EXIT_OK,
     )
 
 
@@ -1369,12 +1532,12 @@ async def sync(
     Returns a structured ``OperationResult`` envelope. Sync failures surface as
     non-zero exit codes with the underlying git stderr preserved verbatim.
     """
-    import asyncio as _asyncio
-
-    data_dir = async_store(store).data_dir
+    if not isfinite(timeout) or timeout <= 0:
+        return validation_result("timeout must be greater than zero")
+    data_dir = (await resolve_store(store)).data_dir
 
     try:
-        result = await _asyncio.to_thread(_sync, data_dir, timeout=timeout)
+        result = await run_sync(_sync, data_dir, timeout=timeout)
     except SyncError as exc:
         details: dict = {"sync_error_code": exc.code}
         if exc.git_stderr:

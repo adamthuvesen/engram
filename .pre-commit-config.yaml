@@ -1,9 +1,13 @@
-# Install: uv sync --extra dev && uv run pre-commit install
-# Run all hooks: uv run pre-commit run --all-files
-
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.13
+  - repo: local
     hooks:
       - id: ruff-check
+        name: Ruff check (uv.lock)
+        entry: uv run --locked --extra dev ruff check
+        language: system
+        types_or: [python, pyi]
       - id: ruff-format
+        name: Ruff format (uv.lock)
+        entry: uv run --locked --extra dev ruff format --check
+        language: system
+        types_or: [python, pyi]

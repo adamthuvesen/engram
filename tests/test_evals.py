@@ -103,7 +103,13 @@ def _answer_mode_fixture(name: str, budget: EvalBudget) -> EvalFixture:
             for i in range(5)
         ],
         budget=budget,
-        mocked_responses=[("ok (id: f00aaaaaaaaa)\n[quality: low]", 100, 0)],
+        mocked_responses=[
+            (
+                '{"claims":[{"text":"ok","fact_ids":["f00aaaaaaaaa"]}],"quality":"low"}',
+                100,
+                0,
+            )
+        ],
     )
 
 
@@ -231,7 +237,7 @@ def test_eval_fixture_temp_store_is_cleaned_up(monkeypatch):
             return self._tmp.__exit__(exc_type, exc, tb)
 
     monkeypatch.setattr(
-        "engram.recall.evals.TemporaryDirectory", TrackingTemporaryDirectory
+        "engram.evaluation.fixtures.TemporaryDirectory", TrackingTemporaryDirectory
     )
 
     fixture = EvalFixture(

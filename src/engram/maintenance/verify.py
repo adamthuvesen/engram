@@ -12,7 +12,7 @@ import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from engram.core.models import Durability, Fact
@@ -68,6 +68,8 @@ def normalize_anchor(anchor: str) -> tuple[AnchorKind, str] | None:
         return None
     text = text.removeprefix("./")
     if "/" in text or _extension(text) in FILE_EXTENSIONS:
+        if ".." in PurePosixPath(text).parts or "\\" in text:
+            return None
         return "path", text.rstrip("/")
     text = text.removesuffix("()")
     if not _IDENTIFIER_RE.fullmatch(text):
@@ -116,7 +118,7 @@ def _run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
         return None
 
 
-AnchorStatus = Literal["present", "branch", "missing"]
+AnchorStatus = Literal["present", "branch", "missing", "unavailable"]
 
 
 def _suffixes(files: list[str]) -> set[str]:
@@ -154,15 +156,18 @@ class RepoCheck:
     _branches: set[str] | None = None
     _trees: list[str] | None = None
     _failed: bool = False
-    _symbols: dict[str, AnchorStatus | None] = field(default_factory=dict)
+    _symbols: dict[str, AnchorStatus] = field(default_factory=dict)
 
-    def _branch_trees(self) -> list[str]:
+    def _branch_trees(self) -> list[str] | None:
         if self._trees is None:
             result = _run_git(
                 self.root, "for-each-ref", "--format=%(tree)", "refs/heads"
             )
             ok = result is not None and result.returncode == 0
-            trees = result.stdout.split() if result is not None and ok else []
+            if not ok or result is None:
+                self._failed = True
+                return None
+            trees = result.stdout.split()
             self._trees = sorted(set(trees))
         return self._trees
 
@@ -175,20 +180,29 @@ class RepoCheck:
             return
         self._checkout = _suffixes(files)
         branch_files: set[str] = set()
-        for tree in self._branch_trees():
+        trees = self._branch_trees()
+        if trees is None:
+            return
+        for tree in trees:
             listed = _listing(
                 _run_git(self.root, "ls-tree", "-r", "--name-only", "-z", tree)
             )
-            branch_files.update(listed or [])
+            if listed is None:
+                self._failed = True
+                return
+            branch_files.update(listed)
         self._branches = _suffixes(sorted(branch_files))
 
-    def path_status(self, path: str) -> AnchorStatus | None:
-        """``None`` when git could not list the repository."""
-        if (self.root / path).exists():
+    def path_status(self, path: str) -> AnchorStatus:
+        """``unavailable`` when the path escapes the repo or git cannot list it."""
+        candidate = self.root / path
+        if not candidate.resolve().is_relative_to(self.root.resolve()):
+            return "unavailable"
+        if candidate.exists():
             return "present"
         self._load_paths()
         if self._checkout is None or self._branches is None:
-            return None
+            return "unavailable"
         if path in self._checkout:
             return "present"
         return "branch" if path in self._branches else "missing"
@@ -199,23 +213,33 @@ class RepoCheck:
             return None
         return result.returncode == 0
 
-    def symbol_status(self, symbol: str) -> AnchorStatus | None:
-        """``None`` when git could not answer (the anchor is then ignored)."""
+    def symbol_status(self, symbol: str) -> AnchorStatus:
+        """``unavailable`` when git could not answer."""
         if symbol not in self._symbols:
-            status: AnchorStatus | None
+            status: AnchorStatus
             in_checkout = self._grep(symbol)
             if in_checkout is None or in_checkout:
-                status = "present" if in_checkout else None
+                status = "present" if in_checkout else "unavailable"
             else:
                 trees = self._branch_trees()
-                on_branch = self._grep(symbol, *trees) if trees else False
+                on_branch = (
+                    None
+                    if trees is None
+                    else self._grep(symbol, *trees)
+                    if trees
+                    else False
+                )
                 status = (
-                    None if on_branch is None else "branch" if on_branch else "missing"
+                    "unavailable"
+                    if on_branch is None
+                    else "branch"
+                    if on_branch
+                    else "missing"
                 )
             self._symbols[symbol] = status
         return self._symbols[symbol]
 
-    def status(self, kind: AnchorKind, value: str) -> AnchorStatus | None:
+    def status(self, kind: AnchorKind, value: str) -> AnchorStatus:
         return self.path_status(value) if kind == "path" else self.symbol_status(value)
 
 
@@ -227,20 +251,26 @@ class AnchorVerdict:
     on_branch: list[str]
     missing: list[str]
     derived: bool
+    unavailable: list[str] = field(default_factory=list)
 
 
 def check_fact(fact: Fact, repo: RepoCheck) -> AnchorVerdict | None:
     """Check a fact's anchors (or anchors derived from its prose)."""
     derived = not fact.anchors
     anchors = derive_anchors(fact.content) if derived else fact.anchors
-    found: dict[AnchorStatus, list[str]] = {"present": [], "branch": [], "missing": []}
+    found: dict[AnchorStatus, list[str]] = {
+        "present": [],
+        "branch": [],
+        "missing": [],
+        "unavailable": [],
+    }
     for anchor in anchors:
         normalized = normalize_anchor(anchor)
         if normalized is None:
+            found["unavailable"].append(anchor)
             continue
         status = repo.status(*normalized)
-        if status is not None:
-            found[status].append(anchor)
+        found[status].append(anchor)
     if not any(found.values()):
         return None
     return AnchorVerdict(
@@ -249,6 +279,7 @@ def check_fact(fact: Fact, repo: RepoCheck) -> AnchorVerdict | None:
         on_branch=found["branch"],
         missing=found["missing"],
         derived=derived,
+        unavailable=found["unavailable"],
     )
 
 
@@ -286,15 +317,28 @@ def plan_verification(verdicts: list[AnchorVerdict], report: StepReport) -> Veri
     changes = plan.changes
     for verdict in verdicts:
         fact = verdict.fact
+        if verdict.unavailable:
+            report.skips[fact.id] = "anchor evidence unavailable: " + ", ".join(
+                verdict.unavailable
+            )
+            report.bump("facts_unavailable")
+            report.notes.append(
+                f"unavailable {fact.id}: {', '.join(verdict.unavailable)}"
+            )
+            continue
         gone_everywhere = not verdict.present and not verdict.on_branch
         if fact.stale:
             if gone_everywhere:
                 continue
-            # Restored facts are unstaled first, so no ``expected`` check here.
             plan.unstale.append(fact.id)
-            report.add("restored", fact.id)
+            changes.unstale.append(fact.id)
+            changes.expected[fact.id] = fact.updated_at
+            report.propose("restored", fact.id)
             if verdict.missing or verdict.on_branch:
                 changes.edits[fact.id] = {"suspect_reason": _missing_reason(verdict)}
+            elif fact.suspect_reason.startswith(MISSING_PREFIX):
+                changes.edits[fact.id] = {"suspect_reason": ""}
+                report.propose("cleared", fact.id)
             continue
         # Paths guessed from prose are often runtime files or another repo's
         # paths, and bare symbols or extensionless paths are often database
@@ -309,7 +353,7 @@ def plan_verification(verdicts: list[AnchorVerdict], report: StepReport) -> Veri
             reason = STALE_PREFIX + ", ".join(verdict.missing)
             changes.stale[fact.id] = reason
             changes.expected[fact.id] = fact.updated_at
-            report.add("staled", fact.id)
+            report.propose("staled", fact.id)
             report.notes.append(f"stale {fact.id}: {reason}")
             continue
         fields: dict[str, object] = {}
@@ -317,15 +361,15 @@ def plan_verification(verdicts: list[AnchorVerdict], report: StepReport) -> Veri
             reason = _missing_reason(verdict)
             if fact.suspect_reason != reason:
                 fields["suspect_reason"] = reason
-                report.add("suspect", fact.id)
+                report.propose("suspect", fact.id)
                 report.notes.append(f"suspect {fact.id}: {reason}")
         else:
             if fact.suspect_reason.startswith(MISSING_PREFIX):
                 fields["suspect_reason"] = ""
-                report.add("cleared", fact.id)
+                report.propose("cleared", fact.id)
             if verdict.derived:
                 fields["anchors"] = verdict.present
-                report.add("anchored", fact.id)
+                report.propose("anchored", fact.id)
         if fields:
             changes.edits[fact.id] = fields
             changes.expected[fact.id] = fact.updated_at
@@ -364,6 +408,9 @@ def verify_facts(
         root = find_repo_root(project, data_dir=data_dir, search_roots=search_roots)
         if root is None:
             report.bump("projects_without_repo")
+            report.skips.update(
+                {fact.id: "project repository unavailable" for fact in checkable}
+            )
             continue
         report.bump("projects_with_repo")
         repo = RepoCheck(root)

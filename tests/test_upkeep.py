@@ -614,6 +614,95 @@ def test_concurrent_write_aborts_cluster_and_is_seen_next_run(tmp_path: Path, ll
     assert '"late"' in prompts  # written after the snapshot: seen now
 
 
+@pytest.mark.parametrize("mutation", ["forget", "edit"])
+def test_unchanged_kept_card_is_still_a_cluster_dependency(
+    tmp_path: Path, llm, mutation
+):
+    _, use = llm
+    store = _store(
+        tmp_path,
+        [
+            _fact(
+                "a",
+                "Widget uses pnpm for packages.",
+                tags=["tag"],
+                retrieval_hints=["hint"],
+            ),
+            _fact(
+                "b",
+                "Widget uses pnpm for dependencies.",
+                tags=["tag"],
+                retrieval_hints=["hint"],
+            ),
+        ],
+    )
+
+    def change_kept_card(cards: list[dict]) -> ConsolidationResponse:
+        response = _keep_all(cards)
+        retired = next(
+            card
+            for card in cards
+            if card["content"] == "Widget uses pnpm for packages."
+        )
+        response.cards = [
+            card for card in response.cards if card.source_ids != [retired["id"]]
+        ]
+        response.retire = [RetiredInputCard(id=retired["id"], reason="duplicate")]
+        if mutation == "forget":
+            store.sync_store.forget("b")
+        else:
+            store.sync_store.update_fact("b", tags=["concurrent"])
+        return response
+
+    use(change_kept_card)
+    report = _upkeep(store, UpkeepStep.consolidate).steps[0]
+
+    assert set(report.conflicts) == {"b"}
+    assert not _by_id(store)["a"].stale
+    assert not report.fact_ids
+    assert load_state(store.data_dir).projects["widget"].retry_seeds == {"a": 1}
+
+
+def test_source_expiring_during_provider_cannot_become_durable(
+    tmp_path: Path, llm, monkeypatch
+):
+    _, use = llm
+    start = datetime.now(timezone.utc)
+
+    class Clock(datetime):
+        current = start
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr("engram.storage.store.datetime", Clock)
+    source = _fact(
+        "a",
+        "Widget temporarily uses pnpm.",
+        durability=Durability.ephemeral,
+        expires_at=start + timedelta(minutes=1),
+    )
+    store = _store(tmp_path, [source])
+    before = store.facts_path.read_bytes()
+
+    def expire_during_call(cards: list[dict]) -> ConsolidationResponse:
+        response = _keep_all(cards)
+        response.cards[0].content = "Widget uses pnpm."
+        response.cards[0].durability = Durability.durable
+        Clock.current = start + timedelta(minutes=2)
+        return response
+
+    use(expire_during_call)
+    report = _upkeep(store, UpkeepStep.consolidate).steps[0]
+
+    assert set(report.conflicts) == {"a"}
+    assert not report.fact_ids
+    assert store.facts_path.read_bytes() == before
+    assert _by_id(store)["a"].updated_at == source.updated_at
+    assert store.sync_store.load_active_facts() == []
+
+
 def test_run_upkeep_skips_when_another_run_holds_the_lock(tmp_path: Path):
     store = _store(tmp_path, [_fact("a", "one")])
     with upkeep_lock(store.data_dir) as acquired:
@@ -766,8 +855,9 @@ def test_dry_run_writes_nothing(tmp_path: Path, widget_repo: Path, llm):
         name for name in before if not name.endswith(".lock")
     ]
     assert report.dry_run
-    assert len(report.step(UpkeepStep.projects).fact_ids["edited"]) == 6
-    assert len(report.step(UpkeepStep.consolidate).fact_ids["staled"]) == 6
+    assert all(not step.fact_ids for step in report.steps)
+    assert len(report.step(UpkeepStep.projects).proposed["edited"]) == 6
+    assert len(report.step(UpkeepStep.consolidate).proposed["staled"]) == 6
     assert calls["brief"]
     assert "dry run" in format_upkeep_report(report)
 

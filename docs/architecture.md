@@ -1,89 +1,97 @@
 # Architecture
 
-The top-level `server.py`, `cli.py`, and `operations.py` files are the
-entrypoints. The rest of `src/engram/` is grouped by concern.
+CLI and MCP adapters call shared operations. One `Runtime` owns the store facade, provider client, settings scope, and background tasks.
 
-```
-server.py                FastMCP entrypoint, tool definitions, auto-sync lifespan
-cli.py                   `engram` console-script command surface
-operations.py            shared operation layer behind the MCP tools and CLI
-core/                    domain models + agent-facing contracts + config
-  models.py              Fact, FactEvent, MemoryCandidate, Durability,
-                         RecallRecord, StoreTransaction
-  config.py              pydantic-settings (env prefix: ENGRAM_)
-  projects.py            project canonicalization (paths/worktrees → repo name)
-  interfaces.py          Envelope / error / warning codes (stable JSON contract)
-  structured_outputs.py  pydantic schemas for structured LLM responses
-  provenance.py          recall provenance and trace data structures
-storage/                 persistence
-  store.py               append-only event-log storage + AsyncFactStore facade,
-                         snapshot cache, atomic ChangeSet apply, candidate
-                         review, transaction journal
-  search.py              tokenizer + BM25F index (IDF, bigrams, freshness decay)
-  sync.py                git-backed sync of the data directory, background loop
-llm/                     OpenAI SDK client (`engram.llm` re-exports it)
-extraction/              natural language to facts
-  observer.py            ingest: one LLM call extracts cards and reconciles
-                         them against BM25 neighbors (replace/retire/duplicate)
-  importer.py            bootstrap from Claude Code memory files
-recall/                  retrieval
-  retriever.py           cards (BM25 + relevance bar, no LLM) or answer mode;
-                         zero-hit LLM selection
-  evals.py               recall@k harness used by tests/run_evals.py
-maintenance/             memory upkeep
-  upkeep.py              orchestrator, lock, background loop
-  verify.py              anchor checks against the project's git repo
-  consolidate.py         LLM cluster consolidation (auto-applied)
-  briefs.py              per-project brief cards
-  upkeep_state.py        maintenance_state.jsonl (append-only, union-merged)
-  memory_audit.py        no-key duplicate / stale / contradiction review
-  doctor.py              read-only health diagnostics (with opt-in repair)
-dashboard/               Textual TUI (`engram-dash`)
+```text
+cli.py / server.py
+        ↓
+operations.py ← runtime.py
+        ↓
+extraction / recall / maintenance
+        ↓
+storage public APIs + core contracts + llm provider protocol
 ```
 
-## Data flow
+## Ownership and entrypoints
 
-**Write.** `remember` canonicalizes the project (a path resolves to its git
-repo's name and records the repo root in `projects.local.json`), then
-`extraction.observer.ingest` pulls up to 25 BM25 neighbors of the input and
-makes one structured LLM call. Each output card carries a `memory_key` (reused
-from a neighbor when it is the same memory), `durability`, `anchors`, and
-optional `replaces` / `duplicate_of`; the response may also `retire` neighbors
-the input shows are no longer true. References are validated against the
-neighbor set and project scope, then applied as one `ChangeSet` (created +
-superseded + stale events in a single append). Each target carries the
-`updated_at` it was read at, so a card changed during the LLM call is not
-overwritten; ingest retries once, then stores the new cards without the
-conflicting replacements.
+`runtime.py` binds settings and the completion client for each operation.
+It recovers the store before serving ordinary snapshots. Shutdown waits for owned tasks and closes the provider connection pool.
+Separate runtimes can run in one process without sharing settings or provider clients.
 
-**Read.** `recall` searches the `SearchIndex` (BM25F over content, key, hints,
-tags; stemmed unigrams plus bigrams; ephemeral/event cards decay with a 30-day
-half-life; suspect cards are down-weighted). A hit is relevant when it covers
-enough of the query's IDF mass and scores near the top hit. Cards mode returns
-those as dated lines with no LLM call; when nothing is relevant and a key is
-configured, one small LLM call selects cards from the top 30. Answer mode
-synthesizes over the relevant cards with one call.
+`server.py` registers stable MCP tools with FastMCP. It validates rendering options before dispatch.
+`cli.py` registers CLI handlers and aliases. Both surfaces render the same `OperationResult` envelope.
+`core.operation_models` contains typed operation payloads. `core.interfaces` contains JSON values, errors, warnings, and limits.
 
-**Upkeep.** `maintenance.upkeep.run_upkeep` runs under a per-machine file lock:
-`projects` canonicalizes scopes; `verify` checks anchors against the repo
-(missing everywhere → stale, missing only from the checkout → suspect, back →
-restored); `consolidate` clusters new cards with their neighbors and asks the
-LLM for the minimal coherent set, applied all-or-nothing per cluster. It merges
-cards that state one policy, splits a card that bundles independent claims,
-and rejects any merged or rewritten card over `MAX_CARD_CHARS`; `briefs`
-refreshes a `project-brief` card per project. The MCP server runs it every
-`ENGRAM_MAINTENANCE_INTERVAL` seconds.
+## Domain and persistence
 
-## Dev notes
+`core.models` defines persisted facts, events, candidate snapshots, recall records, and materialized lifecycle state.
+Legacy event categories decode through an explicit compatibility path. Provider proposals use the current strict schema.
+`core.fact_state.is_fact_eligible` supplies the shared active-memory policy.
+`core.projects` canonicalizes project paths and records checkout locations.
 
-- Python 3.13+, managed with `uv`.
-- FastMCP 3.x for the MCP server surface.
-- The official OpenAI SDK for LLM calls (reasoning effort, fast service tier).
-- All MCP tools are async. Storage I/O is synchronous behind an
-  `AsyncFactStore` `asyncio.to_thread` facade.
-- Fact records have: memory key, content, retrieval hints, category,
-  confidence, timestamps, project scope, supersession and consolidation
-  provenance, and source metadata.
-- The MCP server and CLI are adapters over the same operations. MCP provides
-  local typed tools for agents over stdio or loopback HTTP (`engram serve`). The
-  CLI serves humans and batch scripts.
+`storage.store` exposes sync operations and the async facade.
+`storage.transactions` owns local exclusion, durable intent, recovery, and event-log writes.
+`storage.candidates` materializes append-only review history.
+`storage.jsonl` provides validated JSONL reading.
+`storage.search` owns BM25 scoring and coverage. `storage.sync` integrates Git snapshots under the store lock.
+
+Fact batches first persist local intent with exact event IDs, payloads, and timestamps.
+Recovery appends only missing events. Candidate approvals journal exact promoted identities and candidate decisions.
+Ordinary snapshots refuse unresolved intent and corrupt rows. Diagnostic readers can inspect valid rows without recovery writes.
+These guarantees apply to one data directory. Git integration does not provide distributed serializable transactions.
+See [data](data.md) and [sync](sync.md) for migration constraints and crash behavior.
+
+## Extraction
+
+`extraction.observer` selects neighboring facts, requests one structured extraction response, and validates references before applying changes.
+It preserves independent valid proposals when another provider decision is unresolved.
+`extraction.importer` imports reviewed source files through the same operation contracts.
+`core.structured_outputs` owns strict provider schemas. Invalid provider data must remain visible as a failure or unresolved decision.
+
+## Recall
+
+`recall.retriever.recall_result` returns the authoritative `RecallResult`.
+It contains candidate, selected, delivered, and cited evidence with unchanged lexical scores and coverage.
+The tuple-returning `recall_with_provenance` remains a compatibility adapter.
+
+Lexical cards require both the coverage floor and the relative-score cutoff.
+Weak hits can use one provider selection call. Answer mode caps the provider evidence before generating structured claims.
+The renderer validates fact references and generates citations. It preserves ordinary hashes, dates, and numbers in claim text.
+Provider failures return bounded cards with an explicit warning and error trace when requested.
+
+`core.provenance` derives source metadata and traces from the same evidence.
+Legacy `cited_fact_ids` includes delivered cards. Internal `cited` evidence tracks answer references.
+Usage distinguishes attempts, completions, failures, and unknown counters. Legacy `llm_calls` counts successful recall operations.
+
+## Provider and upkeep
+
+`llm.CompletionClient` is the typed injectable provider dependency.
+`OpenAICompletionClient` creates the SDK connection lazily and exposes `aclose`.
+Runtime binding shares one connection pool across extraction, recall, and upkeep.
+Standalone compatibility helpers close their temporary client after each call.
+Structured model calls use the installed SDK parser.
+
+`maintenance.upkeep` owns step ordering and per-machine upkeep exclusion.
+Anchor verification confines file checks to checkout roots and keeps missing evidence distinct from unreadable evidence.
+Consolidation checks source revisions before mutation and reports unresolved clusters without advancing their checkpoint.
+Project briefs record the exact source revisions used to create them.
+Recall invalidates a brief when an eligible source changes or disappears.
+
+## Dashboard, evaluation, and checks
+
+`dashboard.data` uses the public lifecycle policy. Textual workers perform storage I/O away from UI callbacks.
+Superseded facts remain distinct from forgotten facts. Expiry can refresh the view without a file change.
+
+`evaluation` contains typed runners, unchanged labeled datasets, fixture providers, and report provenance.
+The old test-script paths remain thin entrypoints. Default runners inject disabled or fixture providers without changing retriever globals.
+Reports include source digests and explicit live status.
+
+`tooling.verify` defines the commands behind `just check`, `just verify`, and CI.
+`tooling.boundaries` checks private storage imports and sync-store bypasses in async application code.
+`tooling.reference` generates Settings and command references from source registrations.
+`tooling.smoke` verifies stdio, loopback HTTP, errors, restart persistence, packaged datasets, and dashboard assets using temporary data.
+The package profile installs locked dependencies and the wheel outside the checkout before those checks.
+
+`pyproject.toml` scopes stricter mypy checks to the changed domain, provider, recall, evaluation, and tooling modules.
+Default pytest cannot run Git transport fixtures without the explicit `--run-sync-transport` option.
+Live provider quality requires a separate explicit run. Offline scores establish only their labeled fixture contracts.

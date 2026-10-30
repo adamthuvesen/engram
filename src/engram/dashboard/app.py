@@ -1,12 +1,15 @@
 """Engram terminal dashboard — main app."""
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 from typing import Protocol, cast
 
-from textual import on
+from rich.markup import escape
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -38,7 +41,7 @@ from engram.dashboard.screens.help import FOOTER_HINTS, HelpScreen
 from engram.dashboard.screens.overview import OverviewScreen
 from engram.dashboard.screens.projects import ProjectsScreen
 from engram.dashboard.screens.timeline import TimelineScreen
-from engram.storage.store import FactStore
+from engram.storage.store import FactStore, run_sync
 
 CSS_PATH = Path(__file__).parent / "styles" / "dashboard.tcss"
 
@@ -147,6 +150,7 @@ class EngramDashboard(App):
         Binding("t", "toggle_theme", "Theme", show=False),
         Binding("question_mark", "show_help", "Help", show=False),
         Binding("q", "quit", "Quit", show=False),
+        Binding("r", "refresh", "Refresh", show=False),
         Binding("ctrl+p", "command_palette", show=False),
     ]
 
@@ -157,9 +161,13 @@ class EngramDashboard(App):
         self.register_theme(ENGRAM_DARK)
         self.register_theme(ENGRAM_LIGHT)
         self.theme = "engram-dark"
-        self._store = FactStore()
-        self._data: DashboardData = load_dashboard_data(self._store)
-        self._last_hash: int = self._data.content_hash
+        self._store: FactStore | None = None
+        self._data = DashboardData()
+        self._last_hash: int | None = None
+        self._storage_lock = asyncio.Lock()
+        self._refresh_pending = False
+        self._force_reload = False
+        self._storage_error: str | None = None
         self._undo_stack: list[str] = []
         self._undo_timer: Timer | None = None
         self._dirty_tabs: set[str] = set()
@@ -196,6 +204,10 @@ class EngramDashboard(App):
     def _status_text(self) -> str:
         d = self._data
         sep = "  [dim]·[/]  "
+        if self._storage_error:
+            return f"[b]engram[/]{sep}[$error]{escape(self._storage_error)}[/]  Press r to retry"
+        if self._last_hash is None:
+            return f"[b]engram[/]{sep}Loading memory…"
         return (
             f"[b]engram[/]  [$accent]memory[/]{sep}"
             f"{d.active_count:,} facts{sep}"
@@ -216,6 +228,7 @@ class EngramDashboard(App):
 
     def on_mount(self) -> None:
         self._set_screen_titles()
+        self._refresh_data()
         self.set_interval(REFRESH_INTERVAL, self._refresh_data)
         self.set_timer(0.1, self.focus_nav)
 
@@ -298,14 +311,70 @@ class EngramDashboard(App):
                     "Unable to focus widget for dashboard tab %s", tab_id, exc_info=True
                 )
 
-    def _refresh_data(self) -> None:
-        current_hash = content_hash_for(self._store)
-        if current_hash == self._last_hash:
-            return
-        self._last_hash = current_hash
+    def _open_store(self) -> FactStore:
+        if self._store is None:
+            store = FactStore()
+            store.recover_transactions()
+            self._store = store
+        return self._store
 
-        self._data = load_dashboard_data(self._store)
-        self._apply_data_to_tabs()
+    def _read_data(self, force: bool) -> DashboardData | None:
+        store = self._open_store()
+        current_hash = content_hash_for(store)
+        refresh_at = self._data.next_refresh_at
+        if (
+            not force
+            and current_hash == self._last_hash
+            and (refresh_at is None or datetime.now(timezone.utc) < refresh_at)
+        ):
+            return None
+        return load_dashboard_data(store)
+
+    def _refresh_data(self) -> None:
+        if not self._refresh_pending:
+            self._refresh_pending = True
+            self._refresh_worker()
+
+    @work(group="storage")
+    async def _refresh_worker(self) -> None:
+        try:
+            while True:
+                async with self._storage_lock:
+                    force = self._force_reload or self._storage_error is not None
+                    self._force_reload = False
+                    await self._reload_data(force=force)
+                if not self._force_reload:
+                    break
+        finally:
+            self._refresh_pending = False
+
+    async def _reload_data(self, *, force: bool = False) -> None:
+        try:
+            data = await run_sync(self._read_data, force)
+        except Exception as exc:
+            self._report_storage_error("Could not load memory", exc)
+            return
+        self._storage_error = None
+        if data is not None:
+            self._data = data
+            self._last_hash = data.content_hash
+            self._apply_data_to_tabs()
+        else:
+            self._update_status()
+
+    def _report_storage_error(self, action: str, exc: Exception) -> None:
+        message = f"{action}: {exc}"
+        logger.error(message, exc_info=exc)
+        if message != self._storage_error:
+            self.notify(message, severity="error")
+        self._storage_error = message
+        self._update_status()
+
+    def _update_status(self) -> None:
+        self.query_one("#status-bar", Static).update(self._status_text())
+
+    def action_refresh(self) -> None:
+        self._force_refresh()
 
     def _refresh_screen(self, tab_id: str) -> None:
         section = SECTION_BY_ID.get(tab_id)
@@ -368,20 +437,39 @@ class EngramDashboard(App):
             return
         fact_ids = self._pending_forget
         self._pending_forget = []
-        known_fact_ids = {fact.id for fact in self._data.all_facts}
-        undo_entries: list[str] = []
-        for fid in fact_ids:
-            if fid in known_fact_ids:
-                undo_entries.append(fid)
-            self._store.forget(fid, reason="Forgotten via dashboard")
-        self._undo_stack = undo_entries
-        self._schedule_undo_expiry()
-        self._force_refresh()
-        count = len(fact_ids)
-        self.notify(
-            f"Forgot {count} fact{'s' if count > 1 else ''}. Ctrl+Z to undo ({int(UNDO_WINDOW_S)}s)",
-            severity="warning",
-        )
+        self._forget_worker(fact_ids)
+
+    @work(group="storage")
+    async def _forget_worker(self, fact_ids: list[str]) -> None:
+        async with self._storage_lock:
+            undo_entries: list[str] = []
+            error: Exception | None = None
+            try:
+                store = await run_sync(self._open_store)
+                for fid in fact_ids:
+                    result = await run_sync(
+                        store.forget, fid, reason="Forgotten via dashboard"
+                    )
+                    if result is not None:
+                        undo_entries.append(fid)
+                        self._undo_stack = undo_entries.copy()
+                        if self._undo_timer:
+                            self._undo_timer.stop()
+            except Exception as exc:
+                error = exc
+            await self._reload_data(force=True)
+            if undo_entries:
+                self._schedule_undo_expiry()
+            if error is not None:
+                self._report_storage_error("Could not forget memory", error)
+            count = len(undo_entries)
+            if count:
+                self.notify(
+                    f"Forgot {count} fact{'s' if count > 1 else ''}. Ctrl+Z to undo ({int(UNDO_WINDOW_S)}s)",
+                    severity="warning",
+                )
+            elif error is None:
+                self.notify("No facts were forgotten", severity="information")
 
     def _schedule_undo_expiry(self) -> None:
         if self._undo_timer:
@@ -389,33 +477,49 @@ class EngramDashboard(App):
         self._undo_timer = self.set_timer(UNDO_WINDOW_S, self._expire_undo)
 
     def _expire_undo(self) -> None:
+        if any(
+            worker.name == "_undo_worker"
+            and not worker.is_cancelled
+            and not worker.is_finished
+            for worker in self.workers
+        ):
+            self._schedule_undo_expiry()
+            return
         self._undo_stack.clear()
 
     def key_ctrl_z(self) -> None:
-        if not self._undo_stack:
-            self.notify("Nothing to undo", severity="information")
-            return
-        restored = 0
-        for fid in self._undo_stack:
-            if self._store.restore_fact(fid):
-                restored += 1
-        self._undo_stack.clear()
-        if self._undo_timer:
-            self._undo_timer.stop()
-        self._force_refresh()
-        if restored == 0:
-            self.notify("Nothing to undo", severity="information")
-            return
-        self.notify(
-            f"Restored {restored} fact{'s' if restored > 1 else ''}",
-            severity="information",
-        )
+        self._undo_worker()
+
+    @work(group="storage")
+    async def _undo_worker(self) -> None:
+        async with self._storage_lock:
+            restored = 0
+            error: Exception | None = None
+            try:
+                store = await run_sync(self._open_store)
+                for fid in self._undo_stack.copy():
+                    if await run_sync(store.restore_fact, fid):
+                        restored += 1
+                    self._undo_stack.remove(fid)
+            except Exception as exc:
+                error = exc
+            await self._reload_data(force=True)
+            if self._undo_stack:
+                self._schedule_undo_expiry()
+            if error is not None:
+                self._report_storage_error("Could not restore memory", error)
+            if restored:
+                self.notify(
+                    f"Restored {restored} fact{'s' if restored > 1 else ''}",
+                    severity="information",
+                )
+            elif error is None:
+                self.notify("Nothing to undo", severity="information")
 
     def _force_refresh(self) -> None:
         """Force a full data reload, bypassing the hash check."""
-        self._data = load_dashboard_data(self._store)
-        self._last_hash = self._data.content_hash
-        self._apply_data_to_tabs()
+        self._force_reload = True
+        self._refresh_data()
 
     def _apply_data_to_tabs(self) -> None:
         active_tab = self.query_one("#tabs", TabbedContent).active
@@ -423,7 +527,7 @@ class EngramDashboard(App):
         self._refresh_screen(active_tab)
         self._update_nav_labels()
         try:
-            self.query_one("#status-bar", Static).update(self._status_text())
+            self._update_status()
         except Exception:
             logger.debug("Unable to update status bar", exc_info=True)
 

@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from tests.run_extraction_quality_evals import (
+from engram.evaluation.extraction_quality import (
     DATASET_PATH,
     MAX_FRAGMENTATION,
     MIN_DURABLE_CLAIM_COVERAGE,
@@ -198,7 +198,7 @@ def test_live_cli_reports_provider_failure_without_traceback(monkeypatch, capsys
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(
-        "tests.run_extraction_quality_evals.extract_live_provider_outputs",
+        "engram.evaluation.extraction_quality.extract_live_provider_outputs",
         fail_live_run,
     )
 
@@ -212,6 +212,7 @@ def test_live_cli_reports_provider_failure_without_traceback(monkeypatch, capsys
     os.environ.get("ENGRAM_EVAL_PROVIDER") != "1",
     reason="provider mode disabled (set ENGRAM_EVAL_PROVIDER=1)",
 )
+@pytest.mark.live_provider
 def test_live_provider_meets_extraction_quality_gates():
     outputs = asyncio.run(extract_live_provider_outputs())
 

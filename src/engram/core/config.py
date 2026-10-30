@@ -4,9 +4,13 @@ import logging
 import os
 import re
 from functools import lru_cache
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,57 +18,104 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # Storage
-    data_dir: Path = Path.home() / ".engram" / "data"
+    data_dir: Path = Field(
+        default=Path.home() / ".engram" / "data", description="Storage directory."
+    )
 
     # LLM for extraction and recall
-    llm_model: str = "openai/gpt-6-luna"
-    llm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = (
-        "medium"
+    llm_model: str = Field(
+        default="openai/gpt-6-luna",
+        description="OpenAI model for extraction, recall fallback, and upkeep.",
     )
-    llm_temperature: float = 0.0
+    llm_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = (
+        Field(
+            default="medium", description="Reasoning effort for extraction and upkeep."
+        )
+    )
+    llm_temperature: float = Field(
+        default=0.0, description="Temperature for models without reasoning effort."
+    )
     # OpenAI processing tier: "fast" (priority, ~2x price, lowest latency),
     # "default", or "" to omit the parameter.
-    llm_service_tier: str = "fast"
+    llm_service_tier: str = Field(
+        default="fast", description="OpenAI processing tier, or empty to omit."
+    )
     # Recall sits on the agent's critical path; extraction and upkeep can think
     # harder than recall does.
     recall_reasoning_effort: Literal[
         "none", "low", "medium", "high", "xhigh", "max"
-    ] = "low"
+    ] = Field(default="low", description="Reasoning effort for recall calls.")
 
     # Retrieval
-    max_facts_per_agent: int = 40
-    retrieval_timeout: float = 15.0
+    max_facts_per_agent: int = Field(
+        default=40, gt=0, description="Maximum facts supplied to a recall LLM call."
+    )
+    retrieval_timeout: float = Field(
+        default=15.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Recall provider timeout in seconds.",
+    )
 
     # Lifecycle: ephemeral memories without an explicit expiry get this TTL.
-    ephemeral_ttl_days: int = 45
+    ephemeral_ttl_days: int = Field(
+        default=45, gt=0, description="Default expiry in days for ephemeral memories."
+    )
 
     # Upkeep: background consolidation, anchor verification, and project
     # briefs inside the MCP server. Runs only when an LLM key is available.
-    maintenance_enabled: bool = True
-    maintenance_interval: float = 6 * 3600.0
-    maintenance_concurrency: int = 4
+    maintenance_enabled: bool = Field(
+        default=True, description="Run background memory upkeep in the MCP server."
+    )
+    maintenance_interval: float = Field(
+        default=6 * 3600.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Seconds between background upkeep runs.",
+    )
+    maintenance_concurrency: int = Field(
+        default=4, gt=0, description="Maximum concurrent upkeep provider calls."
+    )
     # Where upkeep looks for a project's git checkout when no working
     # directory has been recorded for it yet.
-    repo_search_roots: list[Path] = [
-        Path.home() / "dev",
-        Path.home() / "code",
-        Path.home() / "src",
-        Path.home() / "projects",
-        Path.home(),
-    ]
+    repo_search_roots: list[Path] = Field(
+        default=[
+            Path.home() / "dev",
+            Path.home() / "code",
+            Path.home() / "src",
+            Path.home() / "projects",
+            Path.home(),
+        ],
+        description="Directories searched for project repositories, up to three levels deep.",
+    )
 
     # Claude Code integration
-    claude_projects_dir: Path = Path.home() / ".claude" / "projects"
+    claude_projects_dir: Path = Field(
+        default=Path.home() / ".claude" / "projects",
+        description="Claude Code projects directory for memory imports.",
+    )
 
     # Cross-machine sync (git-backed). Disabled by default; opt in via
     # ENGRAM_SYNC_ENABLED=true. ``sync_interval`` controls the background
     # auto-sync cadence (seconds) when enabled.
-    sync_enabled: bool = False
-    sync_interval: float = 300.0
-    sync_timeout: float = 30.0
+    sync_enabled: bool = Field(
+        default=False, description="Run background Git sync in the MCP server."
+    )
+    sync_interval: float = Field(
+        default=300.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Seconds between background sync runs.",
+    )
+    sync_timeout: float = Field(
+        default=30.0,
+        gt=0,
+        allow_inf_nan=False,
+        description="Timeout in seconds for each sync Git invocation.",
+    )
 
     # Logging
-    log_level: str = "INFO"
+    log_level: str = Field(default="INFO", description="Application logging level.")
 
     model_config = SettingsConfigDict(
         env_prefix="ENGRAM_",
@@ -77,10 +128,34 @@ DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 7422
 
 
+_CURRENT_SETTINGS: ContextVar[Settings | None] = ContextVar(
+    "engram_settings", default=None
+)
+
+
 @lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    """Get cached settings instance."""
+def _environment_settings() -> Settings:
     return Settings()
+
+
+class _SettingsLoader:
+    def __call__(self) -> Settings:
+        return _CURRENT_SETTINGS.get() or _environment_settings()
+
+    def cache_clear(self) -> None:
+        _environment_settings.cache_clear()
+
+
+get_settings = _SettingsLoader()
+
+
+@contextmanager
+def settings_scope(settings: Settings) -> Iterator[Settings]:
+    token = _CURRENT_SETTINGS.set(settings)
+    try:
+        yield settings
+    finally:
+        _CURRENT_SETTINGS.reset(token)
 
 
 class _LazySettingsProxy:

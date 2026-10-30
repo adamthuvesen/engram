@@ -1,5 +1,6 @@
 """Tests for the append-only event-log model: event ids and replay."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -11,6 +12,7 @@ from engram.core.models import (
     Fact,
     FactCategory,
     FactEvent,
+    decode_stored_event,
     materialize_events,
     new_event_id,
     replay_fact,
@@ -158,15 +160,19 @@ def test_replay_edit_only_touches_editable_fields():
     original_created_at = fact.created_at
     events = [
         _created_event(fact, ts=_at(0)),
-        FactEvent(
-            event_type=EventType.edited,
-            fact_id="fact_a",
-            timestamp=_at(1),
-            payload={
-                "id": "stolen",
-                "created_at": _at(99).isoformat(),
-                "content": "v2",
-            },
+        decode_stored_event(
+            json.dumps(
+                {
+                    "event_type": "edited",
+                    "fact_id": "fact_a",
+                    "timestamp": _at(1).isoformat(),
+                    "payload": {
+                        "id": "stolen",
+                        "created_at": _at(99).isoformat(),
+                        "content": "v2",
+                    },
+                }
+            )
         ),
     ]
     result, _ = replay_fact(events)

@@ -15,7 +15,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
-from engram.core.config import Settings, ensure_openai_api_key, get_settings
+from pydantic import Field, JsonValue
+
+from engram.core.config import Settings, get_settings
 from engram.core.interfaces import EnvelopeWarning, WarningCode
 from engram.core.models import Fact, RecallRecord
 from engram.core.provenance import (
@@ -25,7 +27,9 @@ from engram.core.provenance import (
     DEFAULT_PROMPT_EXCERPT_CHARS,
     LLMCallTrace,
     PrefilterMatch,
+    RecallEvidence,
     RecallProvenance,
+    RecallResult,
     RecallTrace,
     SourceSummary,
     TierDecision,
@@ -33,34 +37,36 @@ from engram.core.provenance import (
     excerpt,
 )
 from engram.core.structured_outputs import StructuredOutput
-from engram.llm import complete_model, complete_with_usage
+from engram.llm import (
+    Completion,
+    ModelCompletion,
+    ProviderResponseError,
+    complete_model_with_usage,
+    complete_with_usage,
+    provider_available,
+)
+from engram.llm.client import _response_format_for_model
 from engram.storage.search import SearchHit
 from engram.storage.store import (
     AsyncFactStore,
     FactStore,
     format_fact_line,
     format_facts_for_llm,
+    run_sync,
 )
 
 logger = logging.getLogger(__name__)
 
 RecallMode = Literal["cards", "answer"]
 
-ANSWER_SYSTEM = """You are a memory search and synthesis agent. Given a query and stored
-facts, answer the query from the facts that bear on it, as if briefing a colleague.
-Keep it concise but complete.
-
-- Every fact carries the date it was observed. When facts about the same thing
-  conflict, prefer the newer one and say that it replaced the older one.
-- Facts flagged `time-bound`, `expires ...`, or `unverified: ...` may be out of date;
-  say so when you rely on one.
-- Cite fact IDs for traceability: copy each ID exactly (12 hex characters) from its
-  `id:` marker; never invent, merge, or truncate an ID. Omit a citation rather than
-  guess one.
-- If the facts do not answer the query, say so instead of guessing.
-
-At the very end of your answer, on a new line, add a quality rating in the format:
-[quality: high|medium|low|none]"""
+ANSWER_SYSTEM = """Answer the query using only the supplied stored facts.
+Return structured claims and a quality rating: high, medium, low, or none.
+Each claim has plain text and fact_ids copied exactly from the supplied IDs.
+Do not put citation markers in claim text. The application renders citations.
+Use an empty fact_ids list only to explain that the facts do not answer the query.
+Prefer newer facts when they conflict and explain the conflict.
+Mention uncertainty when relying on time-bound, expired, or unverified facts.
+Keep the answer concise and complete."""
 
 SELECT_SYSTEM = """You pick stored memory facts that are relevant to a query.
 The facts matched the query only weakly by keywords, so judge meaning, not word
@@ -87,34 +93,25 @@ SELECTOR_VERSION = "v4"
 
 NO_RELEVANT_MEMORIES = "No relevant memories found for this query."
 
-# Fact-ID extraction from LLM responses. Fact IDs are 12-hex strings emitted in
-# `(id: <hex>)` form by ``format_fact_line``.
-_CITED_ID_RE = re.compile(r"\b([0-9a-f]{12})\b")
-
-# ID-like hex runs in answer text. Runs shorter than 8 chars collide with
-# ordinary English words made of hex letters ("decade", "deadbeef" aside).
-_ID_LIKE_RE = re.compile(r"\b[0-9a-f]{8,}\b")
-
-# Tidy-up rules for citation groups left ragged after invalid IDs are removed,
-# e.g. "[facts: , ]", "([abc], , [def])", "[]". Applied to fixpoint.
-_CITATION_TIDY_RULES = [
-    (re.compile(r",\s*,"), ","),
-    (re.compile(r"(?<=[\[(])\s*,\s*"), ""),
-    (re.compile(r",\s*(?=[\])])"), ""),
-    (re.compile(r"\s*\[\s*(?:facts?:\s*)?\]"), ""),
-    (re.compile(r"\s*\(\s*(?:facts?:\s*)?\)"), ""),
-]
-
 
 class RecallSelection(StructuredOutput):
-    """LLM response for zero-hit selection: IDs of the relevant candidates."""
+    """LLM response for zero-hit selection."""
 
     relevant_ids: list[str]
 
 
+class AnswerClaim(StructuredOutput):
+    text: str = Field(min_length=1)
+    fact_ids: list[str]
+
+
+class RecallAnswer(StructuredOutput):
+    claims: list[AnswerClaim] = Field(min_length=1)
+    quality: Literal["high", "medium", "low", "none"]
+
+
 def _llm_available() -> bool:
-    """True when an LLM provider key is set or loadable from the key cache."""
-    return ensure_openai_api_key() is not None
+    return provider_available()
 
 
 def _relevant_hits(hits: list[SearchHit]) -> list[SearchHit]:
@@ -139,56 +136,6 @@ def _cards_quality(cards: list[SearchHit]) -> str:
     if not cards:
         return "none"
     return "high" if cards[0].coverage >= HIGH_QUALITY_COVERAGE else "medium"
-
-
-def _extract_quality(text: str) -> tuple[str, str]:
-    """Extract [quality: ...] tag from synthesis output.
-
-    Returns (clean_text, quality_level).
-    """
-    for level in ("high", "medium", "low", "none"):
-        tag = f"[quality: {level}]"
-        if tag in text:
-            return text.replace(tag, "").strip(), level
-    return text.strip(), ""
-
-
-def _extract_cited_ids(text: str, candidate_ids: set[str]) -> list[str]:
-    """Pull cited fact IDs out of an LLM response, preserving order.
-
-    Only returns IDs that were actually in the prompt's fact set, so we never
-    fabricate a citation from a hallucinated hex string.
-    """
-    if not text:
-        return []
-    seen: list[str] = []
-    seen_set: set[str] = set()
-    for match in _CITED_ID_RE.finditer(text):
-        fact_id = match.group(1)
-        if fact_id in candidate_ids and fact_id not in seen_set:
-            seen.append(fact_id)
-            seen_set.add(fact_id)
-    return seen
-
-
-def _scrub_invalid_citations(text: str, candidate_ids: set[str]) -> str:
-    """Remove ID-like hex runs the model invented (not in the prompt's fact set).
-
-    Provenance already filters citations through ``_extract_cited_ids``; this
-    keeps the answer text consistent with it instead of shipping fabricated or
-    mangled IDs (wrong length, merged digits) to the caller.
-    """
-    scrubbed = _ID_LIKE_RE.sub(
-        lambda m: m.group(0) if m.group(0) in candidate_ids else "", text
-    )
-    if scrubbed == text:
-        return text
-    while True:
-        before = scrubbed
-        for pattern, replacement in _CITATION_TIDY_RULES:
-            scrubbed = pattern.sub(replacement, scrubbed)
-        if scrubbed == before:
-            return scrubbed
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +172,7 @@ def _delivery_warnings(delivered: list[Fact]) -> list[EnvelopeWarning]:
                     details={"project": project, "memory_key": memory_key},
                 )
             )
-    suspect = {
+    suspect: dict[str, JsonValue] = {
         fact.id: fact.suspect_reason for fact in delivered if fact.suspect_reason
     }
     if suspect:
@@ -247,14 +194,11 @@ def _delivery_warnings(delivered: list[Fact]) -> list[EnvelopeWarning]:
 
 @dataclass
 class _Outcome:
-    """What one recall path produced, before provenance assembly."""
-
     text: str
     quality: str
+    selected: list[SearchHit]
     delivered: list[Fact]
-    llm_calls: int = 0
-    input_tokens: int | None = None
-    cached_tokens: int | None = None
+    cited: list[Fact] = field(default_factory=list)
     calls: list[LLMCallTrace] = field(default_factory=list)
     truncated: bool = False
     warnings: list[EnvelopeWarning] = field(default_factory=list)
@@ -264,20 +208,46 @@ def _candidates_prompt(query: str, facts: list[Fact]) -> str:
     return f"QUERY: {query}\n\nSTORED FACTS:\n{format_facts_for_llm(facts)}"
 
 
+def _record_completion(
+    usage: UsageSummary, completion: Completion | ModelCompletion[RecallSelection]
+) -> None:
+    usage.llm_completions = (usage.llm_completions or 0) + 1
+    usage.input_tokens = completion.input_tokens
+    usage.cached_tokens = completion.cached_tokens
+    usage.output_tokens = completion.output_tokens
+    usage.usage_unknown_calls = int(
+        completion.input_tokens is None or completion.output_tokens is None
+    )
+    usage.cache_hit_ratio = (
+        completion.cached_tokens / completion.input_tokens
+        if completion.input_tokens and completion.cached_tokens is not None
+        else None
+    )
+
+
+def _validate_references(ids: list[str], candidate_ids: set[str]) -> list[str]:
+    unknown = set(ids) - candidate_ids
+    if unknown:
+        raise ProviderResponseError(
+            "Provider referenced facts outside the supplied evidence."
+        )
+    return list(dict.fromkeys(ids))
+
+
 async def _select_relevant(
     query: str,
     candidates: list[SearchHit],
     settings: Settings,
+    usage: UsageSummary,
     *,
     with_trace: bool,
     excerpt_chars: int,
     output_chars: int,
 ) -> tuple[list[SearchHit], LLMCallTrace | None, bool]:
-    """One structured LLM call choosing the relevant candidates by ID."""
     prompt = _candidates_prompt(query, [hit.fact for hit in candidates])
     t_call = time.monotonic()
-    selection = await asyncio.wait_for(
-        complete_model(
+    completion = await asyncio.wait_for(
+        complete_model_with_usage(
             prompt=prompt,
             system=SELECT_SYSTEM,
             response_model=RecallSelection,
@@ -285,10 +255,11 @@ async def _select_relevant(
         ),
         timeout=settings.retrieval_timeout,
     )
-    elapsed_ms = (time.monotonic() - t_call) * 1000
+    _record_completion(usage, completion)
+    selection = completion.value
     by_id = {hit.fact.id: hit for hit in candidates}
     selected = [
-        by_id[fid] for fid in dict.fromkeys(selection.relevant_ids) if fid in by_id
+        by_id[fid] for fid in _validate_references(selection.relevant_ids, set(by_id))
     ]
     if not with_trace:
         return selected, None, False
@@ -297,23 +268,54 @@ async def _select_relevant(
         system=SELECT_SYSTEM,
         prompt=prompt,
         output=selection.model_dump_json(),
-        elapsed_ms=elapsed_ms,
+        elapsed_ms=(time.monotonic() - t_call) * 1000,
         excerpt_chars=excerpt_chars,
         output_chars=output_chars,
+        input_tokens=completion.input_tokens,
+        cached_tokens=completion.cached_tokens,
+        output_tokens=completion.output_tokens,
     )
     return selected, trace, truncated
 
 
+# Only citation syntax is recognized. Ordinary hashes, dates, and numbers stay text.
+_INLINE_CITATION_RE = re.compile(
+    r"\(\s*(?:id|facts?):[^)]*\)|\[\s*(?:facts?:[^]]*|[0-9a-f]{8,}(?:[\s,]+[0-9a-f]{8,})*)\s*\]",
+    re.IGNORECASE,
+)
+
+
+def _render_answer(answer: RecallAnswer, facts: list[Fact]) -> tuple[str, list[Fact]]:
+    by_id = {fact.id: fact for fact in facts}
+    cited_ids: list[str] = []
+    lines: list[str] = []
+    for claim in answer.claims:
+        if not claim.text.strip() or _INLINE_CITATION_RE.search(claim.text):
+            raise ProviderResponseError(
+                "Answer claim text must contain prose without citation markers."
+            )
+        refs = _validate_references(claim.fact_ids, set(by_id))
+        if not refs and answer.quality != "none":
+            raise ProviderResponseError(
+                "An answer claim has no supporting fact references."
+            )
+        cited_ids.extend(fid for fid in refs if fid not in cited_ids)
+        citations = "".join(f" (id: {fid})" for fid in refs)
+        lines.append(claim.text.strip() + citations)
+    return "\n".join(lines), [by_id[fid] for fid in cited_ids]
+
+
 async def _answer(
     query: str,
-    facts: list[Fact],
+    candidates: list[SearchHit],
     settings: Settings,
+    usage: UsageSummary,
     *,
     with_trace: bool,
     excerpt_chars: int,
     output_chars: int,
 ) -> _Outcome:
-    """One LLM call synthesizing an answer over ``facts``."""
+    facts = [hit.fact for hit in candidates]
     prompt = _candidates_prompt(query, facts)
     t_call = time.monotonic()
     completion = await asyncio.wait_for(
@@ -321,32 +323,26 @@ async def _answer(
             prompt=prompt,
             system=ANSWER_SYSTEM,
             reasoning_effort=settings.recall_reasoning_effort,
+            response_format=_response_format_for_model(RecallAnswer),
         ),
         timeout=settings.retrieval_timeout,
     )
-    elapsed_ms = (time.monotonic() - t_call) * 1000
-    answer, quality = _extract_quality(completion.text)
-    candidate_ids = {fact.id for fact in facts}
-    cited = set(_extract_cited_ids(completion.text, candidate_ids))
-    outcome = _Outcome(
-        _scrub_invalid_citations(answer, candidate_ids),
-        quality,
-        [fact for fact in facts if fact.id in cited],
-        llm_calls=1,
-        input_tokens=completion.input_tokens,
-        cached_tokens=completion.cached_tokens,
-    )
+    _record_completion(usage, completion)
+    answer = RecallAnswer.model_validate_json(completion.text)
+    text, cited = _render_answer(answer, facts)
+    outcome = _Outcome(text, answer.quality, candidates, cited, cited=cited)
     if with_trace:
         trace, outcome.truncated = _call_trace(
             name="answer",
             system=ANSWER_SYSTEM,
             prompt=prompt,
             output=completion.text,
-            elapsed_ms=elapsed_ms,
+            elapsed_ms=(time.monotonic() - t_call) * 1000,
             excerpt_chars=excerpt_chars,
             output_chars=output_chars,
             input_tokens=completion.input_tokens,
             cached_tokens=completion.cached_tokens,
+            output_tokens=completion.output_tokens,
         )
         outcome.calls.append(trace)
     return outcome
@@ -363,6 +359,8 @@ def _call_trace(
     output_chars: int,
     input_tokens: int | None = None,
     cached_tokens: int | None = None,
+    output_tokens: int | None = None,
+    error: str | None = None,
 ) -> tuple[LLMCallTrace, bool]:
     prompt_excerpt, prompt_truncated = excerpt(prompt, excerpt_chars)
     output_excerpt, output_truncated = excerpt(output, output_chars)
@@ -375,6 +373,8 @@ def _call_trace(
             elapsed_ms=elapsed_ms,
             input_tokens=input_tokens,
             cached_tokens=cached_tokens,
+            output_tokens=output_tokens,
+            error=error,
         ),
         prompt_truncated or output_truncated,
     )
@@ -409,24 +409,52 @@ async def recall_with_provenance(
     max_sources: int = DEFAULT_MAX_SOURCES,
     max_prefilter_matches: int = DEFAULT_MAX_PREFILTER_MATCHES,
 ) -> tuple[str, str, RecallProvenance, RecallTrace | None]:
-    """Recall returning ``(text, quality, provenance, trace_or_none)``.
+    """Compatibility tuple adapter over the authoritative typed result."""
+    result = await recall_result(
+        query,
+        project,
+        store,
+        mode=mode,
+        with_trace=with_trace,
+        verbose_trace=verbose_trace,
+        max_sources=max_sources,
+        max_prefilter_matches=max_prefilter_matches,
+    )
+    return result.text, result.quality, result.provenance, result.trace
 
-    ``mode="cards"`` returns up to ``max_sources`` relevant facts with no LLM
-    call; only a query whose hits all miss the relevance bar spends one LLM
-    call to select among them. ``mode="answer"`` spends one LLM call to
-    synthesize an answer. Provider failures degrade to cards (or to "no
-    relevant memories") with a ``provider_unavailable`` warning, never raise.
 
-    ``with_trace=True`` populates the ``RecallTrace`` with bounded prompt and
-    output excerpts; ``verbose_trace=True`` widens those limits.
+async def recall_result(
+    query: str,
+    project: str | None = None,
+    store: FactStore | AsyncFactStore | None = None,
+    *,
+    mode: RecallMode = "cards",
+    with_trace: bool = False,
+    verbose_trace: bool = False,
+    max_sources: int = DEFAULT_MAX_SOURCES,
+    max_prefilter_matches: int = DEFAULT_MAX_PREFILTER_MATCHES,
+    settings: Settings | None = None,
+) -> RecallResult:
+    """Recall bounded evidence, preserving the lexical selector's scores and rules.
+
+    Provider failures return cards and an explicit warning. ``llm_calls`` keeps
+    its historical meaning of successful recall calls. Attempts, received
+    completions, failures, and missing usage have separate counters.
     """
-    store = store or FactStore()
-    settings = get_settings()
+    if mode not in ("cards", "answer"):
+        raise ValueError("mode must be 'cards' or 'answer'.")
+    if max_sources < 1 or max_prefilter_matches < 1:
+        raise ValueError("Recall source and prefilter limits must be positive.")
+    store = (
+        store
+        if isinstance(store, AsyncFactStore)
+        else AsyncFactStore(store if store is not None else await run_sync(FactStore))
+    )
+    settings = settings or get_settings()
     t0 = time.monotonic()
     scale = 4 if verbose_trace else 1
     excerpt_chars = DEFAULT_PROMPT_EXCERPT_CHARS * scale
     output_chars = DEFAULT_OUTPUT_EXCERPT_CHARS * scale
-
     hits = await _search(
         store,
         query,
@@ -440,21 +468,33 @@ async def recall_with_provenance(
     outcome = _Outcome(
         _format_cards([hit.fact for hit in cards], len(relevant), project),
         _cards_quality(cards),
+        relevant,
         [hit.fact for hit in cards],
+    )
+    usage = UsageSummary(
+        llm_calls=0,
+        llm_attempts=0,
+        llm_completions=0,
+        llm_failures=0,
+        usage_unknown_calls=0,
     )
     if mode == "answer" and hits and not use_llm:
         outcome.warnings.append(
             _provider_unavailable("No LLM key configured; returned memory cards.")
         )
-
     if use_llm:
         pool = relevant or hits[:ZERO_HIT_MAX_CANDIDATES]
+        if mode == "answer":
+            pool = pool[: min(max_sources, settings.max_facts_per_agent)]
+        usage.llm_attempts = 1
+        t_call = time.monotonic()
         try:
             if mode == "answer":
                 outcome = await _answer(
                     query,
-                    [hit.fact for hit in pool[: settings.max_facts_per_agent]],
+                    pool,
                     settings,
+                    usage,
                     with_trace=with_trace,
                     excerpt_chars=excerpt_chars,
                     output_chars=output_chars,
@@ -464,6 +504,7 @@ async def recall_with_provenance(
                     query,
                     pool,
                     settings,
+                    usage,
                     with_trace=with_trace,
                     excerpt_chars=excerpt_chars,
                     output_chars=output_chars,
@@ -472,30 +513,61 @@ async def recall_with_provenance(
                 outcome = _Outcome(
                     _format_cards([hit.fact for hit in shown], len(selected), project),
                     _cards_quality(shown),
+                    selected,
                     [hit.fact for hit in shown],
-                    llm_calls=1,
                     calls=[trace] if trace else [],
                     truncated=truncated,
                 )
+            usage.llm_calls = 1
         except Exception as exc:
-            logger.warning("Recall LLM call failed: %s", exc, exc_info=True)
+            usage.llm_failures = 1
+            # A failed request may have consumed tokens without reporting usage.
+            if not usage.llm_completions:
+                usage.usage_unknown_calls = 1
+            logger.warning("Recall LLM call failed: %s", exc)
             outcome.warnings.append(
                 _provider_unavailable(
                     f"LLM recall failed ({type(exc).__name__}); returned memory cards."
                 )
             )
-
+            if with_trace:
+                trace, truncated = _call_trace(
+                    name="answer" if mode == "answer" else "select",
+                    system=ANSWER_SYSTEM if mode == "answer" else SELECT_SYSTEM,
+                    prompt=_candidates_prompt(query, [hit.fact for hit in pool]),
+                    output="",
+                    elapsed_ms=(time.monotonic() - t_call) * 1000,
+                    excerpt_chars=excerpt_chars,
+                    output_chars=output_chars,
+                    error=type(exc).__name__,
+                    input_tokens=usage.input_tokens,
+                    cached_tokens=usage.cached_tokens,
+                    output_tokens=usage.output_tokens,
+                )
+                outcome.calls.append(trace)
+                outcome.truncated |= truncated
     latency_ms = (time.monotonic() - t0) * 1000
-    tier = 1 if outcome.llm_calls else 0
-    delivered_ids = [fact.id for fact in outcome.delivered]
+    tier = 1 if usage.llm_calls else 0
+    evidence = {
+        hit.fact.id: RecallEvidence(
+            fact=hit.fact, score=hit.score, coverage=hit.coverage
+        )
+        for hit in hits
+    }
+    delivered = [evidence[fact.id] for fact in outcome.delivered]
+    selected_evidence = [evidence[hit.fact.id] for hit in outcome.selected]
+    cited = [evidence[fact.id] for fact in outcome.cited]
     provenance = _build_provenance(
         query=query,
         project=project,
         tier=tier,
         outcome=outcome,
-        hits=hits,
+        candidates=list(evidence.values()),
+        selected=selected_evidence,
+        delivered=delivered,
         relevant=relevant,
         zero_hit=zero_hit and use_llm,
+        usage=usage,
         latency_ms=latency_ms,
         max_prefilter_matches=max_prefilter_matches,
         max_sources=max_sources,
@@ -511,7 +583,16 @@ async def recall_with_provenance(
         if with_trace
         else None
     )
-
+    result = RecallResult(
+        text=outcome.text,
+        quality=outcome.quality,
+        candidates=list(evidence.values()),
+        selected=selected_evidence,
+        delivered=delivered,
+        cited=cited,
+        provenance=provenance,
+        trace=trace_obj,
+    )
     try:
         await _log_recall(
             store,
@@ -519,33 +600,25 @@ async def recall_with_provenance(
                 query=query,
                 project=project,
                 tier=tier,
-                prefilter_count=len(hits),
+                prefilter_count=len(result.candidates),
                 latency_ms=latency_ms,
-                quality=outcome.quality,
-                llm_calls=outcome.llm_calls,
-                input_tokens=outcome.input_tokens,
-                cached_tokens=outcome.cached_tokens,
+                quality=result.quality,
+                llm_calls=usage.llm_calls,
+                llm_attempts=usage.llm_attempts,
+                llm_completions=usage.llm_completions,
+                llm_failures=usage.llm_failures,
+                usage_unknown_calls=usage.usage_unknown_calls,
+                input_tokens=usage.input_tokens,
+                cached_tokens=usage.cached_tokens,
+                output_tokens=usage.output_tokens,
                 selector_version=SELECTOR_VERSION,
                 mode=mode,
-                delivered_ids=delivered_ids,
+                delivered_ids=[item.fact.id for item in result.delivered],
             ),
         )
     except Exception:
         logger.debug("Failed to log recall record", exc_info=True)
-
-    logger.info(
-        "recall mode=%s tier=%d hits=%d relevant=%d delivered=%d latency=%.0fms "
-        "quality=%s calls=%d",
-        mode,
-        tier,
-        len(hits),
-        len(relevant),
-        len(delivered_ids),
-        latency_ms,
-        outcome.quality,
-        outcome.llm_calls,
-    )
-    return outcome.text, outcome.quality, provenance, trace_obj
+    return result
 
 
 def _build_provenance(
@@ -554,20 +627,23 @@ def _build_provenance(
     project: str | None,
     tier: int,
     outcome: _Outcome,
-    hits: list[SearchHit],
+    candidates: list[RecallEvidence],
+    selected: list[RecallEvidence],
+    delivered: list[RecallEvidence],
     relevant: list[SearchHit],
     zero_hit: bool,
+    usage: UsageSummary,
     latency_ms: float,
     max_prefilter_matches: int,
     max_sources: int,
 ) -> RecallProvenance:
     relevant_ids = {hit.fact.id for hit in relevant}
-    delivered_ids = [fact.id for fact in outcome.delivered]
+    delivered_ids = [item.fact.id for item in delivered]
     delivered_set = set(delivered_ids)
-    # Delivered facts first so the source cap never drops what the caller got.
-    ordered = sorted(hits, key=lambda hit: hit.fact.id not in delivered_set)
-    input_tokens = outcome.input_tokens
-    cached_tokens = outcome.cached_tokens
+    ordered = [
+        *delivered,
+        *(item for item in selected if item.fact.id not in delivered_set),
+    ]
     return RecallProvenance(
         query=query,
         project=project,
@@ -577,45 +653,39 @@ def _build_provenance(
             tier=tier,
             rules=SELECTOR_VERSION,
             relevant_count=len(relevant),
-            top_score=hits[0].score if hits else None,
+            top_score=candidates[0].score if candidates else None,
             zero_hit_escalation=zero_hit,
         ),
-        prefilter_count=len(hits),
+        prefilter_count=len(candidates),
         prefilter_matches=[
             PrefilterMatch(
-                id=hit.fact.id,
-                score=hit.score,
-                coverage=hit.coverage,
-                above_floor=hit.fact.id in relevant_ids,
+                id=item.fact.id,
+                score=item.score,
+                coverage=item.coverage,
+                above_floor=item.fact.id in relevant_ids,
             )
-            for hit in hits[:max_prefilter_matches]
+            for item in candidates[:max_prefilter_matches]
         ],
-        source_fact_ids=[hit.fact.id for hit in relevant],
+        source_fact_ids=[item.fact.id for item in selected],
+        candidate_fact_ids=[item.fact.id for item in candidates],
+        selected_fact_ids=[item.fact.id for item in selected],
+        delivered_fact_ids=delivered_ids,
         sources=[
             SourceSummary(
-                id=hit.fact.id,
-                project=hit.fact.project,
-                category=hit.fact.category.value,
-                confidence=hit.fact.confidence,
-                updated_at=hit.fact.updated_at,
-                content_excerpt=excerpt(hit.fact.content.strip(), 240)[0],
-                score=hit.score,
-                cited=hit.fact.id in delivered_set,
+                id=item.fact.id,
+                project=item.fact.project,
+                category=item.fact.category.value,
+                confidence=item.fact.confidence,
+                updated_at=item.fact.updated_at,
+                content_excerpt=excerpt(item.fact.content.strip(), 240)[0],
+                score=item.score,
+                cited=item.fact.id in delivered_set,
             )
-            for hit in ordered[:max_sources]
+            for item in ordered[:max_sources]
         ],
         cited_fact_ids=delivered_ids,
         warnings=[*outcome.warnings, *_delivery_warnings(outcome.delivered)],
-        usage=UsageSummary(
-            llm_calls=outcome.llm_calls,
-            input_tokens=input_tokens,
-            cached_tokens=cached_tokens,
-            cache_hit_ratio=(
-                cached_tokens / input_tokens
-                if input_tokens and cached_tokens is not None
-                else None
-            ),
-        ),
+        usage=usage,
         latency_ms=latency_ms,
     )
 
@@ -629,7 +699,7 @@ async def _search(
 ) -> list[SearchHit]:
     if isinstance(store, AsyncFactStore):
         return await store.search_facts(query, project, limit=limit)
-    return store.search_facts(query, project, limit=limit)
+    return await AsyncFactStore(store).search_facts(query, project, limit=limit)
 
 
 async def _log_recall(
@@ -639,15 +709,19 @@ async def _log_recall(
     if isinstance(store, AsyncFactStore):
         await store.log_recall(record)
     else:
-        store.log_recall(record)
+        await AsyncFactStore(store).log_recall(record)
 
 
 __all__ = [
     "ANSWER_SYSTEM",
     "MIN_COVERAGE",
     "RELATIVE_CUTOFF",
+    "AnswerClaim",
+    "RecallAnswer",
     "RecallMode",
+    "RecallResult",
     "ZERO_HIT_MAX_CANDIDATES",
     "recall",
     "recall_with_provenance",
+    "recall_result",
 ]

@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from engram.core.models import Fact, MIN_ACTIVE_CONFIDENCE
 from engram.storage.search import term_set
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
 SuggestionKind = Literal["duplicate", "stale", "contradiction"]
 SuggestionAction = Literal["merge_memories", "mark_stale", "review_contradiction"]
@@ -135,11 +135,11 @@ async def audit_memory_store(
     now: datetime | None = None,
 ) -> MemoryAuditResult:
     """Return read-only suggestions for duplicates, stale facts, and contradictions."""
-    store = store or FactStore()
-    if isinstance(store, AsyncFactStore):
-        facts = await store.load_facts()
-    else:
-        facts = store.load_facts()
+    if store is None:
+        store = AsyncFactStore(await run_sync(FactStore.open_readonly))
+    elif isinstance(store, FactStore):
+        store = AsyncFactStore(store)
+    facts = await store.load_facts()
     if project is not None:
         facts = [fact for fact in facts if fact.project == project]
     return audit_facts(facts, now=now)

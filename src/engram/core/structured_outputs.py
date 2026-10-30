@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from engram.core.models import Durability, FactCategory
 
@@ -13,11 +13,19 @@ class StructuredOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class UnresolvedDecision(StructuredOutput):
+    """A reconciliation decision proposed but left unapplied."""
+
+    fact_id: str
+    action: str
+    reason: str
+
+
 class ExtractedFact(StructuredOutput):
     """One coherent memory card proposed by the ingest prompt."""
 
     memory_key: str = Field(min_length=3, max_length=120)
-    content: str
+    content: str = Field(min_length=1)
     category: FactCategory
     project: str | None = None
     tags: list[str] = Field(default_factory=list)
@@ -31,6 +39,13 @@ class ExtractedFact(StructuredOutput):
     replaces: list[str] = Field(default_factory=list)
     # Existing card ID the input merely restates; the card is then skipped.
     duplicate_of: str | None = None
+
+    @field_validator("content", "memory_key", "why_store")
+    @classmethod
+    def reject_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must contain non-whitespace text")
+        return value
 
 
 class RetiredCard(StructuredOutput):

@@ -57,6 +57,8 @@ GITIGNORE_PATTERNS = [
     ".engram-sync-state",
     ".engram-compaction-in-progress",
     "projects.local.json",
+    ".transaction-intent.json",
+    ".transaction-intent.tmp",
     ".maintenance_state.*.tmp",
 ]
 GITIGNORE_LINES = [GITIGNORE_MARKER, *GITIGNORE_PATTERNS]
@@ -173,12 +175,46 @@ def _resolve_remote_and_branch(data_dir: Path, timeout: float) -> tuple[str, str
 def _count_commits(spec: str, cwd: Path, timeout: float) -> int:
     """Return the number of commits in ``git rev-list ... --count <spec>``."""
     proc = _run_git(["rev-list", "--count", spec], cwd=cwd, timeout=timeout)
-    if proc.returncode != 0:
-        return 0
+    _require_git_success(
+        proc, code="git_count_failed", message=f"Failed to count commits for {spec}."
+    )
     try:
-        return int(proc.stdout.strip() or "0")
-    except ValueError:
-        return 0
+        count = int(proc.stdout.strip())
+        if count < 0:
+            raise ValueError("Negative commit count")
+        return count
+    except ValueError as exc:
+        raise SyncError(
+            code="git_count_failed", message=f"Invalid commit count for {spec}."
+        ) from exc
+
+
+def _remote_is_empty(data_dir: Path, remote: str, timeout: float) -> bool:
+    proc = _run_git(["ls-remote", "--refs", remote], cwd=data_dir, timeout=timeout)
+    _require_git_success(
+        proc,
+        code="git_remote_inspection_failed",
+        message=f"Failed to inspect remote {remote}.",
+    )
+    return not proc.stdout.strip()
+
+
+def _validate_sync_snapshot(data_dir: Path) -> None:
+    from engram.core.models import RecallRecord, StateLine
+    from engram.storage.jsonl import _load_jsonl_records
+    from engram.storage.store import FactStore
+
+    store = FactStore(data_dir)
+    store.recover_transactions()
+    store.load_facts()
+    store.load_candidates()
+    _load_jsonl_records(store.recall_log_path, RecallRecord, "recall", strict=True)
+    _load_jsonl_records(
+        data_dir / "maintenance_state.jsonl",
+        StateLine,
+        "maintenance state",
+        strict=True,
+    )
 
 
 def _write_sync_state(data_dir: Path, payload: dict[str, Any]) -> None:
@@ -397,7 +433,73 @@ def _ensure_managed_repo_setup(data_dir: Path, timeout: float) -> bool:
     return changed
 
 
+SYNC_DATA_FILES = (
+    "facts.jsonl",
+    "candidates.jsonl",
+    "recall_log.jsonl",
+    "transactions.jsonl",
+    "maintenance_state.jsonl",
+)
+
+
+def _commit_data_snapshot(data_dir: Path, timeout: float) -> None:
+    paths = [name for name in SYNC_DATA_FILES if (data_dir / name).exists()]
+    if not paths:
+        return
+    stage = _run_git(["add", "--", *paths], cwd=data_dir, timeout=timeout)
+    _require_git_success(
+        stage, code="data_stage_failed", message="Failed to stage Engram data snapshot."
+    )
+    changed = _run_git(
+        ["diff", "--cached", "--quiet", "--", *paths], cwd=data_dir, timeout=timeout
+    )
+    if changed.returncode == 0:
+        return
+    if changed.returncode != 1:
+        raise SyncError(
+            "data_diff_failed",
+            "Failed to inspect Engram data snapshot.",
+            git_stderr=changed.stderr,
+        )
+    commit = _run_git(
+        ["commit", "-m", "engram-sync: save data snapshot", "--only", "--", *paths],
+        cwd=data_dir,
+        timeout=timeout,
+    )
+    _require_git_success(
+        commit,
+        code="data_commit_failed",
+        message="Failed to commit Engram data snapshot.",
+    )
+
+
 def sync(
+    data_dir: Path,
+    *,
+    timeout: float = DEFAULT_GIT_TIMEOUT_SECONDS,
+    skip_if_compacting: bool = True,
+) -> dict[str, Any]:
+    """Serialize recovery, a data snapshot, integration, and publication."""
+    from engram.storage.store import _locked_store
+
+    _ensure_git_available()
+    _ensure_repo(data_dir)
+    with _locked_store(data_dir):
+        _validate_sync_snapshot(data_dir)
+        result = _sync_locked(
+            data_dir, timeout=timeout, skip_if_compacting=skip_if_compacting
+        )
+        return result
+
+
+async def run_sync(data_dir: Path, *, timeout: float) -> dict[str, Any]:
+    """Keep cancellation pending until the synchronous sync worker has stopped."""
+    from engram.storage.store import run_sync as run_blocking
+
+    return await run_blocking(sync, data_dir, timeout=timeout)
+
+
+def _sync_locked(
     data_dir: Path,
     *,
     timeout: float = DEFAULT_GIT_TIMEOUT_SECONDS,
@@ -429,28 +531,31 @@ def sync(
     # any pre-existing tracked lock/state files are untracked. This creates
     # one-shot setup commits on first sync; idempotent thereafter.
     _ensure_managed_repo_setup(data_dir, timeout)
+    _commit_data_snapshot(data_dir, timeout)
 
     # Snapshot the current HEAD so we can count pulled commits afterwards.
     head_before_proc = _run_git(["rev-parse", "HEAD"], cwd=data_dir, timeout=timeout)
     head_before = head_before_proc.stdout.strip()
 
-    fetch_proc = _run_git(["fetch", remote, branch], cwd=data_dir, timeout=timeout)
-    if fetch_proc.returncode != 0:
-        raise SyncError(
+    empty_remote = _remote_is_empty(data_dir, remote, timeout)
+    if not empty_remote:
+        fetch_proc = _run_git(["fetch", remote, branch], cwd=data_dir, timeout=timeout)
+        _require_git_success(
+            fetch_proc,
             code="git_fetch_failed",
             message=f"git fetch {remote} {branch} failed.",
-            git_stderr=fetch_proc.stderr,
         )
-
-    pull_proc = _run_git(
-        ["pull", "--rebase", remote, branch], cwd=data_dir, timeout=timeout
-    )
-    if pull_proc.returncode != 0:
-        raise SyncError(
+        pull_proc = _run_git(
+            ["pull", "--rebase", remote, branch], cwd=data_dir, timeout=timeout
+        )
+        _require_git_success(
+            pull_proc,
             code="git_pull_failed",
             message=f"git pull --rebase {remote} {branch} failed.",
-            git_stderr=pull_proc.stderr,
         )
+
+    _validate_sync_snapshot(data_dir)
+    _commit_data_snapshot(data_dir, timeout)
 
     head_after_pull_proc = _run_git(
         ["rev-parse", "HEAD"], cwd=data_dir, timeout=timeout
@@ -462,7 +567,9 @@ def sync(
         else _count_commits(f"{head_before}..{head_after_pull}", data_dir, timeout)
     )
 
-    pushed_commits = _count_commits(f"{remote}/{branch}..HEAD", data_dir, timeout)
+    pushed_commits = _count_commits(
+        "HEAD" if empty_remote else f"{remote}/{branch}..HEAD", data_dir, timeout
+    )
 
     push_proc = _run_git(["push", remote, branch], cwd=data_dir, timeout=timeout)
     if push_proc.returncode != 0:
@@ -518,7 +625,7 @@ async def auto_sync_loop(
             except asyncio.CancelledError:
                 raise
             try:
-                result = await asyncio.to_thread(sync, data_dir, timeout=timeout)
+                result = await run_sync(data_dir, timeout=timeout)
                 if on_result is not None:
                     on_result(result)
             except SyncError as exc:
@@ -545,7 +652,7 @@ async def run_final_sync(
 ) -> dict[str, Any] | SyncError:
     """Run one synchronous sync on shutdown. Never raises."""
     try:
-        return await asyncio.to_thread(sync, data_dir, timeout=timeout)
+        return await run_sync(data_dir, timeout=timeout)
     except SyncError as exc:
         logger.warning(
             "engram-sync shutdown sync failed (%s): %s", exc.code, exc.message

@@ -5,8 +5,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from engram.dashboard.constants import MIN_ACTIVE_CONFIDENCE, NO_PROJECT_LABEL
-from engram.core.models import CandidateStatus, Fact, MemoryCandidate
-from engram.storage.store import FactStore, _is_active_fact, _is_expired_fact
+from engram.core.models import CandidateStatus, Fact, FactLifecycle, MemoryCandidate
+from engram.core.fact_state import is_fact_eligible
+from engram.storage.store import FactStore
 
 
 @dataclass
@@ -15,6 +16,7 @@ class ProjectHealth:
     total: int = 0
     active: int = 0
     forgotten: int = 0
+    superseded: int = 0
     expired: int = 0
     categories: dict[str, int] = field(default_factory=dict)
     oldest: datetime | None = None
@@ -36,6 +38,7 @@ class DashboardData:
     total: int = 0
     active_count: int = 0
     forgotten_count: int = 0
+    superseded_count: int = 0
     expired_count: int = 0
     pending_count: int = 0
     storage_bytes: int = 0
@@ -56,6 +59,7 @@ class DashboardData:
 
     # File-stat-based hash; used to skip refreshes when storage hasn't changed.
     content_hash: int = 0
+    next_refresh_at: datetime | None = None
 
 
 def content_hash_for(store: FactStore) -> int:
@@ -82,14 +86,31 @@ def load_dashboard_data(store: FactStore | None = None) -> DashboardData:
     ]
 
     for fact in data.all_facts:
-        is_forgotten = fact.confidence < MIN_ACTIVE_CONFIDENCE
-        if is_forgotten:
+        is_forgotten = (
+            fact.lifecycle is FactLifecycle.forgotten
+            or fact.confidence < MIN_ACTIVE_CONFIDENCE
+        )
+        if fact.lifecycle is FactLifecycle.superseded:
+            data.superseded_count += 1
+        elif is_forgotten:
             data.forgotten_facts.append(fact)
-        elif _is_expired_fact(fact, now):
+        elif fact.expires_at is not None and fact.expires_at < now:
             data.expired_facts.append(fact)
-        elif _is_active_fact(fact, now):
+        elif is_fact_eligible(fact, now):
             data.active_facts.append(fact)
 
+    midnight = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    transitions = [
+        midnight,
+        *(
+            fact.expires_at + timedelta(microseconds=1)
+            for fact in data.active_facts
+            if fact.expires_at is not None and fact.expires_at >= now
+        ),
+    ]
+    data.next_refresh_at = min(transitions)
     data.total = len(data.all_facts)
     data.active_count = len(data.active_facts)
     data.forgotten_count = len(data.forgotten_facts)
@@ -211,12 +232,17 @@ def _compute_project_health(data: DashboardData, now: datetime) -> None:
         health = ProjectHealth(name=proj_name)
         supersedes_ids = set()
         for f in facts:
-            is_forgotten = f.confidence < MIN_ACTIVE_CONFIDENCE
-            if is_forgotten:
+            is_forgotten = (
+                f.lifecycle is FactLifecycle.forgotten
+                or f.confidence < MIN_ACTIVE_CONFIDENCE
+            )
+            if f.lifecycle is FactLifecycle.superseded:
+                health.superseded += 1
+            elif is_forgotten:
                 health.forgotten += 1
-            elif _is_expired_fact(f, now):
+            elif f.expires_at is not None and f.expires_at < now:
                 health.expired += 1
-            elif _is_active_fact(f, now):
+            elif is_fact_eligible(f, now):
                 health.active += 1
                 cat = f.category.value
                 health.categories[cat] = health.categories.get(cat, 0) + 1

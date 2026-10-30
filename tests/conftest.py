@@ -1,20 +1,61 @@
 """Shared pytest fixtures."""
 
+import os
+
 import pytest
 
 
-@pytest.fixture(autouse=True)
-def _no_llm_key(monkeypatch):
-    """Run every test as if no LLM provider key were configured.
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "live_provider: permits provider calls only with ENGRAM_EVAL_PROVIDER=1",
+    )
+    config.addinivalue_line(
+        "markers", "sync_transport: pushes only to temporary local Git remotes"
+    )
 
-    Recall spends an LLM call only when ``_llm_available()`` is true (answer
-    mode, or cards mode when no hit clears the relevance bar), and that check
-    auto-loads keys from the developer's key cache — without this pin, any
-    such recall in a test would make a real, billed LLM call on a keyed
-    machine. Tests that exercise those paths monkeypatch ``_llm_available``
-    back to True and mock ``complete_with_usage`` / ``complete_model``.
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-sync-transport",
+        action="store_true",
+        default=False,
+        help="Allow sync tests that push to temporary local Git remotes.",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-sync-transport"):
+        return
+    skip = pytest.mark.skip(
+        reason="Sync transport requires --run-sync-transport and permission to push to temporary local remotes."
+    )
+    for item in items:
+        if item.get_closest_marker("sync_transport"):
+            item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_key(monkeypatch, request):
+    """Disable key discovery and reject unmocked provider connections.
+
+    Live provider tests need both the explicit marker and environment opt-in.
+    Unit tests can replace the provider factory or bind an injected fake client.
     """
-    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: False)
+
+    def reject_provider_connection():
+        raise AssertionError(
+            "Real provider calls are disabled in tests. Inject a fake client."
+        )
+
+    live_allowed = (
+        request.node.get_closest_marker("live_provider")
+        and os.environ.get("ENGRAM_EVAL_PROVIDER") == "1"
+    )
+    if not live_allowed:
+        monkeypatch.setattr("engram.llm.client._client", reject_provider_connection)
+    if not live_allowed:
+        monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: None)
     # Upkeep's LLM steps (consolidate, briefs) check the same key cache.
     monkeypatch.setattr("engram.maintenance.upkeep.llm_available", lambda: False)
     monkeypatch.setenv("ENGRAM_MAINTENANCE_ENABLED", "false")

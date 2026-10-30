@@ -6,15 +6,13 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from engram.core.interfaces import WarningCode
 from engram.core.models import Fact, FactCategory
 from engram.core.provenance import RecallTrace
 from engram.recall.retriever import (
-    _extract_cited_ids,
     recall,
     recall_with_provenance,
+    recall_result,
 )
 from engram.storage.store import FactStore
 
@@ -259,29 +257,23 @@ def test_trace_is_opt_in():
     assert trace.calls == []
 
 
-# ---------------------------------------------------------------------------
-# Cited-id extraction
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "text,expected",
-    [
-        (
-            "see (id: aaaaaaaaaaaa) and (id: bbbbbbbbbbbb)",
-            ["aaaaaaaaaaaa", "bbbbbbbbbbbb"],
-        ),
-        ("nothing relevant", []),
-        # Hallucinated IDs that aren't in candidate set are dropped.
-        ("(id: ffffffffffff)", []),
-    ],
-)
-def test_extract_cited_ids(text, expected):
-    candidates = {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
-    assert _extract_cited_ids(text, candidates) == expected
-
-
-def test_extract_cited_ids_dedupes_in_order():
-    candidates = {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
-    text = "(id: aaaaaaaaaaaa) and again (id: aaaaaaaaaaaa) and (id: bbbbbbbbbbbb)"
-    assert _extract_cited_ids(text, candidates) == ["aaaaaaaaaaaa", "bbbbbbbbbbbb"]
+def test_result_evidence_and_legacy_provenance_agree():
+    store = _make_store()
+    store.append_facts(
+        [Fact(category=FactCategory.preference, content="prefers tabs over spaces")]
+    )
+    result = asyncio.run(recall_result("tabs spaces", store=store))
+    delivered = [item.fact.id for item in result.delivered]
+    selected = [item.fact.id for item in result.selected]
+    assert (
+        delivered
+        == result.provenance.delivered_fact_ids
+        == result.provenance.cited_fact_ids
+    )
+    assert (
+        selected
+        == result.provenance.selected_fact_ids
+        == result.provenance.source_fact_ids
+    )
+    assert result.cited == []
+    assert result.candidates[0].score == result.provenance.prefilter_matches[0].score

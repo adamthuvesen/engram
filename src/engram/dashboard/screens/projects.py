@@ -45,7 +45,7 @@ class ProjectDetailView(Container):
             with Vertical(classes="proj-stat-box"):
                 yield Label(f"[b]{self._project}[/b]")
                 yield Static(
-                    f"Active: [b]{h.active}[/b]  Forgotten: [b]{h.forgotten}[/b]  Expired: [b]{h.expired}[/b]"
+                    f"Active: [b]{h.active}[/b]  Forgotten: [b]{h.forgotten}[/b]  Superseded: [b]{h.superseded}[/b]  Expired: [b]{h.expired}[/b]"
                 )
             with Vertical(classes="proj-stat-box"):
                 yield Label("[b]Health[/b]")

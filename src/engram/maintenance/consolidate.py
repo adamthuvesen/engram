@@ -38,7 +38,7 @@ from engram.maintenance.upkeep_state import (
     load_state,
 )
 from engram.storage.search import SearchIndex
-from engram.storage.store import AsyncFactStore, ChangeSet
+from engram.storage.store import AsyncFactStore, ChangeSet, run_sync
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +285,8 @@ def response_problem(cluster: list[Fact], response: ConsolidationResponse) -> st
         problems.append(f"ids listed twice in one place: {', '.join(twice)}")
     if any(not card.source_ids for card in response.cards):
         problems.append("a card has no source_ids")
+    if any(not card.content.strip() for card in response.cards):
+        problems.append("a card has blank content")
     # A split must divide a card's claims, never repeat them.
     texts = [" ".join(card.content.split()) for card in response.cards]
     if len(set(texts)) < len(texts):
@@ -379,7 +381,12 @@ def plan_cluster_changes(
 ) -> ClusterPlan:
     """Translate a validated response into one atomic change set."""
     by_id = {fact.id: fact for fact in cluster}
-    changes = ChangeSet(reason="upkeep: consolidation", actor=CONSOLIDATE_SOURCE)
+    changes = ChangeSet(
+        expected={fact.id: fact.updated_at for fact in cluster},
+        require_eligible=True,
+        reason="upkeep: consolidation",
+        actor=CONSOLIDATE_SOURCE,
+    )
     merged = rewritten = 0
     uses = _source_uses(response)
     for card in response.cards:
@@ -464,10 +471,6 @@ def plan_cluster_changes(
             rewritten += 1
     for retired in response.retire:
         changes.stale[retired.id] = f"consolidation: {retired.reason}"
-    changes.expected = {
-        fact_id: by_id[fact_id].updated_at
-        for fact_id in [*changes.supersede, *changes.stale, *changes.edits]
-    }
     split = sum(1 for count in uses.values() if count > 1)
     return ClusterPlan(changes=changes, merged=merged, rewritten=rewritten, split=split)
 
@@ -489,7 +492,7 @@ async def run_consolidation(
     # Taken before reading: anything written after this is seen next run.
     snapshot = datetime.now(timezone.utc)
     index = await store.search_index()
-    state = await asyncio.to_thread(load_state, store.data_dir)
+    state = await run_sync(load_state, store.data_dir)
     by_scope: dict[str | None, list[Fact]] = {}
     for fact in index.facts:
         if fact.memory_key == BRIEF_KEY:
@@ -555,6 +558,10 @@ async def run_consolidation(
             ephemeral_ttl=ttl,
         )
         changes = plan.changes
+        report.propose("created", *(fact.id for fact in changes.new_facts))
+        report.propose("superseded", *changes.supersede)
+        report.propose("staled", *changes.stale)
+        report.propose("edited", *changes.edits)
         if dry_run:
             applied_created = [fact.id for fact in changes.new_facts]
             superseded = list(changes.supersede)
@@ -562,6 +569,7 @@ async def run_consolidation(
             edited = list(changes.edits)
         else:
             result = await store.apply_changes(changes, all_or_nothing=True)
+            report.conflicts.update(result.skipped)
             if result.skipped:
                 failed_seeds.setdefault(scope, []).append(cluster[0].id)
                 report.errors.append(
@@ -579,10 +587,11 @@ async def run_consolidation(
         report.bump("merged_cards", plan.merged)
         report.bump("rewritten_cards", plan.rewritten)
         report.bump("split_cards", plan.split)
-        report.add("created", *applied_created)
-        report.add("superseded", *superseded)
-        report.add("staled", *staled)
-        report.add("edited", *edited)
+        if not dry_run:
+            report.add("created", *applied_created)
+            report.add("superseded", *superseded)
+            report.add("staled", *staled)
+            report.add("edited", *edited)
         for retired in response.retire:
             report.notes.append(f"retired {retired.id}: {retired.reason}")
 
@@ -616,4 +625,4 @@ async def run_consolidation(
                 retry_seeds=next_retry,
             )
         )
-    await asyncio.to_thread(append_state, store.data_dir, lines)
+    await run_sync(append_state, store.data_dir, lines)

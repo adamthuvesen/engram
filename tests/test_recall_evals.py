@@ -14,7 +14,7 @@ import json
 import pytest
 
 from engram.recall.evals import EvalFixture, run_fixture_sync
-from tests.run_evals import (
+from engram.evaluation.recall import (
     DATASET_PATH,
     MIN_HIT_RATE,
     MIN_MRR,

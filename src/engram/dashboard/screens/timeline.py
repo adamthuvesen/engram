@@ -5,16 +5,11 @@ import logging
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Label, Sparkline, Static
+from textual_plotext import PlotextPlot
 
 from engram.dashboard.data import DashboardData
 
 logger = logging.getLogger(__name__)
-
-HAS_PLOTEXT = True
-try:
-    from textual_plotext import PlotextPlot
-except ImportError:
-    HAS_PLOTEXT = False
 
 
 class TimelineScreen(Container):
@@ -25,13 +20,7 @@ class TimelineScreen(Container):
         self._data = data
 
     def compose(self) -> ComposeResult:
-        if HAS_PLOTEXT:
-            yield PlotextPlot(id="timeline-chart")
-        else:
-            with Vertical(id="timeline-chart"):
-                yield Label("ACTIVITY OVER TIME", classes="panel-title")
-                yield Static("[dim]Install textual-plotext for full charts[/]")
-                yield Sparkline(self._data.activity_30d or [0], summary_function=max)
+        yield PlotextPlot(id="timeline-chart")
 
         with Horizontal(id="sparkline-row"):
             with Vertical(classes="spark-panel"):
@@ -59,8 +48,7 @@ class TimelineScreen(Container):
                     yield Static(f"Daily avg:    [b]{avg_daily:.1f}[/b] facts/day")
 
     def on_mount(self) -> None:
-        if HAS_PLOTEXT:
-            self._draw_chart()
+        self._draw_chart()
 
     def _is_dark(self) -> bool:
         try:
@@ -70,8 +58,6 @@ class TimelineScreen(Container):
             return True
 
     def _draw_chart(self) -> None:
-        if not HAS_PLOTEXT:
-            return
         try:
             plot_widget = self.query_one(PlotextPlot)
         except Exception:
@@ -121,5 +107,4 @@ class TimelineScreen(Container):
             self.query_one("#spark-30d", Sparkline).data = data.activity_30d or [0]
         except Exception:
             logger.exception("Unable to refresh timeline sparklines")
-        if HAS_PLOTEXT:
-            self._draw_chart()
+        self._draw_chart()

@@ -67,6 +67,7 @@ class OverviewScreen(VerticalScroll):
             f"[dim]total[/] [b]{d.total:,}[/]{sep}"
             f"[dim]active[/] [b $stat-active]{d.active_count:,}[/]{sep}"
             f"[dim]forgotten[/] [b $stat-forgotten]{d.forgotten_count}[/]{sep}"
+            f"[dim]superseded[/] [b]{d.superseded_count}[/]{sep}"
             f"[dim]expired[/] [b $stat-expired]{d.expired_count}[/]{sep}"
             f"[dim]pending[/] [b $stat-pending]{d.pending_count}[/]"
         )

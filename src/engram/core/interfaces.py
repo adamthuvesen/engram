@@ -23,9 +23,8 @@ that exercise JSON round-tripping and stable enum values.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 
 class EnvelopeStatus(str, Enum):
@@ -66,14 +65,14 @@ class EnvelopeWarning(BaseModel):
     code: WarningCode
     message: str = ""
     ids: list[str] = Field(default_factory=list)
-    details: dict[str, Any] = Field(default_factory=dict)
+    details: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class EnvelopeError(BaseModel):
     code: ErrorCode
     message: str = ""
     ids: list[str] = Field(default_factory=list)
-    details: dict[str, Any] = Field(default_factory=dict)
+    details: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class EnvelopeMeta(BaseModel):
@@ -89,7 +88,7 @@ class Envelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: EnvelopeStatus
-    data: dict[str, Any] | list[Any] | None = None
+    data: JsonValue = None
     warnings: list[EnvelopeWarning] = Field(default_factory=list)
     errors: list[EnvelopeError] = Field(default_factory=list)
     meta: EnvelopeMeta = Field(default_factory=EnvelopeMeta)
@@ -97,13 +96,13 @@ class Envelope(BaseModel):
     @classmethod
     def success(
         cls,
-        data: dict[str, Any] | list[Any] | None = None,
+        data: object = None,
         warnings: list[EnvelopeWarning] | None = None,
         meta: EnvelopeMeta | None = None,
     ) -> Envelope:
         return cls(
             status=EnvelopeStatus.ok,
-            data=data,
+            data=TypeAdapter(JsonValue).validate_python(data),
             warnings=warnings or [],
             errors=[],
             meta=meta or EnvelopeMeta(),
@@ -113,7 +112,7 @@ class Envelope(BaseModel):
     def failure(
         cls,
         errors: list[EnvelopeError] | EnvelopeError,
-        data: dict[str, Any] | list[Any] | None = None,
+        data: object = None,
         warnings: list[EnvelopeWarning] | None = None,
         meta: EnvelopeMeta | None = None,
     ) -> Envelope:
@@ -121,7 +120,7 @@ class Envelope(BaseModel):
             errors = [errors]
         return cls(
             status=EnvelopeStatus.error,
-            data=data,
+            data=TypeAdapter(JsonValue).validate_python(data),
             warnings=warnings or [],
             errors=errors,
             meta=meta or EnvelopeMeta(),
@@ -135,7 +134,7 @@ def validation_error(
     message: str,
     *,
     ids: list[str] | None = None,
-    details: dict[str, Any] | None = None,
+    details: dict[str, JsonValue] | None = None,
 ) -> EnvelopeError:
     return EnvelopeError(
         code=ErrorCode.validation_error,
@@ -149,7 +148,7 @@ def not_found_error(
     message: str,
     *,
     ids: list[str] | None = None,
-    details: dict[str, Any] | None = None,
+    details: dict[str, JsonValue] | None = None,
 ) -> EnvelopeError:
     return EnvelopeError(
         code=ErrorCode.not_found,
@@ -163,7 +162,7 @@ def storage_error(
     message: str,
     *,
     ids: list[str] | None = None,
-    details: dict[str, Any] | None = None,
+    details: dict[str, JsonValue] | None = None,
 ) -> EnvelopeError:
     return EnvelopeError(
         code=ErrorCode.storage_error,
@@ -177,7 +176,7 @@ def provider_error(
     message: str,
     *,
     ids: list[str] | None = None,
-    details: dict[str, Any] | None = None,
+    details: dict[str, JsonValue] | None = None,
 ) -> EnvelopeError:
     return EnvelopeError(
         code=ErrorCode.provider_error,
@@ -191,7 +190,7 @@ def conflict_error(
     message: str,
     *,
     ids: list[str] | None = None,
-    details: dict[str, Any] | None = None,
+    details: dict[str, JsonValue] | None = None,
 ) -> EnvelopeError:
     return EnvelopeError(
         code=ErrorCode.conflict,

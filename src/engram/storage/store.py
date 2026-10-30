@@ -1,23 +1,21 @@
 """JSONL-based knowledge store for facts."""
 
 import asyncio
-import fcntl
+from copy import deepcopy
 import logging
 import os
-import sys
 import tempfile
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
-from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import ParamSpec, TypeVar
+from typing import Concatenate, ParamSpec, TypeVar
 
 from uuid import uuid4
 
-from pydantic import BaseModel, ValidationError
 
 from engram.core.config import get_settings
 from engram.core.models import (
@@ -25,12 +23,12 @@ from engram.core.models import (
     EDITABLE_FACT_FIELDS,
     CandidateStatus,
     Durability,
-    EVENT_LOG_META_VERSION,
     EventLogMeta,
     EventType,
     Fact,
     FactCategory,
     FactEvent,
+    FactLifecycle,
     MIN_ACTIVE_CONFIDENCE,
     MemoryCandidate,
     RecallRecord,
@@ -39,19 +37,26 @@ from engram.core.models import (
     materialize_events,
 )
 
+from engram.core.fact_state import is_fact_eligible
+
+from engram.storage.candidates import CandidateSnapshots, candidate_promotion_id
+from engram.storage.jsonl import _load_jsonl_records
+from engram.storage.transactions import (
+    StoreIntegrityError as StoreIntegrityError,
+    StoreTransactions,
+    ensure_trailing_newline,
+    locked_store as _locked_store,
+    locked_write as _locked_write,
+)
 from engram.storage.search import TOKEN_RE, SearchHit, SearchIndex
 
 logger = logging.getLogger(__name__)
-_THREAD_LOCKS: dict[Path, threading.RLock] = {}
-_THREAD_LOCKS_GUARD = threading.Lock()
-_STORE_LOCK_DEPTHS = threading.local()
 P = ParamSpec("P")
 R = TypeVar("R")
-ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
-def _content_hash(text: str) -> str:
-    """Normalize and hash fact content for exact-match dedup."""
+def content_signature(text: str) -> str:
+    """Normalize fact content for exact-match deduplication."""
     return " ".join(text.lower().split())
 
 
@@ -59,18 +64,7 @@ def _is_expired_fact(fact: Fact, now: datetime) -> bool:
     return fact.expires_at is not None and fact.expires_at < now
 
 
-def _is_active_fact(
-    fact: Fact,
-    now: datetime,
-    *,
-    include_stale: bool = False,
-    min_confidence: float = MIN_ACTIVE_CONFIDENCE,
-) -> bool:
-    return (
-        fact.confidence >= min_confidence
-        and not _is_expired_fact(fact, now)
-        and (include_stale or not fact.stale)
-    )
+_is_active_fact = is_fact_eligible
 
 
 def _normalized_project_text(value: str) -> str:
@@ -93,51 +87,6 @@ def _exclude_superseded_facts(facts: list[Fact]) -> list[Fact]:
     if not superseded_ids:
         return facts
     return [fact for fact in facts if fact.id not in superseded_ids]
-
-
-def _thread_lock_for(path: Path) -> threading.RLock:
-    """Return a process-local lock for the given filesystem lock path."""
-    with _THREAD_LOCKS_GUARD:
-        lock = _THREAD_LOCKS.get(path)
-        if lock is None:
-            lock = threading.RLock()
-            _THREAD_LOCKS[path] = lock
-        return lock
-
-
-def _store_lock_depths() -> dict[Path, int]:
-    depths = getattr(_STORE_LOCK_DEPTHS, "depths", None)
-    if depths is None:
-        depths = {}
-        _STORE_LOCK_DEPTHS.depths = depths
-    return depths
-
-
-def _load_jsonl_records(
-    path: Path, model: type[ModelT], corrupt_label: str
-) -> tuple[list[ModelT], int]:
-    """Parse a JSONL file into ``model`` records, returning ``(records, corrupt)``."""
-    if not path.exists():
-        return [], 0
-
-    records: list[ModelT] = []
-    corrupt = 0
-    with path.open() as fh:
-        for lineno, line in enumerate(fh, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(model.model_validate_json(line))
-            except (ValueError, ValidationError):
-                corrupt += 1
-                logger.warning(
-                    "Skipping corrupt %s at line %d: %s",
-                    corrupt_label,
-                    lineno,
-                    line[:80],
-                )
-    return records, corrupt
 
 
 def fact_flags(fact: Fact) -> list[str]:
@@ -225,7 +174,16 @@ def _compacted_event_log(
             if not keep_tombstones:
                 continue
             compacted.append(_compaction_created_event(fact_id, fact))
-            compacted.append(_compaction_forgotten_event(fact_id, fact))
+            compacted.append(
+                FactEvent(
+                    event_type=EventType.superseded,
+                    fact_id=fact_id,
+                    timestamp=fact.updated_at,
+                    payload={"superseded_by": fact.superseded_by},
+                )
+                if fact.lifecycle is FactLifecycle.superseded
+                else _compaction_forgotten_event(fact_id, fact)
+            )
             tombstones += 1
         else:
             compacted.append(_compaction_created_event(fact_id, fact))
@@ -247,64 +205,23 @@ def _unique_strings(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
-@contextmanager
-def _locked_write(path: Path):
-    """Acquire an exclusive flock on <path>.lock before writing."""
-    if sys.platform == "win32":
-        logger.warning(
-            "File locking not supported on Windows; concurrent writes are not serialized"
-        )
-        yield
-        return
-    lock_path = path.with_suffix(".lock")
-    lock_fd = lock_path.open("a")
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
-
-
-@contextmanager
-def _locked_store(data_dir: Path):
-    """Acquire the coarse store lock for multi-file operations."""
-    lock_path = data_dir / "store.lock"
-    thread_lock = _thread_lock_for(lock_path)
-    with thread_lock:
-        depths = _store_lock_depths()
-        depth = depths.get(lock_path, 0)
-        if depth > 0:
-            depths[lock_path] = depth + 1
-            try:
-                yield
-            finally:
-                next_depth = depths[lock_path] - 1
-                if next_depth:
-                    depths[lock_path] = next_depth
-                else:
-                    depths.pop(lock_path, None)
-            return
-
-        depths[lock_path] = 1
-        if sys.platform == "win32":
-            try:
-                logger.warning(
-                    "File locking not supported on Windows; store transactions are not serialized"
+def _snapshot_read(
+    func: Callable[Concatenate["FactStore", P], R],
+) -> Callable[Concatenate["FactStore", P], R]:
+    @wraps(func)
+    def locked(store: "FactStore", /, *args: P.args, **kwargs: P.kwargs) -> R:
+        if store.read_only:
+            return func(store, *args, **kwargs)
+        with _locked_store(store.data_dir):
+            if not store._recovering and (
+                store.intent_path.exists() or store._pending_transactions()
+            ):
+                raise RuntimeError(
+                    "Interrupted store transaction requires recover_transactions()"
                 )
-                yield
-            finally:
-                depths.pop(lock_path, None)
-            return
+            return func(store, *args, **kwargs)
 
-        lock_fd = lock_path.open("a")
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            yield
-        finally:
-            depths.pop(lock_path, None)
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            lock_fd.close()
+    return locked
 
 
 @dataclass
@@ -321,10 +238,26 @@ class ChangeSet:
     new_facts: list[Fact] = field(default_factory=list)
     supersede: dict[str, str] = field(default_factory=dict)
     stale: dict[str, str] = field(default_factory=dict)
+    unstale: list[str] = field(default_factory=list)
     edits: dict[str, dict] = field(default_factory=dict)
     expected: dict[str, datetime] = field(default_factory=dict)
+    require_eligible: bool = False
     reason: str = ""
     actor: str = "engram"
+
+    def __post_init__(self) -> None:
+        ids = [fact.id for fact in self.new_facts]
+        if len(ids) != len(set(ids)):
+            raise ValueError("ChangeSet contains duplicate new fact IDs")
+        groups = [set(self.supersede), set(self.stale), set(self.edits)]
+        if any(groups[i] & groups[j] for i in range(3) for j in range(i + 1, 3)):
+            raise ValueError("ChangeSet contains contradictory mutations for one fact")
+        if set(ids) & (groups[0] | groups[1] | groups[2]):
+            raise ValueError("ChangeSet cannot create and mutate the same fact")
+        if set(self.unstale) & (set(self.stale) | set(self.supersede) | set(ids)):
+            raise ValueError("ChangeSet contains contradictory lifecycle changes")
+        if any(old == new for old, new in self.supersede.items()):
+            raise ValueError("ChangeSet cannot supersede a fact with itself")
 
 
 @dataclass
@@ -333,26 +266,56 @@ class ChangeResult:
     superseded: dict[str, str] = field(default_factory=dict)
     staled: dict[str, str] = field(default_factory=dict)
     edited: list[str] = field(default_factory=list)
+    unstaled: list[str] = field(default_factory=list)
     # Target ID -> why the change was not applied.
     skipped: dict[str, str] = field(default_factory=dict)
 
     @property
     def applied(self) -> bool:
-        return bool(self.created or self.superseded or self.staled or self.edited)
+        return bool(
+            self.created
+            or self.superseded
+            or self.staled
+            or self.edited
+            or self.unstaled
+        )
+
+
+@dataclass
+class ApprovalResult:
+    """Authoritative candidate decisions from one locked approval transaction."""
+
+    facts: list[Fact] = field(default_factory=list)
+    approved: dict[str, str] = field(default_factory=dict)
+    edited: list[str] = field(default_factory=list)
+    invalid_edit_ids: list[str] = field(default_factory=list)
+    unresolved: dict[str, str] = field(default_factory=dict)
 
 
 class FactStore:
     """Read/write/filter operations on the JSONL fact store."""
 
-    def __init__(self, data_dir: Path | None = None):
-        self.data_dir = data_dir or get_settings().data_dir
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, data_dir: Path | None = None, *, read_only: bool = False):
+        self.data_dir = (data_dir or get_settings().data_dir).resolve()
+        self.read_only = read_only
+        self.transactions = StoreTransactions(self.data_dir)
+        self.candidate_snapshots = CandidateSnapshots(self.data_dir)
+        if not read_only:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
         # Materialized-state cache keyed on the event log's (inode, size, mtime),
         # so repeated reads skip replaying an unchanged log.
         self._cache_lock = threading.Lock()
         self._facts_cache: tuple[tuple[int, int, int], list[Fact]] | None = None
         self._index_cache: tuple[tuple[int, int, int], SearchIndex] | None = None
-        self.recover_transactions()
+        self._recovering = False
+        self._pending_cache: (
+            tuple[tuple[int, int, int], list[StoreTransaction]] | None
+        ) = None
+
+    @classmethod
+    def open_readonly(cls, data_dir: Path | None = None) -> "FactStore":
+        """Open diagnostic paths without creating files or recovering transactions."""
+        return cls(data_dir, read_only=True)
 
     @property
     def facts_path(self) -> Path:
@@ -367,26 +330,13 @@ class FactStore:
         return self.data_dir / "transactions.jsonl"
 
     def _is_event_log_format(self) -> bool:
-        """Return True when ``facts.jsonl`` starts with an event-log meta sentinel."""
-        if not self.facts_path.exists():
-            return False
-        with self.facts_path.open() as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    payload = EventLogMeta.model_validate_json(line)
-                except (ValueError, ValidationError):
-                    return False
-                return payload.meta == EVENT_LOG_META_VERSION
-        return False
+        return self.transactions._is_event_log_format()
 
     def _load_all_events(self) -> list[FactEvent]:
         """Read every ``FactEvent`` from ``facts.jsonl``, skipping the meta line."""
         if not self.facts_path.exists():
             return []
-        _, events, _ = self._validated_event_log_records()
+        _, events, _ = self._validated_event_log_records(strict=not self.read_only)
         return events
 
     def _log_signature(self) -> tuple[int, int, int] | None:
@@ -396,69 +346,55 @@ class FactStore:
             return None
         return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
 
+    @_snapshot_read
     def load_facts(self) -> list[Fact]:
         """Load all facts from the event log.
 
         Events are replayed into materialized facts; forgotten or superseded
         facts surface as ``confidence == 0`` Facts to preserve the existing
-        "confidence-zero means inactive" contract used by callers. The result
-        is cached until the log changes; treat returned facts as read-only.
+        "confidence-zero means inactive" contract used by callers. Each read
+        returns independent facts, including their nested collections.
 
-        Corrupt lines are skipped with a warning.
+        Corrupt rows raise StoreIntegrityError. Read-only diagnostics tolerate them.
         """
         signature = self._log_signature()
         if signature is None:
             return []
         cached = self._facts_cache
         if cached is not None and cached[0] == signature:
-            return list(cached[1])
+            return [fact.model_copy(deep=True) for fact in cached[1]]
         with self._cache_lock:
             cached = self._facts_cache
             if cached is not None and cached[0] == signature:
-                return list(cached[1])
+                return [fact.model_copy(deep=True) for fact in cached[1]]
             facts = self._replay_facts()
             self._facts_cache = (signature, facts)
-            return list(facts)
+            return [fact.model_copy(deep=True) for fact in facts]
 
     def _replay_facts(self) -> list[Fact]:
         if not self._is_event_log_format():
-            logger.warning(
-                "%s is missing a valid event-log sentinel; restore it from "
-                "backup or move the invalid file aside.",
-                self.facts_path,
-            )
+            if not self.read_only:
+                raise StoreIntegrityError(
+                    self.facts_path, 1, "missing valid event-log sentinel"
+                )
             return []
         events = self._load_all_events()
         materialized = materialize_events(events)
-        out: list[Fact] = []
-        for fact, is_active in materialized.values():
-            if not is_active and fact.confidence > 0.0:
-                fact = fact.model_copy(update={"confidence": 0.0})
-            out.append(fact)
-        return out
+        return [
+            fact if active else fact.model_copy(update={"confidence": 0.0})
+            for fact, active in materialized.values()
+        ]
 
+    @_snapshot_read
     def load_candidates(
         self,
         status: CandidateStatus | None = None,
         project: str | None = None,
         limit: int | None = None,
     ) -> list[MemoryCandidate]:
-        """Load memory candidates filtered by status and project."""
-        candidates = []
-        loaded, _ = _load_jsonl_records(
-            self.candidates_path, MemoryCandidate, "candidate"
+        return self.candidate_snapshots.load(
+            status, project, limit, strict=not self.read_only
         )
-        for candidate in loaded:
-            if status and candidate.status != status:
-                continue
-            if project and candidate.project and candidate.project != project:
-                continue
-            candidates.append(candidate)
-
-        candidates.sort(key=lambda c: c.updated_at, reverse=True)
-        if limit:
-            candidates = candidates[:limit]
-        return candidates
 
     def load_active_facts(
         self,
@@ -499,7 +435,8 @@ class FactStore:
             facts = facts[:limit]
         return facts
 
-    def search_index(self) -> SearchIndex:
+    @_snapshot_read
+    def _search_index(self) -> SearchIndex:
         """BM25 index over recallable facts (active, current, not superseded).
 
         Project briefs are excluded: they summarize other cards and are served
@@ -519,6 +456,10 @@ class FactStore:
             self._index_cache = (signature, index)
         return index
 
+    def search_index(self) -> SearchIndex:
+        """Return a read-isolated index snapshot for maintenance consumers."""
+        return deepcopy(self._search_index())
+
     def search_facts(
         self,
         query: str,
@@ -533,50 +474,53 @@ class FactStore:
         Without it, a query that names exactly one known project is scoped to
         that project; otherwise every project is searched.
         """
-        index = self.search_index()
+        index = self._search_index()
         scope = project
         if scope is None:
             scope = _infer_project_from_query(index.facts, query)
 
+        now = datetime.now(timezone.utc)
+
         def in_scope(fact: Fact) -> bool:
+            if not is_fact_eligible(fact, now):
+                return False
             if scope is None:
                 return True
             return fact.project == scope or (include_global and fact.project is None)
 
-        return index.search(query, accept=in_scope, limit=limit)
+        return [
+            SearchHit(hit.fact.model_copy(deep=True), hit.score, hit.coverage)
+            for hit in index.search(query, accept=in_scope, limit=limit)
+        ]
 
-    def _ensure_event_log_header(self) -> None:
-        """Write the meta sentinel as the first line if the file is brand-new."""
-        if self.facts_path.exists() and self.facts_path.stat().st_size > 0:
+    def _append_events_raw(self, events: list[FactEvent]) -> None:
+        self.transactions.append_raw(events)
+
+    @property
+    def intent_path(self) -> Path:
+        return self.transactions.intent_path
+
+    def _recover_intent(self) -> None:
+        if not self.intent_path.exists():
             return
-        with self.facts_path.open("w") as f:
-            f.write(EventLogMeta().model_dump_json() + "\n")
-            f.flush()
-            os.fsync(f.fileno())
+        events = self.transactions.read_intent()
+        self._append_events_raw(events)
+        self._validated_event_log_records(strict=True)
+        self.transactions.clear_intent()
 
     def append_events(self, events: list[FactEvent]) -> None:
-        """Append one or more typed events to the event log under the write lock."""
+        """Durably prepare exact events, append missing IDs, then clear intent."""
+        if self.read_only:
+            raise RuntimeError("Read-only store cannot write")
         if not events:
             return
         with _locked_store(self.data_dir):
-            if (
-                self.facts_path.exists()
-                and self.facts_path.stat().st_size > 0
-                and not self._is_event_log_format()
-            ):
-                raise ValueError(
-                    f"{self.facts_path} is missing a valid event-log sentinel; "
-                    "restore it from backup or move the invalid file aside."
-                )
-            with _locked_write(self.facts_path):
-                self._ensure_event_log_header()
-                self._ensure_trailing_newline(self.facts_path)
-                with self.facts_path.open("a") as f:
-                    for event in events:
-                        f.write(event.model_dump_json() + "\n")
-                    f.flush()
-                    os.fsync(f.fileno())
-        logger.info("Appended %d event(s) to event log", len(events))
+            self._recover_intent()
+            events = [FactEvent.model_validate(event.model_dump()) for event in events]
+            if self.facts_path.exists() and self.facts_path.stat().st_size:
+                self._validated_event_log_records(strict=True)
+            self.transactions.write_intent(events)
+            self._recover_intent()
 
     def append_facts(self, facts: list[Fact]) -> None:
         """Append new facts to the store by emitting ``created`` events."""
@@ -595,21 +539,27 @@ class FactStore:
         logger.info("Appended %d facts to store", len(facts))
 
     def append_candidates(self, candidates: list[MemoryCandidate]) -> None:
-        """Append memory candidates to the queue."""
-        with _locked_store(self.data_dir):
-            with _locked_write(self.candidates_path):
-                self._ensure_trailing_newline(self.candidates_path)
-                with self.candidates_path.open("a") as f:
-                    for candidate in candidates:
-                        f.write(candidate.model_dump_json() + "\n")
-        logger.info("Appended %d memory candidate(s) to queue", len(candidates))
+        if self.read_only:
+            raise RuntimeError("Read-only store cannot write")
+        self.candidate_snapshots.append(candidates)
+
+    def append_pending_candidates(
+        self, candidates: list[MemoryCandidate]
+    ) -> list[MemoryCandidate]:
+        if self.read_only:
+            raise RuntimeError("Read-only store cannot write")
+        return self.candidate_snapshots.append_pending(candidates)
 
     def _facts_by_id(self) -> dict[str, Fact]:
         return {fact.id: fact for fact in self.load_facts()}
 
     def _active_fact_by_id(self, fact_id: str) -> Fact | None:
         fact = self._facts_by_id().get(fact_id)
-        if fact is None or fact.confidence == 0.0:
+        if (
+            fact is None
+            or fact.lifecycle is not FactLifecycle.active
+            or fact.confidence == 0.0
+        ):
             return None
         return fact
 
@@ -624,7 +574,13 @@ class FactStore:
                     timestamp=now,
                     payload={},
                 ),
-                existing.model_copy(update={"confidence": 0.0, "updated_at": now}),
+                existing.model_copy(
+                    update={
+                        "lifecycle": FactLifecycle.forgotten,
+                        "confidence": 0.0,
+                        "updated_at": now,
+                    }
+                ),
             )
 
         return (
@@ -669,7 +625,10 @@ class FactStore:
             existing = self._facts_by_id().get(fact_id)
             if existing is None:
                 return None
-            if existing.confidence == 0.0 and "confidence" not in updates:
+            if (
+                existing.lifecycle is not FactLifecycle.active
+                or existing.confidence == 0.0
+            ):
                 return None
 
             now = datetime.now(timezone.utc)
@@ -678,31 +637,36 @@ class FactStore:
             return updated
 
     def update_candidate(self, candidate_id: str, **updates) -> MemoryCandidate | None:
-        """Update a candidate in-place by rewriting the candidate JSONL file."""
+        """Append a validated snapshot for one candidate."""
         with _locked_store(self.data_dir):
-            candidates = self.load_candidates()
-            updated = None
-            for i, candidate in enumerate(candidates):
-                if candidate.id == candidate_id:
-                    for key, value in updates.items():
-                        setattr(candidate, key, value)
-                    candidate.updated_at = datetime.now(timezone.utc)
-                    candidates[i] = candidate
-                    updated = candidate
-                    break
-
-            if updated:
-                self._rewrite(candidates, path=self.candidates_path)
+            candidate = next(
+                (row for row in self.load_candidates() if row.id == candidate_id), None
+            )
+            if candidate is None:
+                return None
+            updated = MemoryCandidate.model_validate(
+                {
+                    **candidate.model_dump(),
+                    **updates,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            )
+            if updated.id != candidate_id:
+                raise ValueError("Candidate ID cannot change")
+            self.append_candidates([updated])
             return updated
 
     def rename_project(self, old_project: str, new_project: str) -> int:
-        """Bulk-rename the project field on facts (events) and candidates (rewrite)."""
+        """Rename project scopes through fact events and candidate snapshots."""
         with _locked_store(self.data_dir):
             facts = self.load_facts()
             now = datetime.now(timezone.utc)
             events: list[FactEvent] = []
             for fact in facts:
-                if fact.project == old_project and fact.confidence > 0.0:
+                if (
+                    fact.project == old_project
+                    and fact.lifecycle is FactLifecycle.active
+                ):
                     events.append(
                         FactEvent(
                             event_type=EventType.edited,
@@ -721,8 +685,6 @@ class FactStore:
                     fact_count,
                 )
 
-            # Candidates are separate review records, so they are rewritten
-            # in place rather than appended to the fact event log.
             candidates = self.load_candidates()
             cand_count = 0
             for i, candidate in enumerate(candidates):
@@ -732,7 +694,13 @@ class FactStore:
                     candidates[i] = candidate
                     cand_count += 1
             if cand_count > 0:
-                self._rewrite(candidates, path=self.candidates_path)
+                self.append_candidates(
+                    [
+                        candidate
+                        for candidate in candidates
+                        if candidate.project == new_project
+                    ]
+                )
                 logger.info(
                     "Renamed project %s → %s for %d candidate(s)",
                     old_project,
@@ -784,7 +752,7 @@ class FactStore:
     def batch_update_candidates(
         self, updates: dict[str, dict]
     ) -> list[MemoryCandidate]:
-        """Apply multiple candidate updates in a single JSONL rewrite.
+        """Append validated snapshots for multiple candidate updates.
 
         Args:
             updates: Mapping of candidate_id -> field updates to apply.
@@ -796,26 +764,19 @@ class FactStore:
             return []
 
         with _locked_store(self.data_dir):
-            candidates = self.load_candidates()
-            now = datetime.now(timezone.utc)
             updated: list[MemoryCandidate] = []
-
-            for i, candidate in enumerate(candidates):
+            for candidate in self.load_candidates():
                 if candidate.id in updates:
-                    for key, value in updates[candidate.id].items():
-                        if key == "status":
-                            value = CandidateStatus(value)
-                        setattr(candidate, key, value)
-                    candidate.updated_at = now
-                    candidates[i] = candidate
-                    updated.append(candidate)
-
-            if updated:
-                self._rewrite(candidates, path=self.candidates_path)
-                logger.info(
-                    "Batch-updated %d candidates in single rewrite", len(updated)
-                )
-
+                    updated.append(
+                        MemoryCandidate.model_validate(
+                            {
+                                **candidate.model_dump(),
+                                **updates[candidate.id],
+                                "updated_at": datetime.now(timezone.utc),
+                            }
+                        )
+                    )
+            self.append_candidates(updated)
             return updated
 
     def forget(self, fact_id: str, reason: str = "") -> Fact | None:
@@ -833,7 +794,13 @@ class FactStore:
             )
             if reason:
                 logger.info("Forgot fact %s: %s", fact_id, reason)
-            return existing.model_copy(update={"confidence": 0.0, "updated_at": now})
+            return existing.model_copy(
+                update={
+                    "lifecycle": FactLifecycle.forgotten,
+                    "confidence": 0.0,
+                    "updated_at": now,
+                }
+            )
 
     def restore_fact(self, fact_id: str) -> Fact | None:
         """Reverse a prior ``forget`` by appending a ``restored`` event.
@@ -853,14 +820,16 @@ class FactStore:
             if entry is None:
                 return None
             fact, is_active = entry
-            if is_active:
-                # Nothing to restore.
+            if fact.lifecycle is not FactLifecycle.forgotten:
+                # Only explicit forgetting can be restored.
                 return None
 
             now = datetime.now(timezone.utc)
             self._append_fact_event(EventType.restored, fact_id, now)
             logger.info("Restored fact %s", fact_id)
-            return fact.model_copy(update={"updated_at": now})
+            return fact.model_copy(
+                update={"updated_at": now, "lifecycle": FactLifecycle.active}
+            )
 
     def correct_fact(
         self,
@@ -890,34 +859,26 @@ class FactStore:
                 return None
 
             now = datetime.now(timezone.utc)
-            new_fact = Fact(
-                id=uuid4().hex[:12],
-                category=category or existing.category,
-                memory_key=(
-                    memory_key if memory_key is not None else existing.memory_key
-                ),
-                content=new_content,
-                source=existing.source,
-                confidence=existing.confidence,
-                created_at=now,
-                updated_at=now,
-                observed_at=now,
-                # A correction to a merged card rarely re-verifies every claim
-                # it carried, so those keep their age.
-                first_observed_at=existing.first_observed_at,
-                project=project if project is not None else existing.project,
-                tags=tags if tags is not None else list(existing.tags),
-                retrieval_hints=(
-                    list(retrieval_hints)
+            new_fact = Fact.model_validate(
+                {
+                    **existing.model_dump(),
+                    "id": uuid4().hex[:12],
+                    "category": category or existing.category,
+                    "memory_key": memory_key
+                    if memory_key is not None
+                    else existing.memory_key,
+                    "content": new_content,
+                    "created_at": now,
+                    "updated_at": now,
+                    "observed_at": now,
+                    "project": project if project is not None else existing.project,
+                    "tags": tags if tags is not None else existing.tags,
+                    "retrieval_hints": retrieval_hints
                     if retrieval_hints is not None
-                    else list(existing.retrieval_hints)
-                ),
-                source_group_id=existing.source_group_id,
-                supersedes=fact_id,
-                consolidates=list(existing.consolidates),
-                evidence_kind=existing.evidence_kind,
-                source_ref=existing.source_ref,
-                why_store=reason or existing.why_store,
+                    else existing.retrieval_hints,
+                    "supersedes": fact_id,
+                    "why_store": reason or existing.why_store,
+                }
             )
             self.append_events(
                 [
@@ -944,7 +905,11 @@ class FactStore:
         sources: list[Fact] = []
         for source_id in source_ids:
             fact = facts_by_id.get(source_id)
-            if fact is None or fact.confidence == 0.0:
+            if (
+                fact is None
+                or fact.lifecycle is not FactLifecycle.active
+                or fact.confidence == 0.0
+            ):
                 return None
             sources.append(fact)
         if len({fact.project for fact in sources}) > 1:
@@ -1096,19 +1061,40 @@ class FactStore:
         active are skipped; with ``all_or_nothing`` any skip aborts the batch
         (upkeep uses this so a concurrently changed cluster is left alone).
         """
+        changes.__post_init__()
         with _locked_store(self.data_dir):
             facts_by_id = self._facts_by_id()
             result = ChangeResult()
             new_ids = {fact.id for fact in changes.new_facts}
+            if new_ids & facts_by_id.keys():
+                raise ValueError("ChangeSet cannot recreate an existing fact ID")
 
             def active(fact_id: str) -> bool:
                 fact = facts_by_id.get(fact_id)
-                return fact is not None and fact.confidence > 0.0
+                return (
+                    fact is not None
+                    and fact.lifecycle is FactLifecycle.active
+                    and fact.confidence > 0.0
+                )
 
-            targets = [*changes.supersede, *changes.stale, *changes.edits]
+            now = datetime.now(timezone.utc)
+            targets = [
+                *changes.supersede,
+                *changes.stale,
+                *changes.unstale,
+                *changes.edits,
+                *changes.expected,
+            ]
             for fact_id in targets:
                 if not active(fact_id):
                     result.skipped[fact_id] = "not an active fact"
+                    continue
+                if (
+                    changes.require_eligible
+                    and fact_id in changes.expected
+                    and not is_fact_eligible(facts_by_id[fact_id], now)
+                ):
+                    result.skipped[fact_id] = "not an eligible fact"
                     continue
                 seen = changes.expected.get(fact_id)
                 if seen is not None and facts_by_id[fact_id].updated_at != seen:
@@ -1123,7 +1109,6 @@ class FactStore:
             if all_or_nothing and result.skipped:
                 return result
 
-            now = datetime.now(timezone.utc)
             events: list[FactEvent] = [
                 FactEvent(
                     event_type=EventType.created,
@@ -1160,6 +1145,17 @@ class FactStore:
                     )
                 )
                 result.staled[fact_id] = reason
+            for fact_id in changes.unstale:
+                if fact_id not in result.skipped:
+                    events.append(
+                        FactEvent(
+                            event_type=EventType.unstale,
+                            fact_id=fact_id,
+                            timestamp=now,
+                            actor=changes.actor,
+                        )
+                    )
+                    result.unstaled.append(fact_id)
             for fact_id, fields in changes.edits.items():
                 if fact_id in result.skipped or fact_id in result.superseded:
                     continue
@@ -1208,17 +1204,68 @@ class FactStore:
             )
 
     def approve_candidates(self, candidate_ids: list[str]) -> list[Fact]:
-        """Approve candidates and promote them into active facts with recovery."""
-        with _locked_store(self.data_dir):
-            self._recover_transactions_locked()
-            transaction = self._prepare_approval_transaction(candidate_ids)
-            if not transaction:
-                return []
+        """Compatibility projection of the authoritative approval result."""
+        return self.approve_candidates_result(candidate_ids).facts
 
-            self._append_transaction(transaction)
-            self._apply_approval_transaction(transaction)
-            self._commit_transaction(transaction)
-            return transaction.new_facts
+    def approve_candidates_result(
+        self,
+        candidate_ids: list[str],
+        *,
+        edits: dict[str, str] | None = None,
+    ) -> ApprovalResult:
+        """Approve candidates and return their exact transaction-owned mapping."""
+        if edits and (
+            set(edits) - set(candidate_ids)
+            or any(not text.strip() for text in edits.values())
+        ):
+            raise ValueError(
+                "Candidate edits require requested IDs and nonempty content"
+            )
+        with _locked_store(self.data_dir):
+            self.recover_transactions()
+            result = ApprovalResult()
+            if edits:
+                pending_ids = {
+                    row.id
+                    for row in self.load_candidates(status=CandidateStatus.pending)
+                }
+                result.invalid_edit_ids = [
+                    candidate_id
+                    for candidate_id in edits
+                    if candidate_id not in pending_ids
+                ]
+                if result.invalid_edit_ids:
+                    result.unresolved = {
+                        candidate_id: "Approval aborted because an edited candidate is missing or no longer pending"
+                        for candidate_id in dict.fromkeys(candidate_ids)
+                    }
+                    return result
+            transaction = self._prepare_approval_transaction(
+                candidate_ids, edits=edits, unresolved=result.unresolved
+            )
+            if transaction is not None:
+                self._append_transaction(transaction)
+                self._apply_approval_transaction(transaction)
+                self._commit_transaction(transaction)
+                result.facts = transaction.new_facts
+                result.edited = [
+                    candidate_id
+                    for candidate_id in transaction.candidate_ids
+                    if candidate_id in (edits or {})
+                ]
+                result.approved = {
+                    candidate_id: fact.id
+                    for candidate_id, fact in zip(
+                        transaction.candidate_ids, transaction.new_facts, strict=True
+                    )
+                }
+            for candidate_id in dict.fromkeys(candidate_ids):
+                if candidate_id not in result.approved:
+                    result.unresolved.setdefault(
+                        candidate_id,
+                        "Candidate is missing, no longer pending, or its dependencies changed",
+                    )
+            return result
 
     def reject_candidates(
         self, candidate_ids: list[str], reason: str = ""
@@ -1239,8 +1286,15 @@ class FactStore:
 
     def recover_transactions(self) -> int:
         """Roll forward any prepared store transactions that lack a commit marker."""
+        if self.read_only:
+            raise RuntimeError("Read-only store cannot recover transactions")
         with _locked_store(self.data_dir):
-            return self._recover_transactions_locked()
+            self._recovering = True
+            try:
+                self._recover_intent()
+                return self._recover_transactions_locked()
+            finally:
+                self._recovering = False
 
     def _recover_transactions_locked(self) -> int:
         recovered = 0
@@ -1256,12 +1310,38 @@ class FactStore:
         return recovered
 
     def _prepare_approval_transaction(
-        self, candidate_ids: list[str]
+        self,
+        candidate_ids: list[str],
+        *,
+        edits: dict[str, str] | None = None,
+        unresolved: dict[str, str] | None = None,
     ) -> StoreTransaction | None:
         pending_candidates = {
             c.id: c for c in self.load_candidates(status=CandidateStatus.pending)
         }
 
+        unresolved = unresolved if unresolved is not None else {}
+        replacements: dict[str, list[str]] = {}
+        for candidate_id in dict.fromkeys(candidate_ids):
+            candidate = pending_candidates.get(candidate_id)
+            if candidate is None:
+                continue
+            for source_id in set(
+                candidate.replaces
+                or ([candidate.supersedes] if candidate.supersedes else [])
+            ):
+                replacements.setdefault(source_id, []).append(candidate_id)
+        for source_id, competing_ids in sorted(replacements.items()):
+            if len(competing_ids) < 2:
+                continue
+            conflict = f"Source {source_id} has competing replacement candidates: {', '.join(competing_ids)}"
+            for candidate_id in competing_ids:
+                previous = unresolved.get(candidate_id)
+                unresolved[candidate_id] = (
+                    f"{previous}. {conflict}" if previous else conflict
+                )
+
+        facts_by_id = self._facts_by_id()
         fact_updates: dict[str, dict] = {}
         supersessions: dict[str, str] = {}
         candidate_updates: dict[str, dict] = {}
@@ -1276,14 +1356,39 @@ class FactStore:
             seen_ids.add(candidate_id)
 
             candidate = pending_candidates.get(candidate_id)
-            if not candidate:
+            if not candidate or candidate_id in unresolved:
                 continue
+            replaced = candidate.replaces or (
+                [candidate.supersedes] if candidate.supersedes else []
+            )
+            if candidate.replaces_expected is not None and (
+                set(candidate.replaces_expected) != set(replaced)
+                or any(
+                    old_id not in facts_by_id
+                    or not is_fact_eligible(facts_by_id[old_id], now)
+                    or facts_by_id[old_id].updated_at != revision
+                    for old_id, revision in candidate.replaces_expected.items()
+                )
+            ):
+                continue
+            if edits and candidate_id in edits:
+                candidate = MemoryCandidate.model_validate(
+                    {**candidate.model_dump(), "content": edits[candidate_id]}
+                )
             selected_ids.append(candidate_id)
 
             candidate_updates[candidate_id] = {"status": CandidateStatus.approved}
+            if edits and candidate_id in edits:
+                candidate_updates[candidate_id]["content"] = candidate.content
 
-            data = candidate.model_dump(exclude={"status", "review_note", "replaces"})
-            data.update(id=uuid4().hex[:12], created_at=now, updated_at=now)
+            data = candidate.model_dump(
+                exclude={"status", "review_note", "replaces", "replaces_expected"}
+            )
+            data.update(
+                id=candidate_promotion_id(candidate),
+                created_at=candidate.created_at,
+                updated_at=candidate.created_at,
+            )
             new_fact = Fact(**data)
             new_facts.append(new_fact)
             replaced = candidate.replaces or (
@@ -1295,7 +1400,7 @@ class FactStore:
         if not new_facts:
             return None
 
-        return StoreTransaction(
+        transaction = StoreTransaction(
             type="approve_candidates",
             status=TransactionStatus.prepared,
             candidate_ids=selected_ids,
@@ -1306,36 +1411,89 @@ class FactStore:
             created_at=now,
         )
 
+        return self._approval_snapshot(transaction)
+
     def _apply_transaction(self, transaction: StoreTransaction) -> None:
         if transaction.type != "approve_candidates":
             logger.warning(
-                "Skipping unsupported transaction %s of type %s",
+                "Unsupported transaction %s of type %s",
                 transaction.id,
                 transaction.type,
             )
-            return
+            raise ValueError(f"Unsupported transaction type: {transaction.type}")
         self._apply_approval_transaction(transaction)
 
-    def _apply_approval_transaction(self, transaction: StoreTransaction) -> None:
-        missing_facts = self._missing_facts(transaction.new_facts)
-        if missing_facts:
-            self.append_facts(missing_facts)
-        if transaction.supersessions:
-            # Re-running a recovered transaction skips already-superseded facts.
-            self.apply_changes(
-                ChangeSet(
-                    supersede=dict(transaction.supersessions),
-                    reason="approved candidate replaces this memory",
+    def _approval_snapshot(self, transaction: StoreTransaction) -> StoreTransaction:
+        events = [
+            FactEvent(
+                event_type=EventType.created,
+                fact_id=fact.id,
+                timestamp=fact.created_at,
+                payload=fact.model_dump(),
+            )
+            for fact in transaction.new_facts
+        ]
+        events.extend(
+            FactEvent(
+                event_type=EventType.superseded,
+                fact_id=old,
+                timestamp=transaction.created_at,
+                payload={
+                    "superseded_by": new,
+                    "reason": "approved candidate replaces this memory",
+                },
+            )
+            for old, new in transaction.supersessions.items()
+        )
+        for fact_id, updates in transaction.fact_updates.items():
+            event_type = (
+                EventType.forgotten
+                if updates == {"confidence": 0.0}
+                else EventType.edited
+            )
+            events.append(
+                FactEvent(
+                    event_type=event_type,
+                    fact_id=fact_id,
+                    timestamp=transaction.created_at,
+                    payload={} if event_type is EventType.forgotten else updates,
                 )
             )
-        if transaction.fact_updates:
-            self.batch_update_facts(transaction.fact_updates)
-        if transaction.candidate_updates:
-            self.batch_update_candidates(transaction.candidate_updates)
+        rows = {row.id: row for row in self.load_candidates()}
+        candidates = [
+            MemoryCandidate.model_validate(
+                {
+                    **rows[candidate_id].model_dump(),
+                    **updates,
+                    "updated_at": transaction.created_at,
+                }
+            )
+            for candidate_id, updates in transaction.candidate_updates.items()
+            if candidate_id in rows
+        ]
+        transaction = transaction.model_copy(
+            update={"events": events, "candidates": candidates}
+        )
+        return transaction
 
-    def _missing_facts(self, facts: list[Fact]) -> list[Fact]:
-        existing_ids = {fact.id for fact in self.load_facts()}
-        return [fact for fact in facts if fact.id not in existing_ids]
+    def _apply_approval_transaction(self, transaction: StoreTransaction) -> None:
+        if not transaction.events and not transaction.candidates:
+            transaction = self._approval_snapshot(transaction)
+            self._append_transaction(transaction)
+        self.append_events(transaction.events)
+        existing = {
+            row.model_dump_json()
+            for row in _load_jsonl_records(
+                self.candidates_path, MemoryCandidate, "candidate"
+            )[0]
+        }
+        self.append_candidates(
+            [
+                row
+                for row in transaction.candidates
+                if row.model_dump_json() not in existing
+            ]
+        )
 
     def _commit_transaction(self, transaction: StoreTransaction) -> None:
         committed = transaction.model_copy(
@@ -1348,19 +1506,29 @@ class FactStore:
 
     def _append_transaction(self, transaction: StoreTransaction) -> None:
         with _locked_write(self.transaction_log_path):
-            self._ensure_trailing_newline(self.transaction_log_path)
+            ensure_trailing_newline(self.transaction_log_path)
             with self.transaction_log_path.open("a") as f:
                 f.write(transaction.model_dump_json() + "\n")
                 f.flush()
                 os.fsync(f.fileno())
 
     def _load_transactions(self) -> list[StoreTransaction]:
-        records, _ = _load_jsonl_records(
+        records, corrupt = _load_jsonl_records(
             self.transaction_log_path, StoreTransaction, "transaction"
         )
+        if corrupt:
+            raise ValueError(
+                "Transaction journal contains invalid records and requires inspection"
+            )
         return records
 
     def _pending_transactions(self) -> list[StoreTransaction]:
+        if not self.transaction_log_path.exists():
+            return []
+        stat = self.transaction_log_path.stat()
+        signature = stat.st_ino, stat.st_size, stat.st_mtime_ns
+        if self._pending_cache is not None and self._pending_cache[0] == signature:
+            return self._pending_cache[1]
         prepared: dict[str, StoreTransaction] = {}
         committed_ids: set[str] = set()
         for transaction in self._load_transactions():
@@ -1368,11 +1536,14 @@ class FactStore:
                 prepared[transaction.id] = transaction
             elif transaction.status == TransactionStatus.committed:
                 committed_ids.add(transaction.id)
-        return [
+        pending = [
             transaction
             for transaction_id, transaction in prepared.items()
             if transaction_id not in committed_ids
         ]
+
+        self._pending_cache = (signature, pending)
+        return pending
 
     def compact_event_log(self, *, keep_tombstones: bool = True) -> dict[str, int]:
         """Collapse the event log to a minimal representation.
@@ -1394,6 +1565,7 @@ class FactStore:
         """
         from engram.storage.sync import COMPACTION_SENTINEL_FILENAME
 
+        self._require_offline_rewrite()
         sentinel = self.data_dir / COMPACTION_SENTINEL_FILENAME
         with _locked_store(self.data_dir):
             if not self._is_event_log_format():
@@ -1437,18 +1609,28 @@ class FactStore:
                 "skipped": False,
             }
 
+    def _require_offline_rewrite(self) -> None:
+        if (self.data_dir / ".git").exists():
+            raise ValueError(
+                "Purge and compaction require a coordinated offline procedure for synced stores"
+            )
+
     def purge(self) -> dict:
         """Remove forgotten and expired facts from the event log.
 
         Returns counts of purged and retained facts.
         """
+        self._require_offline_rewrite()
         with _locked_store(self.data_dir):
             facts = self.load_facts()
             now = datetime.now(timezone.utc)
             kept = []
             purged = 0
             for fact in facts:
-                is_forgotten = fact.confidence < MIN_ACTIVE_CONFIDENCE
+                is_forgotten = (
+                    fact.lifecycle is not FactLifecycle.active
+                    or fact.confidence < MIN_ACTIVE_CONFIDENCE
+                )
                 is_expired = _is_expired_fact(fact, now)
                 if is_forgotten or is_expired:
                     purged += 1
@@ -1469,7 +1651,15 @@ class FactStore:
         facts = self.load_facts()
         now = datetime.now(timezone.utc)
         active = [f for f in facts if _is_active_fact(f, now)]
-        forgotten = [f for f in facts if f.confidence < MIN_ACTIVE_CONFIDENCE]
+        forgotten = [
+            f
+            for f in facts
+            if f.lifecycle is FactLifecycle.forgotten
+            or (
+                f.lifecycle is FactLifecycle.active
+                and f.confidence < MIN_ACTIVE_CONFIDENCE
+            )
+        ]
         expired = [
             f
             for f in facts
@@ -1482,6 +1672,9 @@ class FactStore:
             "total_facts": len(facts),
             "active_facts": len(active),
             "forgotten_facts": len(forgotten),
+            "superseded_facts": sum(
+                f.lifecycle is FactLifecycle.superseded for f in facts
+            ),
             "expired_facts": len(expired),
             "by_category": dict(by_category.most_common()),
             "by_project": dict(by_project.most_common(10)),
@@ -1517,45 +1710,23 @@ class FactStore:
 
     def log_recall(self, record: RecallRecord) -> None:
         """Append a recall record to the recall log."""
-        with _locked_write(self.recall_log_path):
+        with _locked_store(self.data_dir), _locked_write(self.recall_log_path):
             with self.recall_log_path.open("a") as f:
                 f.write(record.model_dump_json() + "\n")
 
+    @_snapshot_read
     def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
         """Load recent recall log entries."""
         records, _ = _load_jsonl_records(
-            self.recall_log_path, RecallRecord, "recall log"
+            self.recall_log_path, RecallRecord, "recall log", strict=not self.read_only
         )
         records.sort(key=lambda r: r.timestamp, reverse=True)
         return records[:limit] if limit is not None else records
 
     def _validated_event_log_records(
-        self,
+        self, *, strict: bool = False
     ) -> tuple[EventLogMeta | None, list[FactEvent], int]:
-        meta: EventLogMeta | None = None
-        events: list[FactEvent] = []
-        corrupt = 0
-        first_data_line = True
-        with self.facts_path.open() as fh:
-            for lineno, line in enumerate(fh, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                if first_data_line:
-                    first_data_line = False
-                    try:
-                        meta = EventLogMeta.model_validate_json(line)
-                        continue
-                    except (ValueError, ValidationError):
-                        pass
-                try:
-                    events.append(FactEvent.model_validate_json(line))
-                except (ValueError, ValidationError):
-                    corrupt += 1
-                    logger.warning(
-                        "Skipping corrupt event at line %d: %s", lineno, line[:80]
-                    )
-        return meta, events, corrupt
+        return self.transactions.read_events(strict=strict)
 
     def _rewrite_event_log(
         self,
@@ -1573,7 +1744,7 @@ class FactStore:
                     delete=False,
                 ) as fh:
                     tmp_path = Path(fh.name)
-                    fh.write(meta.model_dump_json() + "\n")
+                    fh.write(meta.model_dump_json(exclude_none=True) + "\n")
                     for event in events:
                         fh.write(event.model_dump_json() + "\n")
                     fh.flush()
@@ -1585,6 +1756,13 @@ class FactStore:
                     tmp_path.unlink()
 
     def repair(self) -> dict:
+        """Explicitly repair corrupt rows under the shared transaction lock."""
+        if self.read_only:
+            raise RuntimeError("Read-only store cannot write")
+        with _locked_store(self.data_dir):
+            return self._repair_locked()
+
+    def _repair_locked(self) -> dict:
         """Recover from truncated/corrupt JSONL lines.
 
         For ``facts.jsonl`` in event-log format, validates each line as either
@@ -1630,16 +1808,6 @@ class FactStore:
 
         return result
 
-    def _ensure_trailing_newline(self, path: Path) -> None:
-        """Ensure the file ends with a newline to prevent JSON concatenation."""
-        if not path.exists() or path.stat().st_size == 0:
-            return
-        with path.open("rb") as f:
-            f.seek(-1, 2)
-            if f.read(1) != b"\n":
-                with path.open("ab") as af:
-                    af.write(b"\n")
-
     def _rewrite(
         self, records: Sequence[Fact | MemoryCandidate], path: Path | None = None
     ) -> None:
@@ -1679,6 +1847,24 @@ class FactStore:
                     tmp_path.unlink()
 
 
+async def run_sync(func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+    """Wait for an in-flight thread before propagating caller cancellation."""
+    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if not worker.cancelled():
+            worker.exception()
+        raise
+
+
 class AsyncFactStore:
     """Async facade for running blocking JSONL store operations off the event loop."""
 
@@ -1706,7 +1892,7 @@ class AsyncFactStore:
         return self.sync_store.recall_log_path
 
     async def _run(self, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
-        return await asyncio.to_thread(func, *args, **kwargs)
+        return await run_sync(func, *args, **kwargs)
 
     async def load_facts(self) -> list[Fact]:
         return await self._run(self.sync_store.load_facts)
@@ -1767,11 +1953,24 @@ class AsyncFactStore:
     async def append_facts(self, facts: list[Fact]) -> None:
         await self._run(self.sync_store.append_facts, facts)
 
+    async def recover_transactions(self) -> int:
+        return await self._run(self.sync_store.recover_transactions)
+
+    async def append_pending_candidates(
+        self, candidates: list[MemoryCandidate]
+    ) -> list[MemoryCandidate]:
+        return await self._run(self.sync_store.append_pending_candidates, candidates)
+
     async def append_candidates(self, candidates: list[MemoryCandidate]) -> None:
         await self._run(self.sync_store.append_candidates, candidates)
 
     async def update_fact(self, fact_id: str, **updates) -> Fact | None:
         return await self._run(self.sync_store.update_fact, fact_id, **updates)
+
+    async def batch_update_candidates(
+        self, updates: dict[str, dict]
+    ) -> list[MemoryCandidate]:
+        return await self._run(self.sync_store.batch_update_candidates, updates)
 
     async def update_candidate(
         self, candidate_id: str, **updates
@@ -1817,6 +2016,18 @@ class AsyncFactStore:
 
     async def approve_candidates(self, candidate_ids: list[str]) -> list[Fact]:
         return await self._run(self.sync_store.approve_candidates, candidate_ids)
+
+    async def approve_candidates_result(
+        self,
+        candidate_ids: list[str],
+        *,
+        edits: dict[str, str] | None = None,
+    ) -> ApprovalResult:
+        return await self._run(
+            self.sync_store.approve_candidates_result,
+            candidate_ids,
+            edits=edits,
+        )
 
     async def reject_candidates(
         self, candidate_ids: list[str], reason: str = ""

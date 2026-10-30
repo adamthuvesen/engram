@@ -12,7 +12,9 @@ check fact anchors against the current code.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import threading
 import logging
 import os
 import subprocess
@@ -23,6 +25,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOTS_FILE = "projects.local.json"
+_PROJECT_ROOTS_LOCK = threading.Lock()
 _GIT_TIMEOUT_SECONDS = 5.0
 _REPO_SEARCH_DEPTH = 3
 
@@ -137,22 +140,30 @@ def load_project_roots(data_dir: Path) -> dict[str, Path]:
 
 def record_project_root(data_dir: Path, name: str, root: Path) -> None:
     """Remember where ``name`` lives on this machine."""
-    roots = load_project_roots(data_dir)
-    if roots.get(name) == root:
-        return
-    roots[name] = root
-    path = data_dir / PROJECT_ROOTS_FILE
-    fd, tmp = tempfile.mkstemp(dir=data_dir, prefix=".projects-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(
-                {key: str(value) for key, value in sorted(roots.items())}, fh, indent=2
-            )
-            fh.write("\n")
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with _PROJECT_ROOTS_LOCK, (data_dir / "projects.local.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            roots = load_project_roots(data_dir)
+            if roots.get(name) == root:
+                return
+            roots[name] = root
+            path = data_dir / PROJECT_ROOTS_FILE
+            fd, tmp = tempfile.mkstemp(dir=data_dir, prefix=".projects-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    json.dump(
+                        {key: str(value) for key, value in sorted(roots.items())},
+                        fh,
+                        indent=2,
+                    )
+                    fh.write("\n")
+                os.replace(tmp, path)
+            except BaseException:
+                Path(tmp).unlink(missing_ok=True)
+                raise
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def register_project(data_dir: Path, value: str | None) -> str | None:

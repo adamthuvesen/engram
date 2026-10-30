@@ -6,14 +6,15 @@ import argparse
 import asyncio
 import sys
 from collections.abc import Callable, Coroutine
-from typing import Any, Sequence
+from typing import Any, Sequence, TextIO
 
 from engram.core.config import (
     DEFAULT_HTTP_HOST,
     DEFAULT_HTTP_PORT,
     configure_logging,
 )
-from engram.core.interfaces import Envelope, storage_error, validation_error
+from engram.core.interfaces import Envelope, validation_error
+from engram.runtime import Runtime
 from engram.maintenance.upkeep import ALL_STEPS
 from engram.operations import (
     RECALL_CONTEXT_MODES,
@@ -54,35 +55,6 @@ from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SO
 CommandHandler = Callable[[argparse.Namespace], Coroutine[Any, Any, OperationResult]]
 
 
-CANONICAL_COMMANDS = frozenset(
-    {
-        "remember",
-        "suggest-memories",
-        "list-candidates",
-        "approve-candidates",
-        "reject-candidates",
-        "recall",
-        "recall-trace",
-        "recall-context",
-        "forget",
-        "edit-fact",
-        "inspect",
-        "correct-memory",
-        "merge-memories",
-        "mark-stale",
-        "unmark-stale",
-        "import-memories",
-        "purge",
-        "rename-project",
-        "audit-memories",
-        "doctor",
-        "memory-stats",
-        "recall-stats",
-        "sync",
-        "upkeep",
-    }
-)
-
 ALIASES = {
     "trace": "recall-trace",
     "correct": "correct-memory",
@@ -91,12 +63,15 @@ ALIASES = {
     "unstale": "unmark-stale",
 }
 
-# `serve` runs the server itself, so it has no MCP tool and is not canonical.
-CLI_SUBCOMMANDS = CANONICAL_COMMANDS | frozenset(ALIASES) | frozenset({"serve"})
 
-
-def _emit(result: OperationResult, *, as_json: bool, out=None) -> int:
-    target = out if out is not None else sys.stdout
+def _emit(result: OperationResult, *, as_json: bool, out: TextIO | None = None) -> int:
+    target = (
+        out
+        if out is not None
+        else sys.stderr
+        if result.exit_code and not as_json
+        else sys.stdout
+    )
     target.write(result.render(as_json=as_json) + "\n")
     target.flush()
     return result.exit_code
@@ -339,6 +314,21 @@ HANDLERS: dict[str, CommandHandler] = {
     "stale": cmd_mark_stale,
     "unstale": cmd_unmark_stale,
 }
+
+
+CANONICAL_COMMANDS = frozenset(HANDLERS) - frozenset(ALIASES)
+CLI_SUBCOMMANDS = frozenset(HANDLERS) | {"serve"}
+
+
+async def _run_handler(
+    handler: CommandHandler, args: argparse.Namespace
+) -> OperationResult:
+    runtime = Runtime()
+    try:
+        with runtime.bind():
+            return await handler(args)
+    finally:
+        await runtime.aclose()
 
 
 def _add_remember_args(parser: argparse.ArgumentParser) -> None:
@@ -599,17 +589,11 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     handler = HANDLERS[args.cmd]
     try:
-        result = asyncio.run(handler(args))
+        result = asyncio.run(_run_handler(handler, args))
     except Exception as exc:
-        env = Envelope.failure(
-            storage_error(
-                f"Unexpected error: {exc}",
-                details={"exception_type": type(exc).__name__},
-            )
-        )
-        result = OperationResult(
-            envelope=env, text=env.to_json(), exit_code=EXIT_RUNTIME
-        )
+        from engram.operations import exception_result
+
+        result = exception_result(exc)
     return _emit(result, as_json=args.json)
 
 
@@ -629,7 +613,12 @@ def main_dispatch(argv: Sequence[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     if is_cli_invocation(argv):
-        configure_logging()
+        try:
+            configure_logging()
+        except Exception as exc:
+            from engram.operations import exception_result
+
+            return _emit(exception_result(exc), as_json="--json" in argv)
         return run(argv)
     from engram.server import main as server_main
 

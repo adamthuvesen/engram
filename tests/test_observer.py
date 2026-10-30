@@ -515,6 +515,7 @@ def test_queue_for_review_then_approval_supersedes(monkeypatch):
     assert result.retired == {}
     (candidate,) = result.candidates
     assert candidate.replaces == ["oldfact"]
+    assert candidate.replaces_expected == {"oldfact": store.load_facts()[0].updated_at}
     assert "gone (no longer uses pandas)" in candidate.review_note
     assert len(store.load_active_facts()) == 2
 
@@ -612,11 +613,113 @@ def test_repeated_conflict_stores_card_without_the_changed_target(monkeypatch):
     assert len(fake.prompts) == 2
     (new,) = result.created
     assert new.supersedes is None
+    assert [(item.fact_id, item.action) for item in result.unresolved] == [
+        ("oldfact", "replace")
+    ]
     assert new.consolidates == []
     assert result.superseded == {}
     assert {f.id for f in store.load_active_facts()} == {"oldfact", new.id}
     stored = next(f for f in store.load_facts() if f.id == new.id)
     assert stored.supersedes is None
+
+
+@pytest.mark.parametrize("queue_for_review", [False, True])
+@pytest.mark.parametrize("mutation", ["forget", "expire"])
+def test_unavailable_duplicate_retries_with_fresh_neighbors(
+    monkeypatch, queue_for_review, mutation
+):
+    start = datetime.now(timezone.utc)
+
+    class Clock(datetime):
+        current = start
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr("engram.storage.store.datetime", Clock)
+    store = _pandas_store()
+    Clock.current = start + timedelta(seconds=1)
+    store.update_fact("oldfact", expires_at=start + timedelta(minutes=1))
+
+    def invalidate_on_first_call(call: int) -> None:
+        if call == 1:
+            if mutation == "forget":
+                Clock.current = start + timedelta(seconds=2)
+                store.forget("oldfact")
+            else:
+                Clock.current = start + timedelta(minutes=2)
+
+    fake = _patch(
+        monkeypatch,
+        FakeModel(
+            [
+                {
+                    "content": "The user prefers pandas for dataframes.",
+                    "duplicate_of": "oldfact",
+                }
+            ],
+            during_call=invalidate_on_first_call,
+        ),
+    )
+
+    result = asyncio.run(
+        ingest(
+            "The user prefers pandas for dataframes.",
+            store=store,
+            queue_for_review=queue_for_review,
+        )
+    )
+
+    assert len(fake.prompts) == 2
+    assert "[id:oldfact]" in fake.prompts[0]
+    assert "[id:oldfact]" not in fake.prompts[1]
+    assert result.duplicates == []
+    proposed = result.candidates if queue_for_review else result.created
+    assert [fact.content for fact in proposed] == [
+        "The user prefers pandas for dataframes."
+    ]
+    assert [fact.id for fact in store.load_active_facts()] == (
+        [] if queue_for_review else [proposed[0].id]
+    )
+
+
+@pytest.mark.parametrize("exact_match", [False, True])
+@pytest.mark.parametrize("queue_for_review", [False, True])
+def test_repeated_duplicate_conflict_preserves_independent_card(
+    monkeypatch, exact_match, queue_for_review
+):
+    store = _pandas_store()
+    duplicate = (
+        {"content": "The user prefers pandas for dataframes."}
+        if exact_match
+        else {"content": "Pandas is preferred.", "duplicate_of": "oldfact"}
+    )
+    fake = _patch(
+        monkeypatch,
+        FakeModel(
+            [
+                duplicate,
+                {"memory_key": "theme", "content": "The user prefers dark mode."},
+            ],
+            during_call=lambda call: store.update_fact("oldfact", tags=[str(call)]),
+        ),
+    )
+
+    result = asyncio.run(
+        ingest("Pandas and dark mode.", store=store, queue_for_review=queue_for_review)
+    )
+
+    assert len(fake.prompts) == 2
+    assert result.duplicates == []
+    assert [(item.fact_id, item.action) for item in result.unresolved] == [
+        ("oldfact", "duplicate")
+    ]
+    proposed = result.candidates if queue_for_review else result.created
+    assert [fact.content for fact in proposed] == ["The user prefers dark mode."]
+    assert {fact.id for fact in store.load_active_facts()} == (
+        {"oldfact"} if queue_for_review else {"oldfact", proposed[0].id}
+    )
 
 
 def test_retire_changed_during_llm_call_is_not_applied(monkeypatch):
@@ -634,6 +737,9 @@ def test_retire_changed_during_llm_call_is_not_applied(monkeypatch):
 
     assert len(result.created) == 1
     assert result.retired == {}
+    assert [(item.fact_id, item.action) for item in result.unresolved] == [
+        ("oldfact", "retire")
+    ]
     assert not next(f for f in store.load_facts() if f.id == "oldfact").stale
 
 

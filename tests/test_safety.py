@@ -13,7 +13,7 @@ from engram.core.models import (
     FactEvent,
     MemoryCandidate,
 )
-from engram.storage.store import FactStore
+from engram.storage.store import FactStore, StoreIntegrityError
 
 
 def _make_store() -> FactStore:
@@ -132,7 +132,7 @@ def test_recall_log_roundtrip():
     assert loaded[0].quality == "medium"
 
 
-def test_load_recall_log_logs_corrupt_lines(caplog):
+def test_load_recall_log_requires_explicit_corruption_handling(caplog):
     from engram.core.models import RecallRecord
 
     store = _make_store()
@@ -147,16 +147,21 @@ def test_load_recall_log_logs_corrupt_lines(caplog):
     with store.recall_log_path.open("a") as f:
         f.write("not json\n")
 
-    with caplog.at_level("WARNING", logger="engram.storage.store"):
-        loaded = store.load_recall_log()
+    with pytest.raises(StoreIntegrityError) as error:
+        store.load_recall_log()
+    assert error.value.path == store.recall_log_path
+    assert error.value.line == 2
+    with caplog.at_level("WARNING", logger="engram.storage.jsonl"):
+        loaded = FactStore.open_readonly(store.data_dir).load_recall_log()
 
     assert len(loaded) == 1
     assert loaded[0].query == "test query"
-    assert "Skipping corrupt recall log at line 2" in caplog.text
+    assert "Invalid recall log at line 2" in caplog.text
+    assert "not json" not in caplog.text
 
 
-def test_load_facts_skips_corrupt_line():
-    """A single corrupt line does not prevent other facts from loading."""
+def test_load_facts_reports_corruption_until_explicit_repair():
+    """Ordinary snapshots require repair before returning partial data."""
     store = _make_store()
     store.append_facts(
         [
@@ -169,19 +174,23 @@ def test_load_facts_skips_corrupt_line():
     lines.insert(1, '{"broken json')
     store.facts_path.write_text("\n".join(lines) + "\n")
 
+    with pytest.raises(StoreIntegrityError, match="invalid event record") as error:
+        store.load_facts()
+    assert error.value.line == 2
+    store.repair()
     facts = store.load_facts()
-    assert len(facts) == 2
     assert {f.id for f in facts} == {"good1", "good2"}
 
 
-def test_load_facts_fully_corrupt_returns_empty():
+def test_load_facts_fully_corrupt_reports_invalid_sentinel():
     store = _make_store()
     store.facts_path.write_text("not json at all\nalso not json\n")
-    assert store.load_facts() == []
+    with pytest.raises(StoreIntegrityError, match="sentinel"):
+        store.load_facts()
 
 
-def test_load_candidates_skips_corrupt_line():
-    """A corrupt candidate line does not crash load_candidates."""
+def test_load_candidates_reports_corrupt_line():
+    """A corrupt candidate row requires repair before ordinary reads."""
     from engram.core.models import MemoryCandidate
 
     store = _make_store()
@@ -198,6 +207,9 @@ def test_load_candidates_skips_corrupt_line():
     with store.candidates_path.open("a") as f:
         f.write('{"corrupt\n')
 
+    with pytest.raises(StoreIntegrityError, match="invalid candidate record"):
+        store.load_candidates()
+    store.repair()
     candidates = store.load_candidates()
     assert len(candidates) == 1
     assert candidates[0].id == "cand1"

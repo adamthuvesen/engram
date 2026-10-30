@@ -1,9 +1,11 @@
 """Tests for the Textual dashboard — data layer, filtering, actions, and UI."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+import threading
 
 import pytest
-from textual.widgets import DataTable, TabbedContent
+from textual.widgets import DataTable, Static, TabbedContent
 
 from engram.core.config import get_settings
 from engram.dashboard.app import EngramDashboard
@@ -339,6 +341,8 @@ async def test_dashboard_tab_content_uses_available_height(store):
 
     app = EngramDashboard()
     async with app.run_test(size=(140, 40)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.pause()
         overview_pane = app.query_one("#overview")
         assert overview_pane.region.height > 10
 
@@ -362,9 +366,11 @@ async def test_forget_and_restore(store):
 
     app = EngramDashboard()
     async with app.run_test(size=(140, 40)) as pilot:
+        await app.workers.wait_for_complete()
         # Forget directly through store action
-        app._store.forget(fact_id, reason="test")
+        store.forget(fact_id, reason="test")
         app._force_refresh()
+        await app.workers.wait_for_complete()
         await pilot.pause()
 
         # Fact should now be forgotten
@@ -372,8 +378,9 @@ async def test_forget_and_restore(store):
         assert app._data.active_count == 0
 
         # Restore it
-        app._store.restore_fact(fact_id)
+        store.restore_fact(fact_id)
         app._force_refresh()
+        await app.workers.wait_for_complete()
         await pilot.pause()
 
         assert app._data.active_count == 1
@@ -387,14 +394,17 @@ async def test_ctrl_z_undo_restores_forgotten_fact(store):
 
     app = EngramDashboard()
     async with app.run_test(size=(140, 40)) as pilot:
+        await app.workers.wait_for_complete()
         app._pending_forget = [fact_id]
         app._on_forget_confirmed(True)
+        await app.workers.wait_for_complete()
         await pilot.pause()
 
         assert app._data.active_count == 0
         assert app._data.forgotten_count == 1
 
         app.key_ctrl_z()
+        await app.workers.wait_for_complete()
         await pilot.pause()
 
         assert app._data.active_count == 1
@@ -406,6 +416,7 @@ async def test_ctrl_z_undo_restores_forgotten_fact(store):
 async def test_help_screen_opens(store):
     app = EngramDashboard()
     async with app.run_test(size=(140, 40)) as pilot:
+        await app.workers.wait_for_complete()
         await pilot.press("question_mark")
         await pilot.pause()
         # Help screen should be pushed
@@ -413,3 +424,389 @@ async def test_help_screen_opens(store):
         await pilot.press("escape")
         await pilot.pause()
         assert len(app.screen_stack) == 1
+
+
+def test_superseded_facts_have_distinct_lifecycle_counts(store):
+    original = _fact("old policy")
+    store.append_facts([original])
+    store.correct_fact(original.id, "new policy")
+    data = load_dashboard_data(store)
+    assert data.active_count == 1
+    assert data.forgotten_count == 0
+    assert data.superseded_count == 1
+    assert data.project_health["engram"].superseded == 1
+
+
+@pytest.mark.anyio
+async def test_dashboard_refreshes_on_expiry_without_file_changes(store, monkeypatch):
+    from engram.dashboard import app as app_module
+    from engram.dashboard import data as data_module
+
+    now = datetime.now(timezone.utc)
+    store.append_facts([_fact("expires soon", expires_at=now + timedelta(minutes=1))])
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)):
+        await app.workers.wait_for_complete()
+        before = content_hash_for(store)
+        assert app._data.active_count == 1
+
+        class Later(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now + timedelta(minutes=2)
+
+        monkeypatch.setattr(app_module, "datetime", Later)
+        monkeypatch.setattr(data_module, "datetime", Later)
+        app._refresh_data()
+        await app.workers.wait_for_complete()
+        assert content_hash_for(store) == before
+        assert app._data.active_count == 0
+        assert app._data.expired_count == 1
+
+
+@pytest.mark.anyio
+async def test_undo_only_restores_facts_this_action_forgot(store):
+    from engram.core.models import FactLifecycle
+
+    active = _fact("active")
+    forgotten = _fact("already forgotten")
+    replaced = _fact("already replaced")
+    store.append_facts([active, forgotten, replaced])
+    store.forget(forgotten.id)
+    store.correct_fact(replaced.id, "replacement")
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await app.workers.wait_for_complete()
+        app._pending_forget = [
+            forgotten.id,
+            replaced.id,
+            active.id,
+            active.id,
+            "unknown",
+        ]
+        app._on_forget_confirmed(True)
+        await app.workers.wait_for_complete()
+        assert app._undo_stack == [active.id]
+        app.key_ctrl_z()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        states = {fact.id: fact.lifecycle for fact in store.load_facts()}
+        assert states[active.id] is FactLifecycle.active
+        assert states[forgotten.id] is FactLifecycle.forgotten
+        assert states[replaced.id] is FactLifecycle.superseded
+
+
+@pytest.mark.anyio
+async def test_timeline_uses_required_plotext_widget(store):
+    from textual_plotext import PlotextPlot
+
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)):
+        assert isinstance(app.query_one("#timeline-chart"), PlotextPlot)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["startup", "refresh", "forget", "undo"])
+async def test_dashboard_responds_while_store_lock_is_held(
+    store, monkeypatch, operation
+):
+    from engram.storage.transactions import locked_store
+
+    fact = _fact("locked store")
+    store.append_facts([fact])
+    app = EngramDashboard()
+    assert app._store is None
+    assert "Loading memory" in app._status_text()
+    held = threading.Event()
+    release = threading.Event()
+    released = threading.Event()
+    attempted = threading.Event()
+
+    def hold_lock():
+        with locked_store(store.data_dir):
+            held.set()
+            release.wait(10)
+        released.set()
+
+    method_name = {
+        "startup": "recover_transactions",
+        "refresh": "load_facts",
+        "forget": "forget",
+        "undo": "restore_fact",
+    }[operation]
+    original = getattr(FactStore, method_name)
+
+    def blocked_operation(self, *args, **kwargs):
+        attempted.set()
+        return original(self, *args, **kwargs)
+
+    holder = threading.Thread(target=hold_lock)
+    if operation == "startup":
+        monkeypatch.setattr(FactStore, method_name, blocked_operation)
+        holder.start()
+        assert await asyncio.to_thread(held.wait, 2)
+    try:
+        async with app.run_test(size=(140, 40)) as pilot:
+            if operation != "startup":
+                await app.workers.wait_for_complete()
+                if operation == "undo":
+                    app._pending_forget = [fact.id]
+                    app._on_forget_confirmed(True)
+                    await app.workers.wait_for_complete()
+                monkeypatch.setattr(FactStore, method_name, blocked_operation)
+                holder.start()
+                assert await asyncio.to_thread(held.wait, 2)
+                if operation == "refresh":
+                    app._force_refresh()
+                elif operation == "forget":
+                    app._pending_forget = [fact.id]
+                    app._on_forget_confirmed(True)
+                else:
+                    app.key_ctrl_z()
+            assert await asyncio.to_thread(attempted.wait, 2)
+            assert len(app.workers) == 1
+            for _ in range(5):
+                app._refresh_data()
+            assert len(app.workers) <= 2
+            await pilot.press("t", "3")
+            assert app.theme == "engram-light"
+            assert app.query_one("#tabs", TabbedContent).active == "facts"
+            assert not released.is_set()
+            if operation == "forget":
+                app.key_ctrl_z()
+            release.set()
+            await app.workers.wait_for_complete()
+            assert app._data.active_count == 1
+            assert app._data.forgotten_count == 0
+    finally:
+        release.set()
+        if holder.ident is not None:
+            await asyncio.to_thread(holder.join, 2)
+        assert not holder.is_alive()
+
+
+@pytest.mark.anyio
+async def test_failed_refresh_preserves_snapshot_and_retries_unchanged_hash(
+    store, monkeypatch
+):
+    from engram.dashboard import app as app_module
+
+    store.append_facts([_fact("first")])
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)):
+        await app.workers.wait_for_complete()
+        before = app._data
+        old_hash = app._last_hash
+        store.append_facts([_fact("second")])
+        original = app_module.load_dashboard_data
+        attempts = 0
+
+        def fail_once(store):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("read denied")
+            return original(store)
+
+        monkeypatch.setattr(app_module, "load_dashboard_data", fail_once)
+        app._refresh_data()
+        await app.workers.wait_for_complete()
+        assert app._data is before
+        assert app._last_hash == old_hash
+        status = str(app.query_one("#status-bar", Static).render())
+        assert "read denied" in status
+        assert "Press r to retry" in status
+        app._refresh_data()
+        await app.workers.wait_for_complete()
+        assert attempts == 2
+        assert app._data.active_count == 2
+        assert app._storage_error is None
+
+
+@pytest.mark.anyio
+async def test_startup_failure_can_retry(store, monkeypatch):
+    store.append_facts([_fact("recoverable")])
+    original = FactStore.recover_transactions
+
+    def fail_recovery(self):
+        raise OSError("cannot open store")
+
+    monkeypatch.setattr(FactStore, "recover_transactions", fail_recovery)
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)) as pilot:
+        await app.workers.wait_for_complete()
+        assert app._store is None
+        assert app._last_hash is None
+        assert "cannot open store" in app._status_text()
+        monkeypatch.setattr(FactStore, "recover_transactions", original)
+        await pilot.press("r")
+        await app.workers.wait_for_complete()
+        assert app._data.active_count == 1
+        assert app._storage_error is None
+
+
+@pytest.mark.anyio
+async def test_partial_forget_and_failed_undo_keep_successful_undo_entries(
+    store, monkeypatch
+):
+    first, second = _fact("first"), _fact("second")
+    store.append_facts([first, second])
+    original_forget = FactStore.forget
+    original_restore = FactStore.restore_fact
+
+    def fail_second(self, fact_id, **kwargs):
+        if fact_id == second.id:
+            raise OSError("forget denied")
+        return original_forget(self, fact_id, **kwargs)
+
+    def fail_restore(self, fact_id):
+        raise OSError("restore denied")
+
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)):
+        await app.workers.wait_for_complete()
+        monkeypatch.setattr(FactStore, "forget", fail_second)
+        app._pending_forget = [first.id, second.id]
+        app._on_forget_confirmed(True)
+        await app.workers.wait_for_complete()
+        assert app._undo_stack == [first.id]
+        assert app._data.active_count == 1
+        assert "forget denied" in app._status_text()
+        monkeypatch.setattr(FactStore, "restore_fact", fail_restore)
+        app.key_ctrl_z()
+        await app.workers.wait_for_complete()
+        assert app._undo_stack == [first.id]
+        assert "restore denied" in app._status_text()
+        monkeypatch.setattr(FactStore, "restore_fact", original_restore)
+        app.key_ctrl_z()
+        await app.workers.wait_for_complete()
+        assert app._undo_stack == []
+        assert app._data.active_count == 2
+
+
+@pytest.mark.anyio
+async def test_forget_keeps_undo_when_snapshot_reload_fails(store, monkeypatch):
+    from engram.dashboard import app as app_module
+
+    fact = _fact("undo after read failure")
+    store.append_facts([fact])
+    original = app_module.load_dashboard_data
+
+    def fail_read(store):
+        raise OSError("snapshot unavailable")
+
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)):
+        await app.workers.wait_for_complete()
+        before = app._data
+        monkeypatch.setattr(app_module, "load_dashboard_data", fail_read)
+        app._pending_forget = [fact.id]
+        app._on_forget_confirmed(True)
+        await app.workers.wait_for_complete()
+        assert app._data is before
+        assert app._undo_stack == [fact.id]
+        assert store.load_active_facts() == []
+        assert "snapshot unavailable" in app._status_text()
+        monkeypatch.setattr(app_module, "load_dashboard_data", original)
+        app.key_ctrl_z()
+        await app.workers.wait_for_complete()
+        assert app._data.active_count == 1
+        assert app._undo_stack == []
+        assert app._storage_error is None
+
+
+@pytest.mark.anyio
+async def test_requested_undo_survives_expiry_while_refresh_owns_storage(
+    store, monkeypatch
+):
+    from engram.dashboard import app as app_module
+
+    fact = _fact("queued undo")
+    store.append_facts([fact])
+    forget_started = threading.Event()
+    release_forget = threading.Event()
+    refresh_started = threading.Event()
+    release_refresh = threading.Event()
+    original_forget = FactStore.forget
+    original_load = app_module.load_dashboard_data
+    read_count = 0
+
+    def blocked_forget(self, fact_id, **kwargs):
+        forget_started.set()
+        assert release_forget.wait(5)
+        return original_forget(self, fact_id, **kwargs)
+
+    def blocked_refresh(store):
+        nonlocal read_count
+        read_count += 1
+        if read_count == 2:
+            refresh_started.set()
+            assert release_refresh.wait(5)
+        return original_load(store)
+
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)):
+        await app.workers.wait_for_complete()
+        monkeypatch.setattr(FactStore, "forget", blocked_forget)
+        monkeypatch.setattr(app_module, "load_dashboard_data", blocked_refresh)
+        try:
+            app._pending_forget = [fact.id]
+            app._on_forget_confirmed(True)
+            assert await asyncio.to_thread(forget_started.wait, 2)
+            app._force_refresh()
+            await asyncio.sleep(0)
+            app.key_ctrl_z()
+            app.key_ctrl_z()
+            release_forget.set()
+            assert await asyncio.to_thread(refresh_started.wait, 2)
+            assert app._undo_stack == [fact.id]
+            # Deliver the expiry callback while refresh still owns storage.
+            app._expire_undo()
+            assert app._undo_stack == [fact.id]
+            release_refresh.set()
+            await app.workers.wait_for_complete()
+            assert app._undo_stack == []
+            assert app._data.active_count == 1
+            assert [item.id for item in store.load_active_facts()] == [fact.id]
+        finally:
+            release_forget.set()
+            release_refresh.set()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cancel_before_start", [True, False])
+async def test_cancelled_undo_does_not_prevent_expiry(
+    store, monkeypatch, cancel_before_start
+):
+    from textual.worker import WorkerCancelled
+
+    fact = _fact("cancelled undo")
+    store.append_facts([fact])
+    app = EngramDashboard()
+    async with app.run_test(size=(140, 40)):
+        await app.workers.wait_for_complete()
+        app._pending_forget = [fact.id]
+        app._on_forget_confirmed(True)
+        await app.workers.wait_for_complete()
+        scheduled_callbacks = []
+        original_set_timer = app.set_timer
+
+        def record_timer(delay, callback, **kwargs):
+            scheduled_callbacks.append(callback)
+            return original_set_timer(delay, callback, **kwargs)
+
+        monkeypatch.setattr(app, "set_timer", record_timer)
+        async with app._storage_lock:
+            app.key_ctrl_z()
+            worker = next(w for w in app.workers if w.name == "_undo_worker")
+            if not cancel_before_start:
+                await asyncio.sleep(0)
+            app._expire_undo()
+            assert app._undo_stack == [fact.id]
+            assert scheduled_callbacks
+            worker.cancel()
+            with pytest.raises(WorkerCancelled):
+                await worker.wait()
+            scheduled_callbacks[-1]()
+            assert app._undo_stack == []
+        assert store.load_active_facts() == []

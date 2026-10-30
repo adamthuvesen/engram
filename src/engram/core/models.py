@@ -1,13 +1,21 @@
 """Data models for Engram."""
 
 import threading
+from copy import copy
 import time
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    create_model,
+    model_validator,
+)
 
 MIN_ACTIVE_CONFIDENCE = 0.1
 
@@ -83,6 +91,7 @@ class CandidateStatus(str, Enum):
     pending = "pending"
     approved = "approved"
     rejected = "rejected"
+    conflicted = "conflicted"
 
 
 class TransactionStatus(str, Enum):
@@ -130,6 +139,7 @@ class FactBase(BaseModel):
     # Set via the maintenance workflows (mark_stale).
     stale: bool = False
     stale_reason: str = ""
+    brief_source_revisions: dict[str, datetime] | None = None
 
     @property
     def oldest_claim_at(self) -> datetime:
@@ -137,10 +147,17 @@ class FactBase(BaseModel):
         return self.first_observed_at or self.observed_at
 
 
+class FactLifecycle(str, Enum):
+    active = "active"
+    forgotten = "forgotten"
+    superseded = "superseded"
+
+
 class Fact(FactBase):
     """One coherent, independently maintainable memory card."""
 
-    pass
+    lifecycle: FactLifecycle = Field(default=FactLifecycle.active, exclude=True)
+    superseded_by: str | None = Field(default=None, exclude=True)
 
 
 _STORED_CATEGORY_NAMES: dict[str, str] = {
@@ -165,6 +182,19 @@ class MemoryCandidate(FactBase):
     review_note: str = ""
     # Active fact IDs this candidate replaces once approved.
     replaces: list[str] = Field(default_factory=list)
+    replaces_expected: dict[str, datetime] | None = None
+
+
+class StateLine(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["run", "consolidated"]
+    at: datetime
+    project: str | None = None
+    # Fact ID -> the updated_at upkeep's own write left it with.
+    written: dict[str, datetime] = Field(default_factory=dict)
+    # Seed fact ID -> failed consolidation attempts so far.
+    retry_seeds: dict[str, int] = Field(default_factory=dict)
 
 
 class RecallRecord(BaseModel):
@@ -178,6 +208,11 @@ class RecallRecord(BaseModel):
     latency_ms: float
     quality: str = ""  # high/medium/low/none — set by synthesis
     llm_calls: int | None = None
+    llm_attempts: int | None = None
+    llm_completions: int | None = None
+    llm_failures: int | None = None
+    usage_unknown_calls: int | None = None
+    output_tokens: int | None = None
     input_tokens: int | None = None
     cached_tokens: int | None = None
     selector_version: str | None = None
@@ -194,19 +229,21 @@ class StoreTransaction(BaseModel):
     type: str
     status: TransactionStatus
     candidate_ids: list[str] = Field(default_factory=list)
-    fact_updates: dict[str, dict] = Field(default_factory=dict)
-    candidate_updates: dict[str, dict] = Field(default_factory=dict)
+    fact_updates: dict[str, dict[str, object]] = Field(default_factory=dict)
+    candidate_updates: dict[str, dict[str, object]] = Field(default_factory=dict)
     new_facts: list[Fact] = Field(default_factory=list)
     # old fact id -> replacing fact id, applied as ``superseded`` events.
     supersessions: dict[str, str] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     committed_at: datetime | None = None
+    events: list["FactEvent"] = Field(default_factory=list)
+    candidates: list[MemoryCandidate] = Field(default_factory=list)
 
 
 # --- Event-log model ---------------------------------------------------------
 
 
-EVENT_LOG_META_VERSION = "event-log-v1"
+EVENT_LOG_META_VERSION: Literal["event-log-v1"] = "event-log-v1"
 
 # Fields on Fact that are allowed in an ``edited`` event's payload. Restricting
 # this prevents callers from mutating immutable fields (id, created_at) via
@@ -236,6 +273,7 @@ EDITABLE_FACT_FIELDS = frozenset(
         "consolidates",
         "stale",
         "stale_reason",
+        "brief_source_revisions",
     }
 )
 
@@ -252,6 +290,32 @@ class EventType(str, Enum):
     superseded = "superseded"
 
 
+class ReasonPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = ""
+
+
+class SupersededPayload(ReasonPayload):
+    superseded_by: str
+
+
+class EmptyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+_edit_fields: dict[str, Any] = {}
+for _name in EDITABLE_FACT_FIELDS:
+    _field = copy(Fact.model_fields[_name])
+    _field.default = None
+    _field.default_factory = None
+    _edit_fields[_name] = (_field.annotation, _field)
+EditedPayload = create_model(
+    "EditedPayload",
+    __config__=ConfigDict(extra="forbid"),
+    **_edit_fields,
+)
+
+
 class FactEvent(BaseModel):
     """One typed mutation event for a fact in the append-only event log."""
 
@@ -262,15 +326,61 @@ class FactEvent(BaseModel):
     actor: str = "engram"
     payload: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_payload(self) -> "FactEvent":
+        if self.event_type is EventType.created:
+            fact = fact_from_stored_data(self.payload)
+            if fact.id != self.fact_id:
+                raise ValueError("created payload id must match fact_id")
+            self.payload = fact.model_dump(mode="json")
+        elif self.event_type is EventType.edited:
+            data = dict(self.payload)
+            if (
+                isinstance(data.get("category"), str)
+                and data["category"] in _STORED_CATEGORY_NAMES
+            ):
+                data["category"] = _STORED_CATEGORY_NAMES[data["category"]]
+            self.payload = EditedPayload.model_validate(data).model_dump(
+                mode="json", exclude_unset=True
+            )
+        else:
+            schema = (
+                SupersededPayload
+                if self.event_type is EventType.superseded
+                else ReasonPayload
+                if self.event_type in {EventType.forgotten, EventType.stale}
+                else EmptyPayload
+            )
+            self.payload = schema.model_validate(self.payload).model_dump(mode="json")
+        return self
+
+
+def decode_stored_event(line: str) -> FactEvent:
+    """Decode v1 rows, including fields legacy edit replay intentionally ignored."""
+    import json
+
+    data = json.loads(line)
+    if not isinstance(data, dict):
+        raise ValueError("Event row must be a JSON object")
+    if data.get("event_type") == EventType.edited.value:
+        if not isinstance(data.get("payload", {}), dict):
+            raise ValueError("Edited event payload must be a JSON object")
+        data["payload"] = {
+            key: value
+            for key, value in data.get("payload", {}).items()
+            if key in EDITABLE_FACT_FIELDS
+        }
+    return FactEvent.model_validate(data)
+
 
 class EventLogMeta(BaseModel):
     """First-line sentinel marking a ``facts.jsonl`` as event-log format."""
 
     model_config = ConfigDict(extra="forbid")
 
-    meta: str = EVENT_LOG_META_VERSION
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+    meta: Literal["event-log-v1"] = EVENT_LOG_META_VERSION
+    created_at: datetime | None = Field(
+        default=None,
         validation_alias=AliasChoices("created_at", "migrated_at"),
     )
 
@@ -288,7 +398,7 @@ def _ensure_single_fact_id(events: list[FactEvent]) -> None:
         )
 
 
-def _fact_with_event_timestamp(fact: Fact, event: FactEvent, **updates) -> Fact:
+def _fact_with_event_timestamp(fact: Fact, event: FactEvent, **updates: object) -> Fact:
     return fact_from_stored_data(
         {**fact.model_dump(), **updates, "updated_at": event.timestamp}
     )
@@ -320,18 +430,6 @@ def _fact_after_event(fact: Fact, event: FactEvent) -> Fact:
     return fact
 
 
-def _lifecycle_after_event(
-    event_type: EventType, *, is_active: bool, is_forgotten: bool
-) -> tuple[bool, bool]:
-    if event_type is EventType.forgotten:
-        return False, True
-    if event_type is EventType.restored:
-        return True, False
-    if event_type is EventType.superseded:
-        return False, is_forgotten
-    return is_active, is_forgotten
-
-
 def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
     """Replay events for a single ``fact_id`` to its current materialized state.
 
@@ -350,8 +448,8 @@ def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
     _ensure_single_fact_id(ordered)
 
     fact: Fact | None = None
-    is_active = True
     is_forgotten = False
+    superseded_by: str | None = None
 
     for event in ordered:
         if event.event_type is EventType.created:
@@ -366,18 +464,27 @@ def replay_fact(events: list[FactEvent]) -> tuple[Fact | None, bool]:
             continue
 
         fact = _fact_after_event(fact, event)
-        is_active, is_forgotten = _lifecycle_after_event(
-            event.event_type,
-            is_active=is_active,
-            is_forgotten=is_forgotten,
-        )
+        if event.event_type is EventType.superseded:
+            superseded_by = event.payload["superseded_by"]
+        if event.event_type is EventType.forgotten:
+            is_forgotten = True
+        elif event.event_type is EventType.restored:
+            is_forgotten = False
 
     if fact is None:
         return None, False
-    if is_forgotten:
-        is_active = False
 
-    return fact, is_active
+    lifecycle = (
+        FactLifecycle.superseded
+        if superseded_by is not None
+        else FactLifecycle.forgotten
+        if is_forgotten
+        else FactLifecycle.active
+    )
+    fact = fact.model_copy(
+        update={"lifecycle": lifecycle, "superseded_by": superseded_by}
+    )
+    return fact, lifecycle is FactLifecycle.active
 
 
 def materialize_events(events: list[FactEvent]) -> dict[str, tuple[Fact, bool]]:

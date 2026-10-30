@@ -1,80 +1,35 @@
-# AGENTS.md - Engram
+# Engram
 
-Engram is structured, cross-project memory for coding agents, served over MCP.
-It uses LLM-powered extraction, BM25 recall, and self-maintaining upkeep over an append-only event
-log. There are no embeddings and no vector DB.
-
-User-level guidance (tone, principles, git etiquette) lives in
-`~/.claude/CLAUDE.md` and `~/dotfiles/agents/AGENTS.md` and is *not* duplicated
-here. This file is for project-specific facts.
-
-## Layout
-
-```
-src/engram/
-├── server.py       FastMCP entrypoint, tool definitions, auto-sync lifespan
-├── cli.py          `engram` console-script command surface
-├── operations.py   shared operation layer behind the MCP tools and CLI
-├── core/           domain models, agent-facing contracts, config
-├── storage/        event-log store, BM25 search index, git sync
-├── llm/            OpenAI SDK client
-├── extraction/     single-call extract + reconcile (ingest)
-├── recall/         BM25 card recall + answer mode + eval harness
-├── maintenance/    upkeep (verify, consolidate, briefs), audit, doctor
-└── dashboard/      Textual TUI (`engram-dash`)
-
-tests/              pytest suite + eval datasets and runners
-docs/               Subsystem docs; start with the Index below
-```
-
-Annotated module map and data flow: [docs/architecture.md](docs/architecture.md).
-
-## Quickstart
+Engram serves structured coding-agent memory through MCP and a CLI. It uses BM25, an event log, and the OpenAI SDK.
 
 ```bash
-uv sync --extra dev                          # install deps
-uv run pre-commit install                    # git hooks: ruff check + format
-uv run engram                                # start MCP server
-uv run fastmcp dev src/engram/server.py      # dev mode (inspector)
-uv run --extra dev pytest tests/ -q          # run tests
-uv run --extra dev ruff check .              # lint (CI gate)
-uv run --extra dev ruff format --check .     # format check (CI gate)
-uv run --extra dev mypy                      # type check (CI gate)
+uv sync --locked --extra dev
+just check
+just verify
+just reference
 ```
 
-## Critical Conventions
+`just check` runs focused offline checks. `just verify` runs the full offline suite and an installed-wheel smoke.
+Both use the same verification entrypoint as CI. Missing prerequisites and excluded profiles appear in the report.
+`just verify-sync` adds tests that push to temporary local Git remotes. Run it only where pushes are allowed.
+Default pytest excludes those tests and also requires `--run-sync-transport` to enable them.
+Live evals require `ENGRAM_EVAL_PROVIDER=1`. Offline verification uses disabled or fixture providers.
 
-- **The event log is append-only.** Mutations (`forget`, `edit_fact`,
-  `mark_stale`, ...) append typed `FactEvent` records. Never rewrite
-  `facts.jsonl`. The only methods that rewrite it are `purge`, `repair`, and
-  `compact_event_log`; see [src/engram/storage/store.py](src/engram/storage/store.py)
-  and [docs/data.md](docs/data.md).
-- **Storage is sync; the MCP surface is async.** All tools are async and reach
-  storage through the `AsyncFactStore` `asyncio.to_thread` facade
-  ([src/engram/storage/store.py](src/engram/storage/store.py)). Don't call the
-  blocking `FactStore` directly from async code.
-- **MCP tool names are a stable public surface.** Agents wire to them by name;
-  renaming or removing one is a breaking change. Tool defs live in
-  [src/engram/server.py](src/engram/server.py); see [docs/mcp-tools.md](docs/mcp-tools.md).
-- **All config is `ENGRAM_*` env vars** via pydantic-settings (`env_prefix =
-  "ENGRAM_"`) in [src/engram/core/config.py](src/engram/core/config.py). Add
-  settings there, not ad-hoc `os.environ` reads; document them in
-  [docs/config.md](docs/config.md).
-- Never commit secrets, `.env`, or AI-attribution lines.
+Read [architecture](docs/architecture.md) before subsystem changes.
+Read [data](docs/data.md) for persistence, [sync](docs/sync.md) for Git integration, and [configuration](docs/config.md) for settings.
+The generated [tool reference](docs/mcp-tools.md) comes from actual MCP registrations and CLI handlers.
+Regenerate references after changing either surface or Settings descriptions.
 
-## Read The Docs First
+Keep these boundaries:
 
-Before editing a subsystem, read the matching doc:
+- Fact events are append-only. Purge, repair, and compaction are explicit exceptions with storage-level guards.
+- Async application code uses `AsyncFactStore` or `run_sync`. Import boundary checks reject direct sync-store construction and bypasses.
+- Lifecycle eligibility lives in `core.fact_state`. Application code must use public storage APIs.
+- `Runtime` owns settings, provider connections, store recovery, and background task shutdown.
+- MCP tool names are stable public interfaces. Preserve persisted event formats and documented compatibility adapters.
+- Add settings to `Settings` with descriptions. Hooks and CI use the locked dependencies.
+- Upgrade all writers before concurrent review. Local storage guarantees do not imply distributed serializability.
 
-- **Architecture / data flow**: [docs/architecture.md](docs/architecture.md)
-- **MCP tool surface**: [docs/mcp-tools.md](docs/mcp-tools.md)
-- **Storage / event log / JSONL files**: [docs/data.md](docs/data.md)
-- **Cross-machine sync**: [docs/sync.md](docs/sync.md)
-- **Config / env vars**: [docs/config.md](docs/config.md)
-
-If a doc disagrees with code, fix the doc in the same change.
-
-## Index
-
-Start in [docs/architecture.md](docs/architecture.md), then follow the
-subsystem docs above.
+Typed evals and verification code live under `src/engram/evaluation` and `src/engram/tooling`.
+Files under `tests/run_*evals.py` remain thin compatibility entrypoints.
+Scoped mypy checks and `tooling.boundaries` enforce the changed domain, provider, eval, and tooling contracts.

@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field, ValidationError
 
 from engram.core.config import get_settings
 from engram.core.models import (
-    CandidateStatus,
     Durability,
     EvidenceKind,
     Fact,
@@ -30,13 +29,14 @@ from engram.core.structured_outputs import (
     ExcludedClaim,
     ExtractedFact,
     ExtractionResponse,
+    UnresolvedDecision,
 )
 from engram.llm import complete_model
 from engram.storage.store import (
     AsyncFactStore,
     ChangeSet,
     FactStore,
-    _content_hash,
+    content_signature,
     format_observed,
 )
 
@@ -145,6 +145,8 @@ class IngestResult(BaseModel):
     # Existing fact IDs the input merely restated.
     duplicates: list[str] = Field(default_factory=list)
     excluded: list[ExcludedClaim] = Field(default_factory=list)
+    unresolved: list[UnresolvedDecision] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 async def ingest(
@@ -160,8 +162,8 @@ async def ingest(
     ``project`` must already be canonical. With ``queue_for_review`` the cards
     become pending candidates instead of active facts.
 
-    Replacements and retirements only apply to targets unchanged since they
-    were shown to the model. If one changed during the LLM call, ingest re-runs
+    Replacements, retirements, and duplicates require eligible targets unchanged
+    since they were shown to the model. If one changed, ingest re-runs
     once against fresh neighbors; if that also conflicts, the new cards are
     stored without the conflicting targets rather than dropped.
     """
@@ -170,15 +172,10 @@ async def ingest(
 
     plan = await _plan(content, source, project, store)
     if plan is None:
-        return IngestResult()
-    if queue_for_review:
-        return IngestResult(
-            candidates=await _queue_candidates(store, plan),
-            duplicates=plan.duplicates,
-            excluded=plan.excluded,
-        )
-
-    applied = await store.apply_changes(plan.change_set(source), all_or_nothing=True)
+        return IngestResult(errors=["Provider returned an invalid extraction response"])
+    applied = await store.apply_changes(
+        plan.change_set(source, queue_for_review=queue_for_review), all_or_nothing=True
+    )
     if applied.skipped:
         logger.warning(
             "Ingest targets changed during reconciliation (%s); retrying once",
@@ -186,19 +183,55 @@ async def ingest(
         )
         plan = await _plan(content, source, project, store)
         if plan is None:
-            return IngestResult()
+            return IngestResult(
+                errors=["Provider returned an invalid extraction response on retry"]
+            )
         applied = await store.apply_changes(
-            plan.change_set(source), all_or_nothing=True
+            plan.change_set(source, queue_for_review=queue_for_review),
+            all_or_nothing=True,
         )
     # Each pass removes the conflicting targets, so this ends at worst with the
     # new cards alone, which cannot conflict.
-    while applied.skipped and plan.drop_targets(set(applied.skipped)):
+    unresolved: list[UnresolvedDecision] = []
+    while applied.skipped:
+        for fact_id, reason in applied.skipped.items():
+            action = (
+                "duplicate"
+                if fact_id in plan.duplicates
+                else "retire"
+                if fact_id in plan.retire
+                else "replace"
+            )
+            unresolved.append(
+                UnresolvedDecision(fact_id=fact_id, action=action, reason=reason)
+            )
+        if not plan.drop_targets(set(applied.skipped)):
+            break
         logger.warning(
             "Ingest targets changed again (%s); storing new cards without them",
             ", ".join(sorted(applied.skipped)),
         )
         applied = await store.apply_changes(
-            plan.change_set(source), all_or_nothing=True
+            plan.change_set(source, queue_for_review=queue_for_review),
+            all_or_nothing=True,
+        )
+
+    if queue_for_review:
+        return IngestResult(
+            candidates=await _queue_candidates(store, plan),
+            duplicates=plan.duplicates,
+            excluded=plan.excluded,
+            unresolved=[
+                *unresolved,
+                *(
+                    UnresolvedDecision(
+                        fact_id=fact_id,
+                        action="retire",
+                        reason="queued retirement is note-only",
+                    )
+                    for fact_id in plan.retire
+                ),
+            ],
         )
 
     return IngestResult(
@@ -207,6 +240,7 @@ async def ingest(
         retired=applied.staled,
         duplicates=plan.duplicates,
         excluded=plan.excluded,
+        unresolved=unresolved,
     )
 
 
@@ -249,27 +283,40 @@ class _Plan:
             )
         return facts
 
-    def change_set(self, source: str) -> ChangeSet:
+    def change_set(self, source: str, *, queue_for_review: bool = False) -> ChangeSet:
         supersede = {old: new for new, olds in self.replaces.items() for old in olds}
-        targets = [*supersede, *self.retire]
-        return ChangeSet(
-            new_facts=self.linked_facts(),
-            supersede=supersede,
-            stale=dict(self.retire),
+        targets = [*supersede, *self.retire, *self.duplicates]
+        changes = ChangeSet(
             expected={i: self.neighbors[i].updated_at for i in targets},
+            require_eligible=True,
             reason=f"ingest from {source}",
             actor="ingest",
         )
+        if not queue_for_review:
+            changes.new_facts = self.linked_facts()
+            changes.supersede = supersede
+            changes.stale = dict(self.retire)
+        return changes
 
     def drop_targets(self, ids: set[str]) -> bool:
-        """Forget replacements and retirements of ``ids``; True if any were set."""
-        before = sum(map(len, self.replaces.values())) + len(self.retire)
+        """Remove conflicting decisions for ``ids``; True if any were set."""
+        before = (
+            sum(map(len, self.replaces.values()))
+            + len(self.retire)
+            + len(self.duplicates)
+        )
         self.replaces = {
             new: [old for old in olds if old not in ids]
             for new, olds in self.replaces.items()
         }
         self.retire = {i: r for i, r in self.retire.items() if i not in ids}
-        return sum(map(len, self.replaces.values())) + len(self.retire) < before
+        self.duplicates = [i for i in self.duplicates if i not in ids]
+        return (
+            sum(map(len, self.replaces.values()))
+            + len(self.retire)
+            + len(self.duplicates)
+            < before
+        )
 
 
 async def _plan(
@@ -355,14 +402,14 @@ def _draft_facts(
     ``replaces`` IDs so sibling consolidation can merge them.
     """
     neighbor_by_hash = {
-        _content_hash(fact.content): fact.id for fact in neighbors.values()
+        content_signature(fact.content): fact.id for fact in neighbors.values()
     }
     now = datetime.now(timezone.utc)
     ttl = timedelta(days=get_settings().ephemeral_ttl_days)
     source_group_id = uuid4().hex[:12]
     drafts: list[Fact] = []
     for raw in raw_facts:
-        exact_id = neighbor_by_hash.get(_content_hash(raw.content))
+        exact_id = neighbor_by_hash.get(content_signature(raw.content))
         if exact_id is not None:
             duplicates.append(exact_id)
             continue
@@ -473,11 +520,6 @@ def _resolve_retirements(
 async def _queue_candidates(
     store: AsyncFactStore, plan: _Plan
 ) -> list[MemoryCandidate]:
-    pending = await store.load_candidates(status=CandidateStatus.pending, limit=200)
-    pending_keys = {
-        (candidate.project, candidate.category, candidate.content.lower())
-        for candidate in pending
-    }
     review_note = ""
     if plan.retire:
         review_note = "Also suggested retiring: " + "; ".join(
@@ -487,14 +529,15 @@ async def _queue_candidates(
         MemoryCandidate(
             **fact.model_dump(),
             replaces=plan.replaces.get(fact.id, []),
+            replaces_expected={
+                old: plan.neighbors[old].updated_at
+                for old in plan.replaces.get(fact.id, [])
+            },
             review_note=review_note,
         )
         for fact in plan.linked_facts()
-        if (fact.project, fact.category, fact.content.lower()) not in pending_keys
     ]
-    if candidates:
-        await store.append_candidates(candidates)
-    return candidates
+    return await store.append_pending_candidates(candidates)
 
 
 def _normalize_memory_key(value: str) -> str:
@@ -518,7 +561,7 @@ def _consolidate_batch(facts: list[Fact]) -> list[Fact]:
     seen_content: set[str] = set()
 
     for fact in facts:
-        content_key = _content_hash(fact.content)
+        content_key = content_signature(fact.content)
         if content_key in seen_content:
             continue
         seen_content.add(content_key)
