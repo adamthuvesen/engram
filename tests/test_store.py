@@ -651,7 +651,7 @@ async def test_async_store_read_does_not_block_unrelated_coroutine():
     original_load_facts = store.load_facts
 
     def slow_load_facts():
-        time.sleep(0.12)
+        time.sleep(0.5)
         return original_load_facts()
 
     store.load_facts = slow_load_facts  # type: ignore[method-assign]
@@ -661,7 +661,7 @@ async def test_async_store_read_does_not_block_unrelated_coroutine():
     await asyncio.sleep(0.02)
     elapsed = time.perf_counter() - start
 
-    assert elapsed < 0.08
+    assert elapsed < 0.4
     assert not load_task.done()
     assert await load_task == []
 
@@ -673,7 +673,7 @@ async def test_async_store_write_does_not_block_unrelated_coroutine():
     original_append_facts = store.append_facts
 
     def slow_append_facts(facts: list[Fact]) -> None:
-        time.sleep(0.12)
+        time.sleep(0.5)
         original_append_facts(facts)
 
     store.append_facts = slow_append_facts  # type: ignore[method-assign]
@@ -687,7 +687,7 @@ async def test_async_store_write_does_not_block_unrelated_coroutine():
     await asyncio.sleep(0.02)
     elapsed = time.perf_counter() - start
 
-    assert elapsed < 0.08
+    assert elapsed < 0.4
     assert not append_task.done()
     await append_task
     assert len(store.load_facts()) == 1

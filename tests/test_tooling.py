@@ -209,6 +209,7 @@ def test_smoke_environment_disables_external_side_effects(monkeypatch, tmp_path)
     assert "OPENAI_API_KEY" not in env and "PYTHONPATH" not in env
 
 
+@pytest.mark.subprocess_smoke
 def test_mcp_transport_restart_and_packaged_asset_smoke():
     results = asyncio.run(run_smoke(assets=True))
     assert [result.transport for result in results] == ["stdio", "http", "assets"]
@@ -287,7 +288,35 @@ def test_supplied_extraction_outputs_have_unknown_live_provenance():
     assert summary.provenance.live_status.startswith("unknown")
 
 
+@pytest.mark.subprocess_smoke
 def test_console_entrypoint_smoke_uses_blocked_provider():
     results = asyncio.run(run_smoke(entrypoints=True))
     assert [result.transport for result in results] == ["cli", "stdio", "http"]
     assert all(result.provider == "blocked" for result in results)
+
+
+def test_tests_cannot_reach_live_provider():
+    from engram.llm import client
+
+    with pytest.raises(AssertionError, match="Real provider calls are disabled"):
+        client._client()
+
+
+def test_enforced_rules_cite_existing_paths():
+    import re
+
+    root = Path(__file__).resolve().parents[1]
+    agents = (root / "AGENTS.md").read_text()
+    table = agents.split("## Enforced Rules", 1)[1].split("\n\n| Rule")[1]
+    rows = [row for row in table.splitlines() if row.startswith("| ")][1:]
+    assert rows, "AGENTS.md Enforced Rules table has no rows."
+    for row in rows:
+        cited = re.findall(r"`([\w./-]+\.\w+)(?:::(\w+))?`", row.split("|")[2])
+        assert cited, f"Enforced Rules row cites no path: {row}"
+        for path, test_name in cited:
+            target = root / path
+            assert target.is_file(), f"AGENTS.md cites missing path {path}."
+            if test_name:
+                assert re.search(rf"def {test_name}\(", target.read_text()), (
+                    f"AGENTS.md cites missing test {path}::{test_name}."
+                )

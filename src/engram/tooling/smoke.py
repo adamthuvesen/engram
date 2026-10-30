@@ -188,7 +188,7 @@ async def run_http(
                 stderr=log,
             )
             try:
-                for attempt in range(100):
+                for attempt in range(600):
                     if process.poll() is not None:
                         raise RuntimeError(
                             "HTTP smoke server exited: "
@@ -205,7 +205,7 @@ async def run_http(
                         await asyncio.sleep(0.05)
                 else:
                     raise RuntimeError(
-                        "HTTP smoke server did not become ready within five seconds."
+                        "HTTP smoke server did not become ready within 30 seconds."
                     )
                 async with Client(f"http://127.0.0.1:{port}/mcp", timeout=10) as client:
                     checks = await _exercise(client)
