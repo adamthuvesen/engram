@@ -96,7 +96,7 @@ Superseded facts remain distinct from forgotten facts. Expiry can refresh the vi
 The old test-script paths remain thin entrypoints. Default runners inject disabled or fixture providers without changing retriever globals.
 Reports include source digests and explicit live status.
 
-`tooling.verify` defines the commands behind `just check`, `just smoke`, and CI.
+`tooling.verify` defines the commands behind `just check`, `just slow`, and CI.
 `tooling.boundaries` checks private storage imports and sync-store bypasses in async application code.
 `tooling.reference` generates Settings and command references from source registrations.
 `tooling.smoke` verifies stdio, loopback HTTP, errors, restart persistence, packaged datasets, and dashboard assets using temporary data.

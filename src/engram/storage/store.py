@@ -36,7 +36,7 @@ from engram.core.models import (
     materialize_events,
 )
 from engram.storage.candidates import CandidateSnapshots, candidate_promotion_id
-from engram.storage.jsonl import _load_jsonl_records
+from engram.storage.jsonl import load_jsonl_records
 from engram.storage.search import TOKEN_RE, SearchHit, SearchIndex
 from engram.storage.transactions import (
     StoreIntegrityError as StoreIntegrityError,
@@ -215,8 +215,8 @@ def _snapshot_read[**P, R](
         if store.read_only:
             return func(store, *args, **kwargs)
         with _locked_store(store.data_dir):
-            if not store._recovering and (
-                store.intent_path.exists() or store._pending_transactions()
+            if not store.recovering and (
+                store.intent_path.exists() or store.pending_transactions()
             ):
                 raise RuntimeError("Interrupted store transaction requires recover_transactions()")
             return func(store, *args, **kwargs)
@@ -301,7 +301,7 @@ class FactStore:
         self._cache_lock = threading.Lock()
         self._facts_cache: tuple[tuple[int, int, int], list[Fact]] | None = None
         self._index_cache: tuple[tuple[int, int, int], SearchIndex] | None = None
-        self._recovering = False
+        self.recovering = False
         self._pending_cache: tuple[tuple[int, int, int], list[StoreTransaction]] | None = None
 
     @classmethod
@@ -322,7 +322,7 @@ class FactStore:
         return self.data_dir / "transactions.jsonl"
 
     def _is_event_log_format(self) -> bool:
-        return self.transactions._is_event_log_format()
+        return self.transactions.is_event_log_format()
 
     def _load_all_events(self) -> list[FactEvent]:
         """Read every ``FactEvent`` from ``facts.jsonl``, skipping the meta line."""
@@ -1234,16 +1234,16 @@ class FactStore:
         if self.read_only:
             raise RuntimeError("Read-only store cannot recover transactions")
         with _locked_store(self.data_dir):
-            self._recovering = True
+            self.recovering = True
             try:
                 self._recover_intent()
                 return self._recover_transactions_locked()
             finally:
-                self._recovering = False
+                self.recovering = False
 
     def _recover_transactions_locked(self) -> int:
         recovered = 0
-        for transaction in self._pending_transactions():
+        for transaction in self.pending_transactions():
             logger.warning(
                 "Recovering prepared %s transaction %s",
                 transaction.type,
@@ -1417,7 +1417,7 @@ class FactStore:
         self.append_events(transaction.events)
         existing = {
             row.model_dump_json()
-            for row in _load_jsonl_records(self.candidates_path, MemoryCandidate, "candidate")[0]
+            for row in load_jsonl_records(self.candidates_path, MemoryCandidate, "candidate")[0]
         }
         self.append_candidates(
             [row for row in transaction.candidates if row.model_dump_json() not in existing]
@@ -1441,14 +1441,14 @@ class FactStore:
                 os.fsync(f.fileno())
 
     def _load_transactions(self) -> list[StoreTransaction]:
-        records, corrupt = _load_jsonl_records(
+        records, corrupt = load_jsonl_records(
             self.transaction_log_path, StoreTransaction, "transaction"
         )
         if corrupt:
             raise ValueError("Transaction journal contains invalid records and requires inspection")
         return records
 
-    def _pending_transactions(self) -> list[StoreTransaction]:
+    def pending_transactions(self) -> list[StoreTransaction]:
         if not self.transaction_log_path.exists():
             return []
         stat = self.transaction_log_path.stat()
@@ -1635,7 +1635,7 @@ class FactStore:
     @_snapshot_read
     def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
         """Load recent recall log entries."""
-        records, _ = _load_jsonl_records(
+        records, _ = load_jsonl_records(
             self.recall_log_path, RecallRecord, "recall log", strict=not self.read_only
         )
         records.sort(key=lambda r: r.timestamp, reverse=True)
@@ -1713,7 +1713,7 @@ class FactStore:
 
         # candidates.jsonl
         if self.candidates_path.exists():
-            valid_candidates, corrupt = _load_jsonl_records(
+            valid_candidates, corrupt = load_jsonl_records(
                 self.candidates_path, MemoryCandidate, "candidates"
             )
             if corrupt > 0:

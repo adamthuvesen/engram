@@ -1,6 +1,6 @@
 """Typed, closeable OpenAI completion clients and compatibility helpers."""
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -75,7 +75,7 @@ _CURRENT_CLIENT: ContextVar[CompletionClient | None] = ContextVar(
 
 
 @contextmanager
-def completion_client(client: CompletionClient) -> Iterator[CompletionClient]:
+def completion_client(client: CompletionClient) -> Generator[CompletionClient]:
     """Bind a caller-owned client. The caller closes it after dependent tasks stop."""
     token = _CURRENT_CLIENT.set(client)
     try:
@@ -294,7 +294,7 @@ async def complete_model[T: BaseModel](
     return result.value
 
 
-def _response_format_for_model(response_model: type[BaseModel]) -> dict[str, Any]:
+def response_format_for_model(response_model: type[BaseModel]) -> dict[str, Any]:
     return {
         "type": "json_schema",
         "json_schema": {

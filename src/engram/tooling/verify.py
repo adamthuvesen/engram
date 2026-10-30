@@ -27,7 +27,7 @@ SYNC_TRANSPORT = "sync transport: just verify-sync. It pushes to temporary local
 LIVE_PROVIDER = "live provider evaluation: needs ENGRAM_EVAL_PROVIDER=1 and credentials. Offline checks do not prove live model quality."
 EXCLUDED: dict[Profile, list[str]] = {
     "check": [
-        "subprocess smokes and installed wheel: just smoke.",
+        "subprocess smokes and installed wheel: just slow.",
         SYNC_TRANSPORT,
         LIVE_PROVIDER,
     ],

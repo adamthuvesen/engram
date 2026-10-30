@@ -51,7 +51,7 @@ def child_environment(data_dir: Path, *, entrypoints: bool = False) -> dict[str,
     return env
 
 
-async def _exercise(client: Client[ClientTransport]) -> list[str]:
+async def _exercise[T: ClientTransport](client: Client[T]) -> list[str]:
     tools = await client.list_tools()
     names = {tool.name for tool in tools}
     if not {"inspect", "list_candidates", "forget"} <= names:

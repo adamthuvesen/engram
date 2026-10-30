@@ -231,7 +231,7 @@ def test_recover_prepared_approval_transaction_explicitly():
     ]
     assert recovered.load_candidates(status=CandidateStatus.pending) == []
     assert len(recovered.load_candidates(status=CandidateStatus.approved)) == 1
-    assert recovered._pending_transactions() == []
+    assert recovered.pending_transactions() == []
 
 
 def test_approval_recovers_when_apply_fails_after_prepare():
@@ -258,7 +258,7 @@ def test_approval_recovers_when_apply_fails_after_prepare():
     assert len(facts) == 1
     assert facts[0].content == "Remember this"
     assert len(recovered.load_candidates(status=CandidateStatus.approved)) == 1
-    assert recovered._pending_transactions() == []
+    assert recovered.pending_transactions() == []
 
 
 def test_approval_recovery_does_not_duplicate_fact_after_commit_marker_failure():
@@ -288,7 +288,7 @@ def test_approval_recovery_does_not_duplicate_fact_after_commit_marker_failure()
     facts = recovered.load_active_facts()
     assert len(facts) == 1
     assert facts[0].content == "Remember this"
-    assert recovered._pending_transactions() == []
+    assert recovered.pending_transactions() == []
 
 
 def test_reject_candidates_appends_one_snapshot_batch():

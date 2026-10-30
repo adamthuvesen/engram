@@ -55,10 +55,12 @@ reportUnknownArgumentType = false
 reportUnknownVariableType = false
 reportUnknownParameterType = false
 reportUnknownLambdaType = false
+reportMissingTypeStubs = false
 
 [[tool.basedpyright.executionEnvironments]]
 root = "tests"
 reportMissingParameterType = false
+reportPrivateUsage = false
 
 [tool.ruff]
 line-length = 100

@@ -5,11 +5,12 @@ Engram serves structured coding-agent memory through MCP and a CLI. It uses BM25
 ```bash
 uv sync --locked --extra dev
 just check
+just fix
 just verify
 just reference
 ```
 
-`just check` runs static checks, then the offline suite on parallel pytest workers. `just smoke` adds subprocess smokes and an installed-wheel smoke.
+`just check` runs static checks, then the offline suite on parallel pytest workers. `just slow` adds subprocess smokes and an installed-wheel smoke.
 Both use the same verification entrypoint as CI. Prove changes with `just verify` (`verify-engram` skill at `.agents/skills/verify-engram/`). Missing prerequisites and excluded profiles appear in the report.
 `just verify-sync` pushes to temporary local Git remotes. CI runs it after `verify`; locally it stays separate because a machine-level push freeze can refuse it.
 

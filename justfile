@@ -6,8 +6,13 @@ default:
 check:
     uv run --locked --extra dev python -m engram.tooling.verify check
 
+# Apply every auto-fixer: ruff lint fixes, then ruff format.
+fix:
+    uv run --locked --extra dev ruff check --fix .
+    uv run --locked --extra dev ruff format .
+
 # Run check, then subprocess smokes and an installed-wheel transport and asset smoke.
-smoke: check
+slow: check
     uv run --locked --extra dev python -m engram.tooling.verify verify
 
 # Drive the real CLI, MCP server, dashboard, and wheel (verify-engram skill). Pass all, list, control, or drive names.

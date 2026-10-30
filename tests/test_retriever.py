@@ -3,6 +3,7 @@
 import asyncio
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,11 +15,11 @@ from engram.recall.retriever import (
     AnswerClaim,
     RecallAnswer,
     RecallSelection,
-    _relevant_hits,
     _render_answer,
     recall,
     recall_result,
     recall_with_provenance,
+    relevant_hits,
 )
 from engram.storage.search import SearchHit
 from engram.storage.store import AsyncFactStore, FactStore
@@ -62,7 +63,7 @@ def _answer_json(text: str, fact_ids: list[str], quality: str = "high") -> str:
 
 def _patch_complete(monkeypatch, responses):
     """Queue-backed stand-in for ``complete_with_usage``; records calls."""
-    calls: dict = {"n": 0, "prompts": [], "kwargs": []}
+    calls: dict[str, Any] = {"n": 0, "prompts": [], "kwargs": []}
     queue = list(responses)
 
     async def fake(prompt, system="", **kwargs):
@@ -78,7 +79,7 @@ def _patch_complete(monkeypatch, responses):
 
 def _patch_select(monkeypatch, result: list[str] | Exception):
     """Stand-in for the structured selection call via ``complete_model``."""
-    calls: dict = {"n": 0, "prompts": [], "kwargs": []}
+    calls: dict[str, Any] = {"n": 0, "prompts": [], "kwargs": []}
 
     async def fake(prompt, system, response_model, **kwargs):
         calls["n"] += 1
@@ -110,12 +111,12 @@ def test_relevant_hits_require_coverage_and_relative_score():
         _hit("low-coverage", 9.0, 0.1),
         _hit("low-score", 2.0, 0.9),
     ]
-    assert [hit.fact.id for hit in _relevant_hits(hits)] == ["top", "close"]
+    assert [hit.fact.id for hit in relevant_hits(hits)] == ["top", "close"]
 
 
 def test_relevant_hits_empty_when_top_hit_lacks_coverage():
-    assert _relevant_hits([_hit("weak", 10.0, 0.1)]) == []
-    assert _relevant_hits([]) == []
+    assert relevant_hits([_hit("weak", 10.0, 0.1)]) == []
+    assert relevant_hits([]) == []
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """Engram MCP Server — structured, cross-project memory for coding agents."""
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import wraps
 from inspect import signature
@@ -175,7 +175,7 @@ def _make_lifespan(
     runtime: Runtime,
 ) -> Callable[[FastMCP], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
-    async def lifespan(_app: FastMCP) -> AsyncIterator[None]:
+    async def lifespan(_app: FastMCP) -> AsyncGenerator[None]:
         with runtime.bind():
             try:
                 await runtime.start_background()

@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,7 +105,7 @@ def _store_lock_depths() -> dict[Path, int]:
 
 
 @contextmanager
-def locked_write(path: Path) -> Iterator[None]:
+def locked_write(path: Path) -> Generator[None]:
     """Acquire an exclusive flock on <path>.lock before writing."""
     if sys.platform == "win32":
         logger.warning(
@@ -124,7 +124,7 @@ def locked_write(path: Path) -> Iterator[None]:
 
 
 @contextmanager
-def locked_store(data_dir: Path) -> Iterator[None]:
+def locked_store(data_dir: Path) -> Generator[None]:
     """Acquire the coarse store lock for multi-file operations."""
     data_dir = data_dir.resolve()
     lock_path = data_dir / "store.lock"
@@ -197,7 +197,7 @@ class StoreTransactions:
         self.intent_path.unlink()
         self.sync_directory()
 
-    def _is_event_log_format(self) -> bool:
+    def is_event_log_format(self) -> bool:
         """Return True when ``facts.jsonl`` starts with an event-log meta sentinel."""
         if not self.facts_path.exists():
             return False
@@ -230,7 +230,7 @@ class StoreTransactions:
             if (
                 self.facts_path.exists()
                 and self.facts_path.stat().st_size > 0
-                and not self._is_event_log_format()
+                and not self.is_event_log_format()
             ):
                 raise ValueError(
                     f"{self.facts_path} is missing a valid event-log sentinel; "

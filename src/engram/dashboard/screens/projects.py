@@ -35,7 +35,7 @@ class ProjectDetailView(Container):
 
     def __init__(self, project: str, health: ProjectHealth, data: DashboardData) -> None:
         super().__init__()
-        self._project = project
+        self.project = project
         self._health = health
         self._data = data
         self._all_facts = get_facts_for_project(data, project)
@@ -47,7 +47,7 @@ class ProjectDetailView(Container):
         h = self._health
         with Horizontal(id="proj-detail-header"):
             with Vertical(classes="proj-stat-box"):
-                yield Label(f"[b]{self._project}[/b]")
+                yield Label(f"[b]{self.project}[/b]")
                 yield Static(
                     f"Active: [b]{h.active}[/b]  Forgotten: [b]{h.forgotten}[/b]  Superseded: [b]{h.superseded}[/b]  Expired: [b]{h.expired}[/b]"
                 )
@@ -121,7 +121,7 @@ class ProjectDetailView(Container):
     def refresh_data(self, data: DashboardData, health: ProjectHealth) -> None:
         self._data = data
         self._health = health
-        self._all_facts = get_facts_for_project(data, self._project)
+        self._all_facts = get_facts_for_project(data, self.project)
         self._apply_filters()
 
     def on_key(self, event: events.Key) -> None:
@@ -220,9 +220,9 @@ class ProjectsScreen(Container):
     @on(DataTable.RowSelected, "#proj-overview-table")
     def on_project_selected(self, event: DataTable.RowSelected) -> None:
         if event.row_key and event.row_key.value:
-            self._show_detail(event.row_key.value)
+            self.show_detail(event.row_key.value)
 
-    def _show_detail(self, project: str) -> None:
+    def show_detail(self, project: str) -> None:
         health = self._data.project_health.get(project)
         if not health:
             return
@@ -280,7 +280,7 @@ class ProjectsScreen(Container):
     def refresh_data(self, data: DashboardData) -> None:
         self._data = data
         if self._detail_view:
-            health = self._data.project_health.get(self._detail_view._project)
+            health = self._data.project_health.get(self._detail_view.project)
             if health:
                 self._detail_view.refresh_data(data, health)
             else:

@@ -45,7 +45,7 @@ from engram.llm import (
     complete_with_usage,
     provider_available,
 )
-from engram.llm.client import _response_format_for_model
+from engram.llm.client import response_format_for_model
 from engram.storage.search import SearchHit
 from engram.storage.store import (
     AsyncFactStore,
@@ -114,7 +114,7 @@ def _llm_available() -> bool:
     return provider_available()
 
 
-def _relevant_hits(hits: list[SearchHit]) -> list[SearchHit]:
+def relevant_hits(hits: list[SearchHit]) -> list[SearchHit]:
     """Hits that clear the coverage floor and the relative score cutoff."""
     if not hits:
         return []
@@ -317,7 +317,7 @@ async def _answer(
             prompt=prompt,
             system=ANSWER_SYSTEM,
             reasoning_effort=settings.recall_reasoning_effort,
-            response_format=_response_format_for_model(RecallAnswer),
+            response_format=response_format_for_model(RecallAnswer),
         ),
         timeout=settings.retrieval_timeout,
     )
@@ -455,7 +455,7 @@ async def recall_result(
         project,
         limit=max(settings.max_facts_per_agent, ZERO_HIT_MAX_CANDIDATES),
     )
-    relevant = _relevant_hits(hits)
+    relevant = relevant_hits(hits)
     zero_hit = not relevant and bool(hits)
     use_llm = bool(hits) and (mode == "answer" or zero_hit) and _llm_available()
     cards = relevant[:max_sources]

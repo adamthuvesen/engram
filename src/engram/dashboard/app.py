@@ -397,7 +397,7 @@ class EngramDashboard(App[None]):
     def action_show_project(self, project: str) -> None:
         self.action_show_tab("projects")
         try:
-            self.query_one(ProjectsScreen)._show_detail(project)
+            self.query_one(ProjectsScreen).show_detail(project)
         except Exception:
             logger.exception("Unable to show project detail for %s", project)
 

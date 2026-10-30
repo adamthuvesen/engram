@@ -199,15 +199,15 @@ def _remote_is_empty(data_dir: Path, remote: str, timeout: float) -> bool:
 
 def _validate_sync_snapshot(data_dir: Path) -> None:
     from engram.core.models import RecallRecord, StateLine
-    from engram.storage.jsonl import _load_jsonl_records
+    from engram.storage.jsonl import load_jsonl_records
     from engram.storage.store import FactStore
 
     store = FactStore(data_dir)
     store.recover_transactions()
     store.load_facts()
     store.load_candidates()
-    _load_jsonl_records(store.recall_log_path, RecallRecord, "recall", strict=True)
-    _load_jsonl_records(
+    load_jsonl_records(store.recall_log_path, RecallRecord, "recall", strict=True)
+    load_jsonl_records(
         data_dir / "maintenance_state.jsonl",
         StateLine,
         "maintenance state",

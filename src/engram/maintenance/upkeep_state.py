@@ -20,7 +20,7 @@ import fcntl
 import logging
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -111,7 +111,7 @@ def append_state(data_dir: Path, lines: list[StateLine]) -> None:
 
 
 @contextmanager
-def upkeep_lock(data_dir: Path) -> Iterator[bool]:
+def upkeep_lock(data_dir: Path) -> Generator[bool]:
     """Non-blocking exclusive lock; yields False when another run holds it.
 
     ``flock`` locks belong to the open file description, so this excludes

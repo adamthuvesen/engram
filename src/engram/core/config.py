@@ -3,7 +3,7 @@
 import logging
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
@@ -146,7 +146,7 @@ get_settings = _SettingsLoader()
 
 
 @contextmanager
-def settings_scope(settings: Settings) -> Iterator[Settings]:
+def settings_scope(settings: Settings) -> Generator[Settings]:
     token = _CURRENT_SETTINGS.set(settings)
     try:
         yield settings

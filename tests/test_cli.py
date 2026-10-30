@@ -6,6 +6,7 @@ import json
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -67,7 +68,7 @@ def test_is_cli_invocation_true_for_unknown_argv():
     ],
 )
 def test_serve_starts_server_with_requested_transport(monkeypatch, argv, expected):
-    calls: list[dict] = []
+    calls: list[dict[str, Any]] = []
     monkeypatch.setattr("engram.server.main", lambda **kwargs: calls.append(kwargs))
 
     assert cli.main_dispatch(argv) == cli.EXIT_OK

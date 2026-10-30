@@ -9,6 +9,7 @@ import subprocess
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -41,7 +42,7 @@ from engram.maintenance.verify import derive_anchors, normalize_anchor
 from engram.storage.search import SearchIndex
 from engram.storage.store import AsyncFactStore, FactStore, format_fact_line
 
-Responder = Callable[[list[dict]], ConsolidationResponse]
+Responder = Callable[[list[dict[str, Any]]], ConsolidationResponse]
 
 
 def _fact(fact_id: str, content: str, project: str | None = "widget", **kw) -> Fact:
@@ -73,7 +74,7 @@ def _git(cwd: Path, *args: str) -> None:
     )
 
 
-def _cluster_cards(prompt: str) -> list[dict]:
+def _cluster_cards(prompt: str) -> list[dict[str, Any]]:
     body = prompt.split("CLUSTER (oldest first):\n", 1)[1]
     return json.loads(body.split("\n\nCORRECTION", 1)[0])
 
@@ -115,7 +116,7 @@ def llm(monkeypatch):
     return calls, use
 
 
-def _keep_all(cards: list[dict]) -> ConsolidationResponse:
+def _keep_all(cards: list[dict[str, Any]]) -> ConsolidationResponse:
     return ConsolidationResponse(
         cards=[
             ConsolidatedCard(
@@ -424,7 +425,7 @@ def test_split_that_repeats_claims_is_rejected(tmp_path: Path, llm):
         ]
     )
 
-    def responder(cards: list[dict]) -> ConsolidationResponse:
+    def responder(cards: list[dict[str, Any]]) -> ConsolidationResponse:
         return ConsolidationResponse(cards=next(answers), retire=[])
 
     use(responder)
@@ -444,7 +445,7 @@ def test_oversized_merge_is_rejected_but_an_untouched_long_card_is_kept(tmp_path
     )
     answers = iter([[_card(["a", "b"], "bloated", "x" * (MAX_CARD_CHARS + 1))], None])
 
-    def responder(cards: list[dict]) -> ConsolidationResponse:
+    def responder(cards: list[dict[str, Any]]) -> ConsolidationResponse:
         kept = _keep_all(cards)
         merged = next(answers)
         if merged is None:
@@ -497,7 +498,7 @@ def test_unchanged_single_source_card_is_edited_in_place(tmp_path: Path, llm):
         [_fact("keep", "Widget staging is down this week.", observed_at=observed)],
     )
 
-    def mark_ephemeral(cards: list[dict]) -> ConsolidationResponse:
+    def mark_ephemeral(cards: list[dict[str, Any]]) -> ConsolidationResponse:
         response = _keep_all(cards)
         response.cards[0].durability = Durability.ephemeral
         return response
@@ -526,7 +527,7 @@ def test_coverage_error_retries_once_then_applies(tmp_path: Path, llm):
         ]
     )
 
-    def responder(cards: list[dict]) -> ConsolidationResponse:
+    def responder(cards: list[dict[str, Any]]) -> ConsolidationResponse:
         return next(answers) or _keep_all(cards)
 
     use(responder)
@@ -543,7 +544,7 @@ def test_persistently_invalid_cluster_is_retried_then_abandoned(tmp_path: Path, 
     store = _store(tmp_path, [_fact("a", "one"), _fact("b", "two")])
     before = store.facts_path.read_bytes()
 
-    def double_use(cards: list[dict]) -> ConsolidationResponse:
+    def double_use(cards: list[dict[str, Any]]) -> ConsolidationResponse:
         response = _keep_all(cards)
         response.retire = [RetiredInputCard(id="a", reason="dup")]
         return response
@@ -586,7 +587,7 @@ def test_concurrent_write_aborts_cluster_and_is_seen_next_run(tmp_path: Path, ll
     calls, use = llm
     store = _store(tmp_path, [_fact("a", "one"), _fact("g", "gadget", project="gadget")])
 
-    def edit_during_call(cards: list[dict]) -> ConsolidationResponse:
+    def edit_during_call(cards: list[dict[str, Any]]) -> ConsolidationResponse:
         if len(calls["consolidate"]) == 1:
             # Another writer changes a source and adds a fact mid-run.
             store.sync_store.mark_stale("a", "user retired it")
@@ -625,7 +626,7 @@ def test_unchanged_kept_card_is_still_a_cluster_dependency(tmp_path: Path, llm, 
         ],
     )
 
-    def change_kept_card(cards: list[dict]) -> ConsolidationResponse:
+    def change_kept_card(cards: list[dict[str, Any]]) -> ConsolidationResponse:
         response = _keep_all(cards)
         retired = next(
             card for card in cards if card["content"] == "Widget uses pnpm for packages."
@@ -668,7 +669,7 @@ def test_source_expiring_during_provider_cannot_become_durable(tmp_path: Path, l
     store = _store(tmp_path, [source])
     before = store.facts_path.read_bytes()
 
-    def expire_during_call(cards: list[dict]) -> ConsolidationResponse:
+    def expire_during_call(cards: list[dict[str, Any]]) -> ConsolidationResponse:
         response = _keep_all(cards)
         response.cards[0].content = "Widget uses pnpm."
         response.cards[0].durability = Durability.durable

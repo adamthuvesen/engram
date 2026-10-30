@@ -20,7 +20,7 @@ from tempfile import TemporaryDirectory
 
 from engram.core.models import Fact, FactCategory
 from engram.evaluation.report import print_provenance, report_provenance
-from engram.recall.retriever import _relevant_hits
+from engram.recall.retriever import relevant_hits
 from engram.storage.store import FactStore
 
 # ---------------------------------------------------------------------------
@@ -569,7 +569,7 @@ def main() -> None:
         selection_calls = 0
         for query, complexity in QUERIES:
             hits = store.search_facts(query, limit=40)
-            cards = _relevant_hits(hits)
+            cards = relevant_hits(hits)
             needs_llm = bool(hits) and not cards
             selection_calls += needs_llm
             top = f"{hits[0].score:6.1f}" if hits else f"{'-':>6}"

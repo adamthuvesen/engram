@@ -50,7 +50,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --extra dev
-      - name: Subprocess and installed-wheel smokes (just smoke)
+      - name: Subprocess and installed-wheel smokes (just slow)
         run: uv run --locked --extra dev python -m engram.tooling.verify verify
       - name: Drive the real CLI, MCP server, dashboard, and wheel (verify-engram)
         run: .agents/skills/verify-engram/verify all

@@ -25,7 +25,7 @@ BRIEF_MEMORY_KEY = "project-brief"
 
 
 _EVENT_ID_LOCK = threading.Lock()
-_LAST_EVENT_MS: int = 0
+_last_event_ms: int = 0
 
 
 def new_event_id() -> str:
@@ -36,12 +36,12 @@ def new_event_id() -> str:
     process the ms portion is strictly monotonic (a slow clock or rapid calls
     cannot produce duplicates: the helper bumps to ``last + 1`` if needed).
     """
-    global _LAST_EVENT_MS
+    global _last_event_ms
     with _EVENT_ID_LOCK:
         now_ms = int(time.time() * 1000)
-        if now_ms <= _LAST_EVENT_MS:
-            now_ms = _LAST_EVENT_MS + 1
-        _LAST_EVENT_MS = now_ms
+        if now_ms <= _last_event_ms:
+            now_ms = _last_event_ms + 1
+        _last_event_ms = now_ms
     return f"{now_ms:016d}{uuid4().hex[:8]}"
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -46,7 +46,7 @@ class Runtime:
         self._closed = False
 
     @contextmanager
-    def bind(self) -> Iterator[Runtime]:
+    def bind(self) -> Generator[Runtime]:
         token = _CURRENT_RUNTIME.set(self)
         try:
             with settings_scope(self.settings), completion_client(self.provider):

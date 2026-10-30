@@ -242,7 +242,7 @@ def test_unknown_prepared_transaction_stays_unresolved(tmp_path):
     with pytest.raises(ValueError, match="Unsupported transaction"):
         reopened.recover_transactions()
     assert reopened.transaction_log_path.read_bytes() == before
-    assert [row.id for row in reopened._pending_transactions()] == [transaction.id]
+    assert [row.id for row in reopened.pending_transactions()] == [transaction.id]
 
 
 def test_legacy_approval_recovery_keeps_original_fact_identity(tmp_path):
@@ -579,7 +579,7 @@ def test_approval_edits_are_owned_by_journal_and_recovered_exactly(tmp_path, mon
             [row.id],
             edits={row.id: "Edited content"},
         )
-    journal = store._pending_transactions()[0]
+    journal = store.pending_transactions()[0]
     assert journal.new_facts[0].content == journal.candidates[0].content == "Edited content"
     recovered = FactStore(tmp_path)
     assert recovered.recover_transactions() == 1

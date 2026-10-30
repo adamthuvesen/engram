@@ -5,6 +5,7 @@ import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,7 +29,7 @@ def _make_store() -> FactStore:
     return FactStore(data_dir=Path(tempfile.mkdtemp()))
 
 
-def _card(**fields) -> dict:
+def _card(**fields) -> dict[str, Any]:
     content = fields.get("content", "missing content")
     return {
         "memory_key": "test-memory",
@@ -56,8 +57,8 @@ class FakeModel:
 
     def __init__(
         self,
-        facts: list[dict],
-        retire: list[dict] | None = None,
+        facts: list[dict[str, Any]],
+        retire: list[dict[str, Any]] | None = None,
         during_call: Callable[[int], None] | None = None,
     ):
         self.response = {

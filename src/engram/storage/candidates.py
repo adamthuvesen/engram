@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from engram.core.models import CandidateStatus, FactCategory, MemoryCandidate
-from engram.storage.jsonl import _load_jsonl_records
+from engram.storage.jsonl import load_jsonl_records
 from engram.storage.transactions import (
     ensure_trailing_newline,
 )
@@ -67,7 +67,7 @@ class CandidateSnapshots:
         strict: bool = True,
     ) -> list[MemoryCandidate]:
         """Load memory candidates filtered by status and project."""
-        loaded, _ = _load_jsonl_records(self.path, MemoryCandidate, "candidate", strict=strict)
+        loaded, _ = load_jsonl_records(self.path, MemoryCandidate, "candidate", strict=strict)
         by_id: dict[str, list[MemoryCandidate]] = {}
         for candidate in loaded:
             by_id.setdefault(candidate.id, []).append(candidate)

@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import dataclass, field
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -17,12 +18,12 @@ from engram.llm.client import (
     _extract_usage,
     _model_name,
     _openai_strict_schema,
-    _response_format_for_model,
     complete_model,
     complete_model_with_usage,
     complete_with_usage,
     completion_client,
     provider_available,
+    response_format_for_model,
 )
 
 
@@ -100,7 +101,7 @@ class _MockClient:
     response: SimpleNamespace = field(
         default_factory=lambda: _mock_response("answer text", prompt_tokens=123, cached=80)
     )
-    last_kwargs: dict | None = None
+    last_kwargs: dict[str, Any] | None = None
 
     def __post_init__(self):
         self.chat = SimpleNamespace(
@@ -205,7 +206,7 @@ def test_complete_with_usage_missing_usage_returns_none(client, fresh_settings):
 
 
 def test_response_format_for_model_uses_strict_json_schema():
-    response_format = _response_format_for_model(_StructuredAnswer)
+    response_format = response_format_for_model(_StructuredAnswer)
 
     assert response_format["type"] == "json_schema"
     assert response_format["json_schema"]["name"] == "_StructuredAnswer"

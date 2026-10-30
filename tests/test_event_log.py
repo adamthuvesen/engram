@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -20,7 +21,7 @@ from engram.core.models import (
 
 
 def _make_fact(**overrides) -> Fact:
-    defaults: dict = {
+    defaults: dict[str, Any] = {
         "id": "fact_a",
         "category": FactCategory.preference,
         "content": "Uses polars",
