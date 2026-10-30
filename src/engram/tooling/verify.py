@@ -84,6 +84,7 @@ def commands(profile: Profile) -> list[list[str]]:
         [*prefix, "ruff", "check", "."],
         [*prefix, "ruff", "format", "--check", "."],
         [*prefix, "basedpyright"],
+        [*prefix, "basedpyright", "--project", ".agents/skills/verify-engram"],
         [*prefix, "python", "-m", "engram.tooling.reference", "--check"],
         [*prefix, "pytest", "tests/", "-q", "-n", "auto", "-m", FAST_SELECTION],
     ]

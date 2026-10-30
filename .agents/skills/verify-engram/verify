@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -24,9 +24,16 @@ if Path(sys.prefix).resolve() != (ROOT / ".venv").resolve():
     uv = ["uv", "run", "--quiet", "--locked", "--extra", "dev", "--project", str(ROOT)]
     os.execvp("uv", [*uv, "python", str(HELPER), *sys.argv[1:]])
 
-import engram  # noqa: E402
+from drives import (  # noqa: E402
+    CONTROL_FAILURE,
+    DRIVES,
+    SMOKE,
+    Context,
+    Failure,
+    control,
+)
 
-from drives import DRIVES, SMOKE, Context, Failure, control  # noqa: E402
+import engram  # noqa: E402
 
 GLOBAL_PATHS = ["pyproject.toml", "uv.lock", ".agents/skills/verify-engram/*"]
 REDACT = ("KEY", "TOKEN", "SECRET", "PASSWORD")
@@ -34,9 +41,7 @@ REDACT = ("KEY", "TOKEN", "SECRET", "PASSWORD")
 
 def git(*args: str) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    result = subprocess.run(
-        ["git", *args], cwd=ROOT, env=env, capture_output=True, text=True
-    )
+    result = subprocess.run(["git", *args], cwd=ROOT, env=env, capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
@@ -51,11 +56,7 @@ def changed_files() -> set[str]:
 def select(files: set[str]) -> list[str]:
     if any(fnmatch(f, g) for f in files for g in GLOBAL_PATHS):
         return list(DRIVES)
-    picked = [
-        n
-        for n, d in DRIVES.items()
-        if any(fnmatch(f, g) for f in files for g in d.paths)
-    ]
+    picked = [n for n, d in DRIVES.items() if any(fnmatch(f, g) for f in files for g in d.paths)]
     return picked or [SMOKE]
 
 
@@ -115,7 +116,7 @@ def preflight(env: dict[str, str], scratch: Path) -> None:
 def run_dir() -> Path:
     sha = git("rev-parse", "--short=7", "HEAD") or "nogit"
     dirty = "-dirty" if git("status", "--porcelain") else ""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = ROOT / ".verify" / "runs" / f"{stamp}-{sha}{dirty}"
     path.mkdir(parents=True, exist_ok=False)
     return path
@@ -177,10 +178,7 @@ def main(argv: list[str]) -> int:
         preflight(env, scratch)
         (evidence / "env.json").write_text(
             json.dumps(
-                {
-                    k: "<redacted>" if any(r in k for r in REDACT) else v
-                    for k, v in env.items()
-                },
+                {k: "<redacted>" if any(r in k for r in REDACT) else v for k, v in env.items()},
                 indent=2,
             )
         )
@@ -215,12 +213,15 @@ def main(argv: list[str]) -> int:
     print(f"evidence: {evidence}")
     failed = any(r["result"] == "FAIL" for r in results)
     if command == "control":
-        print(
-            "control: FAIL observed"
-            if failed
-            else "control: the wrong expectation passed, so the drive asserts nothing"
-        )
-        return 0 if failed else 1
+        failures = [str(r["detail"]) for r in results if r["result"] == "FAIL"]
+        if len(failures) == 1 and failures[0].startswith(CONTROL_FAILURE):
+            print("control: FAIL observed")
+            return 0
+        if failures:
+            print(f"control: failed for another reason; expected {CONTROL_FAILURE!r}")
+        else:
+            print("control: the wrong expectation passed, so the drive asserts nothing")
+        return 1
     return int(failed)
 
 

@@ -158,6 +158,10 @@ async def drive_cli(ctx: Context, expect_id: str = "verifyfact01") -> str:
     return "recall cards (0 LLM calls), inspect, mark-stale, missing-fact exit 2, doctor ok"
 
 
+# The control passes only when its drive fails on exactly this planted expectation.
+CONTROL_FAILURE = "recall: expected top card verifyfact99, got "
+
+
 async def control(ctx: Context) -> str:
     """Re-drive cli against a card id the seed never wrote; verify control passes only on FAIL."""
     return await drive_cli(ctx, expect_id="verifyfact99")

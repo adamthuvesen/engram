@@ -46,8 +46,9 @@ addopts = "-m 'not live_provider and not sync_transport'"
 [tool.basedpyright]
 typeCheckingMode = "strict"
 enableTypeIgnoreComments = false
+reportUnnecessaryTypeIgnoreComment = "error"
 pythonVersion = "3.14"
-include = ["src", "tests", ".agents/skills/verify-engram"]
+include = ["src", "tests"]
 venvPath = "."
 venv = ".venv"
 extraPaths = ["src", "."]

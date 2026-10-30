@@ -102,6 +102,6 @@ Reports include source digests and explicit live status.
 `tooling.smoke` verifies stdio, loopback HTTP, errors, restart persistence, packaged datasets, and dashboard assets using temporary data.
 The package profile installs locked dependencies and the wheel outside the checkout before those checks.
 
-`pyproject.toml` runs basedpyright in strict mode on `src`, `tests`, and the verify skill. The type check must report zero errors, with no baseline file.
+`pyproject.toml` runs basedpyright in strict mode on `src` and `tests`. The verify skill has its own `pyrightconfig.json`, and `check` runs it as a second project because basedpyright skips dot folders. The type check must report zero errors, with no baseline file.
 Default pytest cannot run Git transport fixtures without the explicit `--run-sync-transport` option.
 Live provider quality requires a separate explicit run. Offline scores establish only their labeled fixture contracts.
