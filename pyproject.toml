@@ -69,10 +69,28 @@ line-length = 100
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF", "PGH003"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF", "PGH003", "TID251"]
 ignore = [
     # ruff format wraps code; the remaining long lines are user-facing strings and prompts.
     "E501",
     # (str, Enum) keeps str(member) == "Class.member"; StrEnum would change it.
     "UP042",
 ]
+
+# A TID251 ignore lifts every ban below for that file, so owners stay one file each.
+# subprocess is not banned (exception dated 2026-11-07): git sync, project detection,
+# doctor, eval reports, and the tooling lanes all run git or child processes, so the
+# owner list would cover 15 files and lift the network and SDK bans for all of them.
+[tool.ruff.lint.per-file-ignores]
+"src/engram/llm/client.py" = ["TID251"]
+"src/engram/tooling/smoke.py" = ["TID251"]
+"tests/test_llm.py" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"openai".msg = "Call the provider through engram.llm.client."
+"httpx".msg = "Network calls belong to engram.llm.client."
+"httpx2".msg = "Network calls belong to engram.llm.client."
+"requests".msg = "Network calls belong to engram.llm.client."
+"urllib.request".msg = "Network calls belong to engram.llm.client."
+"http.client".msg = "Network calls belong to engram.llm.client."
+"socket".msg = "Only engram.tooling.smoke opens sockets."

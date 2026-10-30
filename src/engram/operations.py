@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from math import isfinite
 from typing import Any
 
-from openai import OpenAIError
 from pydantic import JsonValue, ValidationError
 
 from engram.core.config import get_settings
@@ -44,7 +43,7 @@ from engram.core.projects import canonical_project, register_project
 from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
 from engram.extraction.importer import import_claude_code_memories
 from engram.extraction.observer import IngestResult, ingest
-from engram.llm import ProviderResponseError
+from engram.llm import is_provider_error
 from engram.maintenance.doctor import check_provider, repair_store, run_doctor
 from engram.maintenance.memory_audit import (
     audit_memory_store as _audit_memory_store,
@@ -167,7 +166,7 @@ async def resolve_store(
 
 
 def exception_result(exc: Exception) -> OperationResult:
-    if isinstance(exc, (OpenAIError, ProviderResponseError)):
+    if is_provider_error(exc):
         code = ErrorCode.provider_error
     elif isinstance(exc, TimeoutError):
         code = ErrorCode.timeout

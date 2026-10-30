@@ -23,6 +23,12 @@ class ProviderResponseError(ValueError):
     """The provider refused or returned an incomplete response."""
 
 
+def is_provider_error(exc: BaseException) -> bool:
+    from openai import OpenAIError
+
+    return isinstance(exc, (OpenAIError, ProviderResponseError))
+
+
 @dataclass
 class Completion:
     """Provider text and optional usage. Missing counters mean unknown."""

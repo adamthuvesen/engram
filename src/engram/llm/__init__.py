@@ -11,6 +11,7 @@ from engram.llm.client import (
     complete_model_with_usage,
     complete_with_usage,
     completion_client,
+    is_provider_error,
     provider_available,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "complete_model_with_usage",
     "complete_with_usage",
     "completion_client",
+    "is_provider_error",
     "provider_available",
 ]

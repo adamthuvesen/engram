@@ -30,6 +30,7 @@ The helper is `.agents/skills/verify-engram/verify`. It runs itself under `uv ru
 - The `memory` drive serves the production MCP app with a scripted `FixtureCompletionClient` at the `Runtime(provider=...)` boundary. This exercises extraction parsing and storage writes without a model.
 - A preflight check confirms that `engram` imports from this checkout and that child settings resolve to the temp store. If a check fails, the run stops before any drive starts.
 - Each drive runs its subprocesses in their own process group and stops that group when the drive ends.
+- The run fails when it changes this checkout: HEAD, the branch, the git index, local or worktree git config, or any file outside `.git`, `.venv`, `.verify`, and tool caches, ignored paths included. `summary.json` records `ok` and `checkout_changes`.
 
 ## Limits
 

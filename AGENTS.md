@@ -19,6 +19,15 @@ Read [data](docs/data.md) for persistence, [sync](docs/sync.md) for Git integrat
 The generated [tool reference](docs/mcp-tools.md) comes from actual MCP registrations and CLI handlers.
 Regenerate references after changing either surface or Settings descriptions.
 
+## Limits
+
+Compatibility changes still require judgment. Preserve MCP tool names, persisted event formats, and documented adapters.
+Add settings to `Settings` with descriptions, then regenerate references.
+Upgrade all writers before concurrent review. Local storage guarantees do not imply distributed serializability.
+`remember` and ingest call OpenAI by design: a user triggers each call, so they have no spend gate.
+
+Evals run as modules, for example `uv run --locked python -m engram.evaluation.recall`.
+
 ## Enforced Rules
 
 `tests/test_tooling.py::test_enforced_rules_cite_existing_paths` fails when a cited path, test, or recipe is missing. `tests/test_tooling.py::test_citation_check_finds_rotten_citations` proves it finds each kind.
@@ -34,11 +43,7 @@ Regenerate references after changing either surface or Settings descriptions.
 | Tests never call a live provider. | `tests/conftest.py`, `tests/test_tooling.py::test_tests_cannot_reach_live_provider` | 2026-07-16 |
 | Live evals refuse without `ENGRAM_EVAL_PROVIDER=1`. | `src/engram/evaluation/extraction_quality.py::extract_live_provider_outputs`, `tests/test_extraction_quality_evals.py::test_live_extraction_refuses_without_approval` | 2026-11-06 |
 | `just verify control` must observe FAIL before a verify pass counts. | `.agents/skills/verify-engram/drives.py::control` | 2026-11-06 |
+| A verify run fails when it changes the checkout, ignored paths and git state included. | `.agents/skills/verify-engram/verify::checkout_changes` | 2026-11-07 |
 | Git transport tests need explicit opt-in. | `tests/conftest.py`, `tests/test_tooling.py::test_wrong_marker_expression_cannot_enable_git_push_fixtures` | 2026-11-04 |
 | No file downgrades strict type checking with a `# pyright:` mode comment | `tests/test_strict_mode.py::test_no_file_downgrades_type_checking_mode`, `tests/test_strict_mode.py::test_detector_finds_an_unstaged_downgrade` | 2026-11-07 |
-
-Compatibility changes still require judgment. Preserve MCP tool names, persisted event formats, and documented adapters.
-Add settings to `Settings` with descriptions, then regenerate references.
-Upgrade all writers before concurrent review. Local storage guarantees do not imply distributed serializability.
-
-Evals run as modules, for example `uv run --locked python -m engram.evaluation.recall`.
+| Only `src/engram/llm/client.py` and `tests/test_llm.py` import the OpenAI SDK or HTTP clients, and only `src/engram/tooling/smoke.py` opens sockets. | `pyproject.toml::"openai".msg`, `pyproject.toml::"socket".msg` | 2026-11-07 |
