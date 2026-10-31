@@ -41,6 +41,7 @@ packages = ["src/engram"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+strict_markers = true
 addopts = "-m 'not live_provider and not sync_transport'"
 
 [tool.basedpyright]
@@ -69,7 +70,7 @@ line-length = 100
 target-version = "py314"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF", "PGH003", "TID251"]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF", "PGH003", "PGH004", "TID251"]
 ignore = [
     # ruff format wraps code; the remaining long lines are user-facing strings and prompts.
     "E501",
@@ -78,9 +79,12 @@ ignore = [
 ]
 
 # A TID251 ignore lifts every ban below for that file, so owners stay one file each.
-# subprocess is not banned (exception dated 2026-11-07): git sync, project detection,
-# doctor, eval reports, and the tooling lanes all run git or child processes, so the
-# owner list would cover 15 files and lift the network and SDK bans for all of them.
+# tests/test_strict_mode.py holds each owner to its own module and rejects noqa on TID251.
+# Process calls are not banned (exception dated 2026-11-07): subprocess, os.system,
+# os.popen, os.exec*, os.spawn*, pty, and asyncio subprocess. Git sync, project
+# detection, doctor, eval reports, the tooling lanes, and verify all run git or child
+# processes, so the owner list would cover 15 files and lift the network and SDK bans
+# for all of them.
 [tool.ruff.lint.per-file-ignores]
 "src/engram/llm/client.py" = ["TID251"]
 "src/engram/tooling/smoke.py" = ["TID251"]

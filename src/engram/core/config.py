@@ -161,7 +161,7 @@ class _LazySettingsProxy:
         return getattr(get_settings(), name)
 
 
-settings: Settings = _LazySettingsProxy()  # pyright: ignore[reportAssignmentType]
+settings: Settings = _LazySettingsProxy()  # pyright: ignore[reportAssignmentType]  # proxy forwards every attribute
 
 
 _CACHE_EXPORT_RE = re.compile(r"^export\s+([A-Za-z_][A-Za-z0-9_]*)=(.*)$")

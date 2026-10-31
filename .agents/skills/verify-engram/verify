@@ -24,7 +24,7 @@ if Path(sys.prefix).resolve() != (ROOT / ".venv").resolve():
     uv = ["uv", "run", "--quiet", "--locked", "--extra", "dev", "--project", str(ROOT)]
     os.execvp("uv", [*uv, "python", str(HELPER), *sys.argv[1:]])
 
-from drives import (  # noqa: E402
+from drives import (  # noqa: E402 - imports after the venv re-exec above
     CONTROL_FAILURE,
     DRIVES,
     SMOKE,
@@ -33,7 +33,7 @@ from drives import (  # noqa: E402
     control,
 )
 
-import engram  # noqa: E402
+import engram  # noqa: E402 - imports after the venv re-exec above
 
 GLOBAL_PATHS = ["pyproject.toml", "uv.lock", ".agents/skills/verify-engram/*"]
 REDACT = ("KEY", "TOKEN", "SECRET", "PASSWORD")
