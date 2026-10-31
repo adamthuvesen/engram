@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -94,9 +96,42 @@ def select(files: set[str]) -> list[str]:
     return picked or [SMOKE]
 
 
+# Commands a drive must never run. Each stub logs the call and exits 97.
+TRIPWIRES = ("curl", "wget", "ssh", "scp", "gh")
+# Commands drives need, refused only for the subcommand that leaves the machine.
+GUARDED = {"git": "push", "uv": "publish"}
+
+
+def install_tripwires(scratch: Path) -> Path:
+    """Put stubs first on PATH. A drive that runs one leaves a line in the returned log."""
+    stubs = scratch / "tripwires"
+    stubs.mkdir()
+    log = scratch / "tripwire.log"
+    trip = f'echo "$(basename "$0") $*" >> {shlex.quote(str(log))}; exit 97'
+    scripts: dict[str, str] = dict.fromkeys(TRIPWIRES, trip)
+    for name, refused in GUARDED.items():
+        real = shutil.which(name)
+        if real is None:
+            sys.exit(f"preflight: {name} is not on PATH")
+        scripts[name] = (
+            f'for arg in "$@"; do [ "$arg" = {refused} ] && {{ {trip}; }}; done\n'
+            f'exec {shlex.quote(real)} "$@"'
+        )
+    for name, body in scripts.items():
+        stub = stubs / name
+        stub.write_text(f"#!/bin/sh\n{body}\n")
+        stub.chmod(0o755)
+    return log
+
+
+def tripwire_hits(log: Path) -> list[str]:
+    return log.read_text().splitlines() if log.exists() else []
+
+
 def child_env(scratch: Path) -> dict[str, str]:
     keep = ("PATH", "LANG", "LC_ALL", "TERM", "TMPDIR", "UV_PYTHON")
     env = {k: os.environ[k] for k in keep if k in os.environ}
+    env["PATH"] = os.pathsep.join([str(scratch / "tripwires"), env.get("PATH", os.defpath)])
     home = scratch / "home"
     env.update(
         HOME=str(home),
@@ -209,6 +244,7 @@ def main(argv: list[str]) -> int:
     results: list[dict[str, object]] = []
     with tempfile.TemporaryDirectory(prefix="engram-verify-") as temporary:
         scratch = Path(temporary)
+        tripwire_log = install_tripwires(scratch)
         env = child_env(scratch)
         preflight(env, scratch)
         (evidence / "env.json").write_text(
@@ -217,6 +253,11 @@ def main(argv: list[str]) -> int:
                 indent=2,
             )
         )
+        # Children a drive starts without ctx.env (smoke helpers, direct subprocess calls)
+        # inherit os.environ, so they get the temp HOME and tripwire PATH too.
+        outer_environ = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(env)
         for name in names:
             if name == "control":
                 fn, timeout = control, 30.0
@@ -243,12 +284,22 @@ def main(argv: list[str]) -> int:
                     "detail": detail,
                 }
             )
+        os.environ.clear()
+        os.environ.update(outer_environ)
+        hits = tripwire_hits(tripwire_log)
     changed = checkout_changes(before, checkout_state())
     if changed:
         print(f"FAIL checkout: the run changed {changed[:10]}", flush=True)
+    if hits:
+        print(f"FAIL tripwire: a drive ran {hits[:10]}", flush=True)
     if command == "control":
         failures = [str(r["detail"]) for r in results if r["result"] == "FAIL"]
-        ok = len(failures) == 1 and failures[0].startswith(CONTROL_FAILURE) and not changed
+        ok = (
+            len(failures) == 1
+            and failures[0].startswith(CONTROL_FAILURE)
+            and not changed
+            and not hits
+        )
         if ok:
             print("control: FAIL observed")
         elif failures:
@@ -256,13 +307,14 @@ def main(argv: list[str]) -> int:
         else:
             print("control: the wrong expectation passed, so the drive asserts nothing")
     else:
-        ok = not changed and all(r["result"] == "PASS" for r in results)
+        ok = not changed and not hits and all(r["result"] == "PASS" for r in results)
     summary = {
         "ok": ok,
         "sha": git("rev-parse", "HEAD"),
         "dirty": bool(git("status", "--porcelain")),
         "drives": results,
         "checkout_changes": changed,
+        "tripwire_hits": hits,
     }
     (evidence / "summary.json").write_text(json.dumps(summary, indent=2))
     print(f"evidence: {evidence}")

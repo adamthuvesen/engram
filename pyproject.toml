@@ -48,6 +48,7 @@ addopts = "-m 'not live_provider and not sync_transport'"
 typeCheckingMode = "strict"
 enableTypeIgnoreComments = false
 reportUnnecessaryTypeIgnoreComment = "error"
+reportIgnoreCommentWithoutRule = "error"
 pythonVersion = "3.14"
 include = ["src", "tests"]
 venvPath = "."
