@@ -108,7 +108,11 @@ def imported_modules(source: str) -> set[str]:
 def unowned_bans(root: Path, owned: dict[str, set[str]]) -> list[str]:
     lint = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["ruff"]["lint"]
     banned = set(lint["flake8-tidy-imports"]["banned-api"])
-    owners = {path for path, codes in lint["per-file-ignores"].items() if "TID251" in codes}
+    owners = {
+        path
+        for path, codes in lint["per-file-ignores"].items()
+        if any(code == "ALL" or "TID251".startswith(code) for code in codes)
+    }
     problems = [f"{path}: TID251 ignore has no OWNED_BANS entry" for path in owners - owned.keys()]
     for path in sorted(owners & owned.keys()):
         for module in sorted(imported_modules((root / path).read_text())):

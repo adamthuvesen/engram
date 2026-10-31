@@ -86,3 +86,13 @@ def test_ensure_openai_api_key_returns_none_when_missing(tmp_path, monkeypatch):
     resolved = ensure_openai_api_key(cache_path=tmp_path / "nonexistent")
 
     assert resolved is None
+
+
+def test_tests_never_default_to_the_live_store():
+    from pathlib import Path
+
+    from engram.core.config import get_settings
+
+    settings = get_settings()
+    assert not settings.data_dir.is_relative_to(Path.home() / ".engram")
+    assert not settings.claude_projects_dir.is_relative_to(Path.home() / ".claude")

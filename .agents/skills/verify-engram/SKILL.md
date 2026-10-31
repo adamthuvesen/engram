@@ -25,7 +25,7 @@ The helper is `.agents/skills/verify-engram/verify`. It runs itself under `uv ru
 
 ## Isolation
 
-- Children get a temp HOME and temp XDG directories, `ENGRAM_DATA_DIR` in the scratch directory, and maintenance and sync turned off. Their cwd is outside any Git repository.
+- Children get a temp HOME and temp XDG directories, `ENGRAM_DATA_DIR` in the scratch directory, and maintenance and sync turned off. Their cwd is outside any Git repository, except the `package` drive, which builds the wheel from this checkout and installs it outside it.
 - The OpenAI endpoint is `http://127.0.0.1:1/v1` with a synthetic key, so a real provider call fails fast. The `cli` drive also asserts that recall used 0 LLM calls.
 - The `memory` drive serves the production MCP app with a scripted `FixtureCompletionClient` at the `Runtime(provider=...)` boundary. This exercises extraction parsing and storage writes without a model.
 - A preflight check confirms that `engram` imports from this checkout and that child settings resolve to the temp store. If a check fails, the run stops before any drive starts.

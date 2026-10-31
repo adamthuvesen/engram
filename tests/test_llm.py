@@ -377,3 +377,17 @@ def test_native_sdk_parsing_uses_strict_schema_without_network(monkeypatch, fres
     assert schema["$defs"]["ExtractedFact"]["required"] == list(
         schema["$defs"]["ExtractedFact"]["properties"]
     )
+
+
+def test_sdk_and_response_errors_classify_as_provider_errors():
+    import httpx2
+    from openai import APIConnectionError
+
+    from engram import operations
+    from engram.llm import ProviderResponseError
+
+    offline = APIConnectionError(request=httpx2.Request("POST", "http://127.0.0.1:1/v1"))
+    for exc in (offline, ProviderResponseError("refused")):
+        result = operations.exception_result(exc)
+        assert result.envelope.errors[0].code.value == "provider_error"
+        assert result.exit_code == operations.EXIT_RUNTIME

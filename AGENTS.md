@@ -44,7 +44,7 @@ Evals run as modules, for example `uv run --locked python -m engram.evaluation.r
 | Live evals refuse without `ENGRAM_EVAL_PROVIDER=1`. | `src/engram/evaluation/extraction_quality.py::extract_live_provider_outputs`, `tests/test_extraction_quality_evals.py::test_live_extraction_refuses_without_approval` | 2026-11-06 |
 | `just verify control` must observe FAIL before a verify pass counts. | `.agents/skills/verify-engram/drives.py::control` | 2026-11-06 |
 | A verify run fails when it changes the checkout, ignored paths and git state included. | `.agents/skills/verify-engram/verify::checkout_changes` | 2026-11-07 |
-| Tests use a temporary store, never the live `~/.engram/data`. | `tests/conftest.py::_isolated_store` | 2026-11-07 |
+| Tests use a temporary store, never the live `~/.engram/data`. | `tests/conftest.py::_isolated_store`, `tests/test_config.py::test_tests_never_default_to_the_live_store` | 2026-11-07 |
 | A verify run fails when a drive runs `curl`, `wget`, `ssh`, `scp`, `gh`, `git push`, or `uv publish`. | `.agents/skills/verify-engram/verify::install_tripwires` | 2026-11-07 |
 | Git transport tests need explicit opt-in. | `tests/conftest.py`, `tests/test_tooling.py::test_wrong_marker_expression_cannot_enable_git_push_fixtures` | 2026-11-04 |
 | No file downgrades strict type checking with a `# pyright:` mode comment | `tests/test_strict_mode.py::test_no_file_downgrades_type_checking_mode`, `tests/test_strict_mode.py::test_detector_finds_an_unstaged_downgrade` | 2026-11-07 |
