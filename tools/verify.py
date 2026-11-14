@@ -17,7 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from engram.tooling.boundaries import check_boundaries
+from tools.boundaries import check_boundaries
 
 Profile = Literal["check", "verify", "sync-transport", "package"]
 OFFLINE_SELECTION = "not live_provider and not sync_transport"
@@ -89,7 +89,7 @@ def commands(profile: Profile) -> list[list[str]]:
         [*prefix, "ruff", "format", "--check", ".", VERIFY_ENTRY],
         [*prefix, "basedpyright"],
         [*prefix, "basedpyright", "--project", ".agents/skills/verify-engram"],
-        [*prefix, "python", "-m", "engram.tooling.reference", "--check"],
+        [*prefix, "python", "-m", "tools.reference", "--check"],
         [*prefix, "pytest", "tests/", "-q", "-n", "auto", "-m", FAST_SELECTION],
     ]
 
@@ -199,13 +199,16 @@ def package_smoke(root: Path, report: VerificationReport) -> None:
         command = [
             python,
             "-m",
-            "engram.tooling.smoke",
+            "tools.smoke",
             "run",
             "--assets",
             "--entrypoints",
         ]
         print("+ " + " ".join(command), flush=True)
-        result = subprocess.run(command, cwd=work, env=env, check=False)
+        # tools/ and evals/ stay outside the wheel, so the smoke loads them from the checkout.
+        result = subprocess.run(
+            command, cwd=work, env={**env, "PYTHONPATH": str(root)}, check=False
+        )
         report.checks.append(
             CheckResult(
                 name="installed wheel transports and assets",

@@ -196,9 +196,9 @@ EXTRACTIONS = [
 
 
 def serve_fixture(data: Path, responses: Path) -> None:
-    from engram.evaluation.provider import FixtureCompletionClient
     from engram.runtime import Runtime
     from engram.server import create_mcp
+    from evals.provider import FixtureCompletionClient
 
     fixture = FixtureCompletionClient(
         [(json.dumps(r), None, None) for r in json.loads(responses.read_text())]
@@ -274,7 +274,7 @@ async def drive_memory(ctx: Context) -> str:
 
 
 async def drive_serve(ctx: Context) -> str:
-    from engram.tooling import smoke
+    from tools import smoke
 
     await seed(ctx.data)
     try:
@@ -346,7 +346,7 @@ async def drive_dashboard(ctx: Context) -> str:
 
 async def drive_package(ctx: Context) -> str:
     result = ctx.run(
-        [sys.executable, "-m", "engram.tooling.verify", "package"],
+        [sys.executable, "-m", "tools.verify", "package"],
         cwd=ctx.root,
         timeout=120,
     )
@@ -380,7 +380,7 @@ DRIVES = {
             "src/engram/runtime.py",
             "src/engram/extraction/*",
             "src/engram/llm/*",
-            "src/engram/evaluation/provider.py",
+            "evals/provider.py",
         ],
         drive_memory,
     ),
@@ -390,7 +390,7 @@ DRIVES = {
             "src/engram/server.py",
             "src/engram/runtime.py",
             "src/engram/cli.py",
-            "src/engram/tooling/smoke.py",
+            "tools/smoke.py",
         ],
         drive_serve,
     ),
@@ -402,9 +402,8 @@ DRIVES = {
     "package": Drive(
         "The built wheel installs outside the checkout and its entrypoints and assets work",
         [
-            "src/engram/tooling/*",
+            "tools/*",
             "src/engram/dashboard/styles/*",
-            "src/engram/evaluation/datasets/*",
         ],
         drive_package,
         150.0,

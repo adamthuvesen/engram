@@ -1,6 +1,6 @@
 """CI guard for the deterministic lexical recall numbers.
 
-Runs the labeled dataset through ``engram.evaluation.recall`` and asserts the recall
+Runs the labeled dataset through ``evals.recall`` and asserts the recall
 floors, the zero-LLM cost floor, the no-match behavior, the per-kind division
 of labor, and dataset integrity. Fully deterministic — no LLM calls, no API
 keys — so this is safe to run in CI on every push. If search ranking or the
@@ -13,8 +13,8 @@ import json
 
 import pytest
 
-from engram.evaluation.fixtures import EvalFixture, run_fixture_sync
-from engram.evaluation.recall import (
+from evals.fixtures import EvalFixture, run_fixture_sync
+from evals.recall import (
     DATASET_PATH,
     MIN_HIT_RATE,
     MIN_LEXICAL_FRACTION,

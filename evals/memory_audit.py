@@ -3,7 +3,7 @@
 
 Run directly:
 
-    uv run --locked python -m engram.evaluation.memory_audit
+    uv run --locked python -m evals.memory_audit
 
 The baseline mirrors the current no-key audit floor: exact duplicate signatures
 like ``doctor`` checks today. The new loop must improve labeled issue recall by
@@ -24,12 +24,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from engram.core.models import MIN_ACTIVE_CONFIDENCE, Fact, FactCategory
-from engram.evaluation.report import (
+from engram.maintenance.memory_audit import audit_facts
+from evals.report import (
     ReportProvenance,
     print_provenance,
     report_provenance,
 )
-from engram.maintenance.memory_audit import audit_facts
 
 DATASET_PATH = Path(__file__).parent / "datasets" / "memory_audit_eval_dataset.json"
 

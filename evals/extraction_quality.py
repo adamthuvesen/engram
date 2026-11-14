@@ -3,7 +3,7 @@
 
 Run directly:
 
-    uv run --locked python -m engram.evaluation.extraction_quality
+    uv run --locked python -m evals.extraction_quality
 
 The default run scores committed gold cards and never calls an LLM provider.
 Pass ``--live`` to run the configured provider through ingest, or
@@ -25,13 +25,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from engram.core.models import Fact, FactCategory
-from engram.evaluation.report import (
+from engram.extraction.observer import ingest
+from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from evals.report import (
     ReportProvenance,
     print_provenance,
     report_provenance,
 )
-from engram.extraction.observer import ingest
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
 DATASET_PATH = Path(__file__).parent / "datasets" / "extraction_quality_eval_dataset.json"
 
@@ -209,7 +209,7 @@ async def extract_live_provider_outputs(
         raise SpendRefusedError(
             "Live extraction spends provider tokens. To approve, run: "
             "ENGRAM_EVAL_PROVIDER=1 uv run --locked python -m "
-            "engram.evaluation.extraction_quality --live"
+            "evals.extraction_quality --live"
         )
     dataset = load_dataset(dataset_path)
     outputs: dict[str, list[ExtractedCard]] = {}

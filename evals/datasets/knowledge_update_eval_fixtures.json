@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Knowledge-update and staleness recall fixtures for engram.evaluation.fixtures. Each fixture seeds its own store and checks which facts recall delivers, which it must not, the top card, and warning codes. Deterministic: no LLM calls.",
+  "description": "Knowledge-update and staleness recall fixtures for evals.fixtures. Each fixture seeds its own store and checks which facts recall delivers, which it must not, the top card, and warning codes. Deterministic: no LLM calls.",
   "fixtures": [
     {
       "name": "superseded_fact_replaced_by_newer",

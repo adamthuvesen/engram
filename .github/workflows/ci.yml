@@ -29,7 +29,7 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --extra dev
       - name: Fast lane (same entrypoint as just check)
-        run: uv run --locked --extra dev python -m engram.tooling.verify check
+        run: uv run --locked --extra dev python -m tools.verify check
 
   verify:
     needs: check
@@ -51,7 +51,7 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --extra dev
       - name: Subprocess and installed-wheel smokes (just slow)
-        run: uv run --locked --extra dev python -m engram.tooling.verify verify
+        run: uv run --locked --extra dev python -m tools.verify verify
       - name: Drive the real CLI, MCP server, dashboard, and wheel (verify-engram)
         run: .agents/skills/verify-engram/verify all
       - name: Verify control observes FAIL
@@ -77,4 +77,4 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --extra dev
       - name: Temporary local Git transport integration
-        run: uv run --locked --extra dev python -m engram.tooling.verify sync-transport
+        run: uv run --locked --extra dev python -m tools.verify sync-transport

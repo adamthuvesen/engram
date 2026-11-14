@@ -32,11 +32,11 @@ from pydantic import BaseModel, Field
 
 from engram.core.interfaces import WarningCode
 from engram.core.models import Durability, Fact, FactCategory
-from engram.evaluation.provider import FixtureCompletionClient
-from engram.evaluation.report import ReportProvenance, provenance_for_bytes
 from engram.llm import OpenAICompletionClient, completion_client
 from engram.recall.retriever import RecallMode, recall_with_provenance
 from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from evals.provider import FixtureCompletionClient
+from evals.report import ReportProvenance, provenance_for_bytes
 
 
 class EvalFactSpec(BaseModel):

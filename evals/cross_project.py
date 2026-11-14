@@ -3,7 +3,7 @@
 
 Run directly:
 
-    uv run --locked python -m engram.evaluation.cross_project
+    uv run --locked python -m evals.cross_project
 
 The fixture is no-secret fictional memory data. It measures whether deterministic
 recall keeps useful evidence while excluding stale, superseded, contradictory,
@@ -19,13 +19,13 @@ from tempfile import TemporaryDirectory
 
 from pydantic import BaseModel, Field
 
-from engram.evaluation.fixtures import EvalFactSpec, materialize_facts
-from engram.evaluation.report import (
+from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from evals.fixtures import EvalFactSpec, materialize_facts
+from evals.report import (
     ReportProvenance,
     print_provenance,
     report_provenance,
 )
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
 DATASET_PATH = Path(__file__).parent / "datasets" / "cross_project_recall_eval_dataset.json"
 
@@ -107,9 +107,9 @@ def _score_query(
 
 
 async def _run_query(store: AsyncFactStore, lq: LabeledQuery) -> QueryResult:
-    from engram.evaluation.provider import FixtureCompletionClient
     from engram.llm import completion_client
     from engram.recall.retriever import recall_with_provenance
+    from evals.provider import FixtureCompletionClient
 
     with completion_client(FixtureCompletionClient()):
         _, _, provenance, _ = await recall_with_provenance(lq.query, store=store)

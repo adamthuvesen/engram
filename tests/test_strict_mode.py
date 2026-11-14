@@ -16,7 +16,7 @@ BAN_SUPPRESSION = re.compile(r"#\s*(?:ruff:\s*)?noqa:[^#\n]*\bTID251\b", re.IGNO
 # Each per-file TID251 ignore in pyproject.toml, and the banned modules that owner needs.
 OWNED_BANS = {
     "src/engram/llm/client.py": {"openai"},
-    "src/engram/tooling/smoke.py": {"socket"},
+    "tools/smoke.py": {"socket"},
     "tests/test_llm.py": {"openai", "httpx2"},
 }
 

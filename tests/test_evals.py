@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 
 from engram.core.interfaces import WarningCode
 from engram.core.models import FactCategory
-from engram.evaluation.fixtures import (
+from evals.fixtures import (
     EvalBudget,
     EvalFactSpec,
     EvalFixture,
@@ -217,7 +217,7 @@ def test_eval_fixture_temp_store_is_cleaned_up(monkeypatch):
             exited = True
             return self._tmp.__exit__(exc_type, exc, tb)
 
-    monkeypatch.setattr("engram.evaluation.fixtures.TemporaryDirectory", TrackingTemporaryDirectory)
+    monkeypatch.setattr("evals.fixtures.TemporaryDirectory", TrackingTemporaryDirectory)
 
     fixture = EvalFixture(
         name="cleanup",

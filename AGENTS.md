@@ -26,7 +26,7 @@ Add settings to `Settings` with descriptions, then regenerate references.
 Upgrade all writers before concurrent review. Local storage guarantees do not imply distributed serializability.
 `remember`, ingest, `recall` answer mode, and `doctor --check-provider` call OpenAI by design: a user triggers each call, so they have no spend gate. Background upkeep (consolidation, briefs) also calls OpenAI with no gate: the user set up the daemon, and that setup is the approval.
 
-Evals run as modules, for example `uv run --locked python -m engram.evaluation.recall`.
+Evals run as modules, for example `uv run --locked python -m evals.recall`.
 
 ## Enforced Rules
 
@@ -36,14 +36,14 @@ Evals run as modules, for example `uv run --locked python -m engram.evaluation.r
 | --- | --- |
 | Validate and recover fact batches before ordinary snapshots. | `src/engram/storage/transactions.py`, `tests/test_storage_transactions.py::test_recovery_reuses_exact_events_and_replays_twice` |
 | Use the shared lifecycle eligibility policy. | `src/engram/core/fact_state.py`, `tests/test_storage_transactions.py::test_required_dependencies_must_be_eligible_without_revision_change` |
-| Use public storage APIs and async facades. | `src/engram/tooling/boundaries.py`, `tests/test_tooling.py::test_boundary_rejects_private_policies_and_sync_async_bypasses` |
+| Use public storage APIs and async facades. | `tools/boundaries.py`, `tests/test_tooling.py::test_boundary_rejects_private_policies_and_sync_async_bypasses` |
 | Keep runtime resource ownership explicit. | `src/engram/runtime.py`, `tests/test_runtime.py::test_provider_closes_when_final_sync_fails` |
-| Keep generated references aligned with source. | `src/engram/tooling/reference.py`, `tests/test_tooling.py::test_generated_references_are_current` |
+| Keep generated references aligned with source. | `tools/reference.py`, `tests/test_tooling.py::test_generated_references_are_current` |
 | Tests never call a live provider. | `tests/conftest.py`, `tests/test_tooling.py::test_tests_cannot_reach_live_provider` |
-| Live evals refuse without `ENGRAM_EVAL_PROVIDER=1`. | `src/engram/evaluation/extraction_quality.py::extract_live_provider_outputs`, `tests/test_extraction_quality_evals.py::test_live_extraction_refuses_without_approval` |
+| Live evals refuse without `ENGRAM_EVAL_PROVIDER=1`. | `evals/extraction_quality.py::extract_live_provider_outputs`, `tests/test_extraction_quality_evals.py::test_live_extraction_refuses_without_approval` |
 | `just verify control` must observe FAIL before a verify pass counts. | `.agents/skills/verify-engram/drives.py::control` |
 | A verify run fails when it changes the checkout, ignored paths and git state included. | `.agents/skills/verify-engram/verify::checkout_changes` |
 | Tests use a temporary store, never the live `~/.engram/data`. | `tests/conftest.py::_isolated_store`, `tests/test_config.py::test_tests_never_default_to_the_live_store` |
 | A verify run fails when a drive runs `curl`, `wget`, `ssh`, `scp`, `gh`, `git push`, or `uv publish`. | `.agents/skills/verify-engram/verify::install_tripwires` |
 | Git transport tests need explicit opt-in. | `tests/conftest.py`, `tests/test_tooling.py::test_wrong_marker_expression_cannot_enable_git_push_fixtures` |
-| Only `src/engram/llm/client.py` and `tests/test_llm.py` import the OpenAI SDK or HTTP clients, and only `src/engram/tooling/smoke.py` opens sockets. | `pyproject.toml::"openai".msg`, `pyproject.toml::"socket".msg`, `tests/test_strict_mode.py::test_ban_owners_import_only_the_modules_they_own`, `tests/test_strict_mode.py::test_no_file_suppresses_an_import_ban` |
+| Only `src/engram/llm/client.py` and `tests/test_llm.py` import the OpenAI SDK or HTTP clients, and only `tools/smoke.py` opens sockets. | `pyproject.toml::"openai".msg`, `pyproject.toml::"socket".msg`, `tests/test_strict_mode.py::test_ban_owners_import_only_the_modules_they_own`, `tests/test_strict_mode.py::test_no_file_suppresses_an_import_ban` |

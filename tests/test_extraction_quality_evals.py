@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from engram.evaluation.extraction_quality import (
+from evals.extraction_quality import (
     DATASET_PATH,
     MAX_FRAGMENTATION,
     MIN_DURABLE_CLAIM_COVERAGE,
@@ -195,7 +195,7 @@ def test_live_cli_reports_provider_failure_without_traceback(monkeypatch, capsys
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(
-        "engram.evaluation.extraction_quality.extract_live_provider_outputs",
+        "evals.extraction_quality.extract_live_provider_outputs",
         fail_live_run,
     )
 
@@ -224,7 +224,7 @@ def test_live_provider_meets_extraction_quality_gates():
 def test_live_extraction_refuses_without_approval(monkeypatch):
     import asyncio
 
-    from engram.evaluation import extraction_quality
+    from evals import extraction_quality
 
     async def no_ingest(*args: object, **kwargs: object) -> object:
         raise AssertionError("ingest ran before the approval gate")

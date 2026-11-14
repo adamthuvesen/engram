@@ -1,6 +1,6 @@
 """Regression tests for the memory audit eval harness."""
 
-from engram.evaluation.memory_audit import (
+from evals.memory_audit import (
     MAX_BURDEN_MULTIPLIER,
     MIN_NEW_PRECISION,
     MIN_NEW_RECALL,

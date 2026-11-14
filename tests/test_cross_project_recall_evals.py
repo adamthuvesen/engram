@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from engram.evaluation.cross_project import (
+from evals.cross_project import (
     DATASET_PATH,
     MIN_QUALITY_SCORE,
     MIN_RELATIVE_GAIN,

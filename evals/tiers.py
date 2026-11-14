@@ -9,9 +9,9 @@ relevance bar (the cards), the top score and coverage, and whether it would
 spend an LLM selection call when a key is configured (no hit cleared the bar).
 
 This is a card-set sizing sanity check, NOT a retrieval-accuracy metric. For
-a real, deterministic recall number see ``engram.evaluation.recall``.
+a real, deterministic recall number see ``evals.recall``.
 
-Run: uv run --locked python -m engram.evaluation.tiers
+Run: uv run --locked python -m evals.tiers
 """
 
 from datetime import UTC, datetime, timedelta
@@ -19,9 +19,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from engram.core.models import Fact, FactCategory
-from engram.evaluation.report import print_provenance, report_provenance
 from engram.recall.retriever import relevant_hits
 from engram.storage.store import FactStore
+from evals.report import print_provenance, report_provenance
 
 NOW = datetime.now(UTC)
 WEEK_AGO = NOW - timedelta(days=3)

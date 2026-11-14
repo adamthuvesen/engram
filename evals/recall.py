@@ -4,7 +4,7 @@
 This is a *script*, not a CLI subcommand and not part of the shipped surface.
 Run it directly:
 
-    uv run --locked python -m engram.evaluation.recall
+    uv run --locked python -m evals.recall
 
 It measures the deterministic lexical pass (BM25 search plus the relevance
 bar) that produces engram's default memory cards with zero LLM calls, over a
@@ -34,7 +34,7 @@ found nothing at all). The no-match queries (empty label) are checked
 separately: their relevant set must be empty.
 
 The script exits non-zero if the no-match case regresses or if recall drops
-below the floors below, so ``uv run --locked python -m engram.evaluation.recall`` is a real gate.
+below the floors below, so ``uv run --locked python -m evals.recall`` is a real gate.
 ``tests/test_recall_evals.py`` enforces the same floors inside pytest/CI.
 """
 
@@ -46,13 +46,13 @@ from tempfile import TemporaryDirectory
 
 from pydantic import BaseModel, Field
 
-from engram.evaluation.fixtures import EvalFactSpec, materialize_facts
-from engram.evaluation.report import (
+from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from evals.fixtures import EvalFactSpec, materialize_facts
+from evals.report import (
     ReportProvenance,
     print_provenance,
     report_provenance,
 )
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
 DATASET_PATH = Path(__file__).parent / "datasets" / "recall_eval_dataset.json"
 
@@ -105,9 +105,9 @@ class Summary(BaseModel):
 
 
 async def _run_query(store: AsyncFactStore, lq: LabeledQuery) -> QueryResult:
-    from engram.evaluation.provider import FixtureCompletionClient
     from engram.llm import completion_client
     from engram.recall.retriever import ZERO_HIT_MAX_CANDIDATES, recall_with_provenance
+    from evals.provider import FixtureCompletionClient
 
     with completion_client(FixtureCompletionClient()):
         _, _, provenance, _ = await recall_with_provenance(lq.query, store=store)

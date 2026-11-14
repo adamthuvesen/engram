@@ -19,9 +19,9 @@ from pydantic import BaseModel
 
 from engram.core.config import Settings, settings_scope
 from engram.core.models import Fact, FactCategory
-from engram.evaluation.provider import FixtureCompletionClient
 from engram.runtime import Runtime
 from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from evals.provider import FixtureCompletionClient
 
 
 class SmokeResult(BaseModel):
@@ -87,7 +87,7 @@ async def _exercise[T: ClientTransport](client: Client[T]) -> list[str]:
 def _server_args(data_dir: Path, transport: str, port: int | None = None) -> list[str]:
     args = [
         "-m",
-        "engram.tooling.smoke",
+        "tools.smoke",
         "serve",
         "--data-dir",
         str(data_dir),
@@ -219,10 +219,9 @@ async def run_assets(data_dir: Path) -> SmokeResult:
     from textual.widgets import DataTable, Static
 
     from engram.dashboard.app import CSS_PATH, EngramDashboard
-    from engram.evaluation.recall import DATASET_PATH
 
-    if not CSS_PATH.is_file() or not DATASET_PATH.is_file():
-        raise RuntimeError("Installed package is missing dashboard CSS or evaluation data.")
+    if not CSS_PATH.is_file():
+        raise RuntimeError("Installed package is missing dashboard CSS.")
     with settings_scope(Settings(data_dir=data_dir, maintenance_enabled=False, sync_enabled=False)):
         app = EngramDashboard()
         async with app.run_test(size=(100, 30)) as pilot:
@@ -242,7 +241,6 @@ async def run_assets(data_dir: Path) -> SmokeResult:
         transport="assets",
         checks=[
             "dashboard CSS",
-            "evaluation data",
             "headless dashboard",
             "persisted dashboard fact",
         ],

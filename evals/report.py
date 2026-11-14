@@ -36,7 +36,7 @@ def _source_revision() -> tuple[str | None, bool | None]:
     if root_result.returncode:
         return None, None
     root = Path(root_result.stdout.strip()).resolve()
-    if source != root / "src" / "engram" / "evaluation" / "report.py":
+    if source != root / "evals" / "report.py":
         return None, None
     tracked = subprocess.run(
         ["git", "ls-files", "--error-unmatch", "src/engram/__init__.py"],

@@ -40,7 +40,7 @@ packages = ["src/engram"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 strict_markers = true
 addopts = "-m 'not live_provider and not sync_transport'"
 
@@ -50,7 +50,7 @@ enableTypeIgnoreComments = false
 reportUnnecessaryTypeIgnoreComment = "error"
 reportIgnoreCommentWithoutRule = "error"
 pythonVersion = "3.14"
-include = ["src", "tests"]
+include = ["src", "evals", "tools", "tests"]
 venvPath = "."
 venv = ".venv"
 extraPaths = ["src", "."]
@@ -88,7 +88,7 @@ ignore = [
 # for all of them.
 [tool.ruff.lint.per-file-ignores]
 "src/engram/llm/client.py" = ["TID251"]
-"src/engram/tooling/smoke.py" = ["TID251"]
+"tools/smoke.py" = ["TID251"]
 "tests/test_llm.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
@@ -98,7 +98,7 @@ ignore = [
 "requests".msg = "Network calls belong to engram.llm.client."
 "urllib.request".msg = "Network calls belong to engram.llm.client."
 "http.client".msg = "Network calls belong to engram.llm.client."
-"socket".msg = "Only engram.tooling.smoke opens sockets."
+"socket".msg = "Only tools.smoke opens sockets."
 "urllib3".msg = "Network calls belong to engram.llm.client."
 "aiohttp".msg = "Network calls belong to engram.llm.client."
 "websockets".msg = "Network calls belong to engram.llm.client."

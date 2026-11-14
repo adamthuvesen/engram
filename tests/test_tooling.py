@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from engram.evaluation.fixtures import EvalFactSpec, EvalFixture, run_fixture
-from engram.evaluation.recall import DATASET_PATH, evaluate
-from engram.tooling.boundaries import check_source
-from engram.tooling.reference import configuration_markdown, update_references
-from engram.tooling.smoke import child_environment, run_smoke
-from engram.tooling.verify import EXCLUDED, CheckResult, VerificationReport, commands
+from evals.fixtures import EvalFactSpec, EvalFixture, run_fixture
+from evals.recall import DATASET_PATH, evaluate
 from tests.conftest import pytest_collection_modifyitems
+from tools.boundaries import check_source
+from tools.reference import configuration_markdown, update_references
+from tools.smoke import child_environment, run_smoke
+from tools.verify import EXCLUDED, CheckResult, VerificationReport, commands
 
 
 def test_default_verification_excludes_billable_and_push_profiles():
@@ -59,7 +59,7 @@ def test_excluded_profiles_are_listed_without_changing_status():
 def test_package_smoke_isolates_locked_dependencies_and_wheel_import(
     monkeypatch, tmp_path, import_from_checkout
 ):
-    import engram.tooling.verify as verification
+    import tools.verify as verification
 
     root = tmp_path / "checkout"
     root.mkdir()
@@ -107,7 +107,7 @@ def test_package_smoke_isolates_locked_dependencies_and_wheel_import(
     assert "PYTHONPATH" not in origin_call[2]
     assert "VIRTUAL_ENV" not in origin_call[2]
     assert report.failed is import_from_checkout
-    smoke_calls = [call for call in calls if "engram.tooling.smoke" in call[0]]
+    smoke_calls = [call for call in calls if "tools.smoke" in call[0]]
     if import_from_checkout:
         assert report.checks[-1].name == "installed import origin"
         assert smoke_calls == []
@@ -232,10 +232,10 @@ def test_asset_only_smoke_requires_persisted_fact_in_dashboard(monkeypatch, load
 
 
 def test_report_revision_uses_loaded_source_not_custom_dataset(monkeypatch, tmp_path):
-    import engram.evaluation.report as reporting
+    import evals.report as reporting
 
     source = Path(reporting.__file__).resolve()
-    root = source.parents[3]
+    root = source.parents[1]
     calls = []
 
     def git(command, *, cwd, **kwargs):
@@ -257,11 +257,11 @@ def test_report_revision_uses_loaded_source_not_custom_dataset(monkeypatch, tmp_
     assert all(cwd != dataset.parent for _, cwd in calls)
 
 
-def test_report_does_not_attribute_nested_wheel_to_host_repository(monkeypatch, tmp_path):
-    import engram.evaluation.report as reporting
+def test_report_does_not_attribute_nested_copy_to_host_repository(monkeypatch, tmp_path):
+    import evals.report as reporting
 
-    installed = tmp_path / ".venv/lib/site-packages/engram/evaluation/report.py"
-    monkeypatch.setattr(reporting, "__file__", str(installed))
+    nested = tmp_path / "other-checkout/evals/report.py"
+    monkeypatch.setattr(reporting, "__file__", str(nested))
     monkeypatch.setattr(
         reporting.subprocess,
         "run",
@@ -271,7 +271,7 @@ def test_report_does_not_attribute_nested_wheel_to_host_repository(monkeypatch, 
 
 
 def test_supplied_extraction_outputs_have_unknown_live_provenance():
-    from engram.evaluation.extraction_quality import evaluate, load_dataset
+    from evals.extraction_quality import evaluate, load_dataset
 
     outputs = {case.id: case.fixture_extracted_cards for case in load_dataset().cases}
     summary = evaluate(extracted_cards_by_case=outputs)

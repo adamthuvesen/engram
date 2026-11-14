@@ -85,6 +85,7 @@ def check_source(source: str, path: str) -> list[BoundaryViolation]:
 def check_boundaries(root: Path) -> list[BoundaryViolation]:
     return [
         violation
-        for path in sorted((root / "src" / "engram").rglob("*.py"))
+        for package in ("src/engram", "evals", "tools")
+        for path in sorted((root / package).rglob("*.py"))
         for violation in check_source(path.read_text(), str(path.relative_to(root)))
     ]
