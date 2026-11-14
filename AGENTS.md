@@ -24,7 +24,7 @@ Regenerate references after changing either surface or Settings descriptions.
 Compatibility changes still require judgment. Preserve MCP tool names, persisted event formats, and documented adapters.
 Add settings to `Settings` with descriptions, then regenerate references.
 Upgrade all writers before concurrent review. Local storage guarantees do not imply distributed serializability.
-`remember` and ingest call OpenAI by design: a user triggers each call, so they have no spend gate.
+`remember`, ingest, `recall` answer mode, and `doctor --check-provider` call OpenAI by design: a user triggers each call, so they have no spend gate. Background upkeep (consolidation, briefs) also calls OpenAI with no gate: the user set up the daemon, and that setup is the approval.
 
 Evals run as modules, for example `uv run --locked python -m engram.evaluation.recall`.
 

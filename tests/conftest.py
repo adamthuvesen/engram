@@ -1,11 +1,22 @@
 """Shared pytest fixtures."""
 
+import json
 import os
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
+_session_home = Path(tempfile.mkdtemp(prefix="engram-session-home-"))
+
 
 def pytest_configure(config):
+    # Collection, module-level code and wider-scoped fixtures run before the per-test
+    # `_isolated_store` fixture, so the live store must already be out of reach here.
+    os.environ["ENGRAM_DATA_DIR"] = str(_session_home / "data")
+    os.environ["ENGRAM_CLAUDE_PROJECTS_DIR"] = str(_session_home / "claude-projects")
+    os.environ["ENGRAM_REPO_SEARCH_ROOTS"] = json.dumps([str(_session_home / "repos")])
     config.addinivalue_line(
         "markers",
         "live_provider: permits provider calls only with ENGRAM_EVAL_PROVIDER=1",
@@ -14,6 +25,10 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "subprocess_smoke: starts installed entrypoints; runs in verify only"
     )
+
+
+def pytest_unconfigure(config):
+    shutil.rmtree(_session_home, ignore_errors=True)
 
 
 def pytest_addoption(parser):
@@ -39,8 +54,6 @@ def pytest_collection_modifyitems(config, items):
 @pytest.fixture(autouse=True)
 def _isolated_store(monkeypatch, tmp_path_factory):
     """Point default settings paths at a temporary home, never the user's live store."""
-    import json
-
     from engram.core.config import get_settings
 
     home = tmp_path_factory.mktemp("engram-home")

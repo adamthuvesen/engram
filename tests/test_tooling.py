@@ -306,6 +306,8 @@ def citation_problems(agents: str, root: Path) -> list[str]:
         cited = re.findall(r"`([^`]+)`", row.split("|")[2])
         if not cited:
             problems.append(f"Enforced Rules row cites no path: {row}")
+        elif not any("::" in citation for citation in cited):
+            problems.append(f"Enforced Rules row cites no exact name: {row}")
         for citation in cited:
             path, _, name = citation.partition("::")
             target = root / path
@@ -337,11 +339,14 @@ def test_citation_check_finds_rotten_citations():
         "| c | `justfile::check-everything` | d |",
         "| d | `.agents/skills/verify-engram/verify::no_such_name` | d |",
         "| e | `docs/missing.md` | d |",
+        "| f | `tests/conftest.py` | d |",
     ]
     assert citation_problems(table + "\n".join(rows) + "\n", root) == [
         "Enforced Rules row cites no path: | a | nothing cited | d |",
         "AGENTS.md cites tests/test_tooling.py::test_named_nowhere, but tests/test_tooling.py does not define it.",
         "AGENTS.md cites justfile::check-everything, but justfile does not define it.",
         "AGENTS.md cites .agents/skills/verify-engram/verify::no_such_name, but .agents/skills/verify-engram/verify does not define it.",
+        "Enforced Rules row cites no exact name: | e | `docs/missing.md` | d |",
         "AGENTS.md cites missing path docs/missing.md.",
+        "Enforced Rules row cites no exact name: | f | `tests/conftest.py` | d |",
     ]

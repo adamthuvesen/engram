@@ -140,6 +140,13 @@ def test_ban_owners_import_only_the_modules_they_own() -> None:
     assert unowned_bans(ROOT, OWNED_BANS) == []
 
 
+def test_network_and_sdk_bans_stay_listed() -> None:
+    lint = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["ruff"]["lint"]
+    banned = set(lint["flake8-tidy-imports"]["banned-api"])
+    required = {"openai", "httpx", "httpx2", "requests", "urllib.request", "http.client", "socket"}
+    assert required <= banned, f"banned-api lost {sorted(required - banned)}"
+
+
 def test_ban_checks_find_a_suppression_and_a_stray_owner_import(tmp_path: Path) -> None:
     env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, env=env, check=True)

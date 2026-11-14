@@ -4,6 +4,8 @@ import os
 
 from engram.core.config import Settings, ensure_openai_api_key, load_cached_api_keys
 
+COLLECTION_TIME_DATA_DIR = Settings().data_dir
+
 
 def test_default_llm_uses_luna_with_medium_reasoning(monkeypatch):
     monkeypatch.delenv("ENGRAM_LLM_MODEL", raising=False)
@@ -96,3 +98,9 @@ def test_tests_never_default_to_the_live_store():
     settings = get_settings()
     assert not settings.data_dir.is_relative_to(Path.home() / ".engram")
     assert not settings.claude_projects_dir.is_relative_to(Path.home() / ".claude")
+
+
+def test_settings_resolved_at_collection_time_are_not_the_live_store():
+    from pathlib import Path
+
+    assert not COLLECTION_TIME_DATA_DIR.is_relative_to(Path.home() / ".engram")
