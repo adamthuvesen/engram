@@ -441,7 +441,8 @@ async def test_dashboard_refreshes_on_expiry_without_file_changes(store, monkeyp
     now = datetime.now(UTC)
     store.append_facts([_fact("expires soon", expires_at=now + timedelta(minutes=1))])
     app = EngramDashboard()
-    async with app.run_test(size=(140, 40)):
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
         await app.workers.wait_for_complete()
         before = content_hash_for(store)
         assert app._data.active_count == 1
@@ -585,7 +586,8 @@ async def test_failed_refresh_preserves_snapshot_and_retries_unchanged_hash(stor
 
     store.append_facts([_fact("first")])
     app = EngramDashboard()
-    async with app.run_test(size=(140, 40)):
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
         await app.workers.wait_for_complete()
         before = app._data
         old_hash = app._last_hash
@@ -653,7 +655,8 @@ async def test_partial_forget_and_failed_undo_keep_successful_undo_entries(store
         raise OSError("restore denied")
 
     app = EngramDashboard()
-    async with app.run_test(size=(140, 40)):
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
         await app.workers.wait_for_complete()
         monkeypatch.setattr(FactStore, "forget", fail_second)
         app._pending_forget = [first.id, second.id]
@@ -686,7 +689,8 @@ async def test_forget_keeps_undo_when_snapshot_reload_fails(store, monkeypatch):
         raise OSError("snapshot unavailable")
 
     app = EngramDashboard()
-    async with app.run_test(size=(140, 40)):
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
         await app.workers.wait_for_complete()
         before = app._data
         monkeypatch.setattr(app_module, "load_dashboard_data", fail_read)
@@ -733,7 +737,8 @@ async def test_requested_undo_survives_expiry_while_refresh_owns_storage(store, 
         return original_load(store)
 
     app = EngramDashboard()
-    async with app.run_test(size=(140, 40)):
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
         await app.workers.wait_for_complete()
         monkeypatch.setattr(FactStore, "forget", blocked_forget)
         monkeypatch.setattr(app_module, "load_dashboard_data", blocked_refresh)
@@ -769,7 +774,8 @@ async def test_cancelled_undo_does_not_prevent_expiry(store, monkeypatch, cancel
     fact = _fact("cancelled undo")
     store.append_facts([fact])
     app = EngramDashboard()
-    async with app.run_test(size=(140, 40)):
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
         await app.workers.wait_for_complete()
         app._pending_forget = [fact.id]
         app._on_forget_confirmed(True)

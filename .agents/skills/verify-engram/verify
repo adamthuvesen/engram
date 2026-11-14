@@ -298,12 +298,7 @@ def main(argv: list[str]) -> int:
         print(f"FAIL tripwire: a drive ran {hits[:10]}", flush=True)
     if command == "control":
         failures = [str(r["detail"]) for r in results if r["result"] == "FAIL"]
-        ok = (
-            len(failures) == 1
-            and failures[0].startswith(CONTROL_FAILURE)
-            and not changed
-            and not hits
-        )
+        ok = failures == [CONTROL_FAILURE] and not changed and not hits
         if ok:
             print("control: FAIL observed")
         elif failures:

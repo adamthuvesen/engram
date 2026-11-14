@@ -159,7 +159,7 @@ async def drive_cli(ctx: Context, expect_id: str = "verifyfact01") -> str:
 
 
 # The control passes only when its drive fails on exactly this planted expectation.
-CONTROL_FAILURE = "recall: expected top card verifyfact99, got "
+CONTROL_FAILURE = "recall: expected top card verifyfact99, got ['verifyfact01']"
 
 
 async def control(ctx: Context) -> str:

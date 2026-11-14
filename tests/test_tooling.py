@@ -332,21 +332,21 @@ def test_enforced_rules_cite_existing_paths():
 
 def test_citation_check_finds_rotten_citations():
     root = Path(__file__).resolve().parents[1]
-    table = "\n## Enforced Rules\n\n| Rule | Enforced by | Added |\n| --- | --- | --- |\n"
+    table = "\n## Enforced Rules\n\n| Rule | Enforced by |\n| --- | --- |\n"
     rows = [
-        "| a | nothing cited | d |",
-        "| b | `tests/test_tooling.py::test_named_nowhere` | d |",
-        "| c | `justfile::check-everything` | d |",
-        "| d | `.agents/skills/verify-engram/verify::no_such_name` | d |",
-        "| e | `docs/missing.md` | d |",
-        "| f | `tests/conftest.py` | d |",
+        "| a | nothing cited |",
+        "| b | `tests/test_tooling.py::test_named_nowhere` |",
+        "| c | `justfile::check-everything` |",
+        "| d | `.agents/skills/verify-engram/verify::no_such_name` |",
+        "| e | `docs/missing.md` |",
+        "| f | `tests/conftest.py` |",
     ]
     assert citation_problems(table + "\n".join(rows) + "\n", root) == [
-        "Enforced Rules row cites no path: | a | nothing cited | d |",
+        "Enforced Rules row cites no path: | a | nothing cited |",
         "AGENTS.md cites tests/test_tooling.py::test_named_nowhere, but tests/test_tooling.py does not define it.",
         "AGENTS.md cites justfile::check-everything, but justfile does not define it.",
         "AGENTS.md cites .agents/skills/verify-engram/verify::no_such_name, but .agents/skills/verify-engram/verify does not define it.",
-        "Enforced Rules row cites no exact name: | e | `docs/missing.md` | d |",
+        "Enforced Rules row cites no exact name: | e | `docs/missing.md` |",
         "AGENTS.md cites missing path docs/missing.md.",
-        "Enforced Rules row cites no exact name: | f | `tests/conftest.py` | d |",
+        "Enforced Rules row cites no exact name: | f | `tests/conftest.py` |",
     ]
