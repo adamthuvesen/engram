@@ -1,5 +1,3 @@
-"""Agent-first CLI commands for Engram."""
-
 from __future__ import annotations
 
 import argparse

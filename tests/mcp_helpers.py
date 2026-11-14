@@ -1,5 +1,3 @@
-"""Public FastMCP test helpers."""
-
 from typing import Any, cast
 
 from fastmcp import FastMCP

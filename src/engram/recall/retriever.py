@@ -138,11 +138,6 @@ def _cards_quality(cards: list[SearchHit]) -> str:
     return "high" if cards[0].coverage >= HIGH_QUALITY_COVERAGE else "medium"
 
 
-# ---------------------------------------------------------------------------
-# Warnings
-# ---------------------------------------------------------------------------
-
-
 def _provider_unavailable(message: str) -> EnvelopeWarning:
     return EnvelopeWarning(code=WarningCode.provider_unavailable, message=message)
 
@@ -185,11 +180,6 @@ def _delivery_warnings(delivered: list[Fact]) -> list[EnvelopeWarning]:
             )
         )
     return warnings
-
-
-# ---------------------------------------------------------------------------
-# LLM calls
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -372,11 +362,6 @@ def _call_trace(
         ),
         prompt_truncated or output_truncated,
     )
-
-
-# ---------------------------------------------------------------------------
-# Public recall entry points
-# ---------------------------------------------------------------------------
 
 
 async def recall(

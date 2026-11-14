@@ -82,11 +82,6 @@ def _commit_all(repo: Path, message: str) -> None:
     _git("commit", "-m", message, cwd=repo)
 
 
-# ---------------------------------------------------------------------------
-# Setup validation
-# ---------------------------------------------------------------------------
-
-
 def test_sync_errors_when_not_a_git_repo(tmp_path: Path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -118,11 +113,6 @@ def test_sync_errors_when_git_missing(monkeypatch, tmp_path: Path):
     with pytest.raises(SyncError) as exc:
         sync(repo)
     assert exc.value.code == "git_not_found"
-
-
-# ---------------------------------------------------------------------------
-# Happy paths
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.sync_transport
@@ -282,11 +272,6 @@ def test_sync_two_machines_disjoint_facts_merge_via_append(tmp_path: Path):
     assert {f.id for f in FactStore(data_dir=bob).load_facts()} == expected_ids
 
 
-# ---------------------------------------------------------------------------
-# Sync state file
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.sync_transport
 def test_sync_state_is_json_and_carries_completed_at(tmp_path: Path):
     bare = _make_bare_repo(tmp_path)
@@ -316,11 +301,6 @@ def test_sync_state_unchanged_on_failure(monkeypatch, tmp_path: Path):
     assert initial["status"] == "ok"
 
 
-# ---------------------------------------------------------------------------
-# Compaction sentinel
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.sync_transport
 def test_sync_skips_when_compaction_sentinel_present(tmp_path: Path):
     from engram.storage.sync import COMPACTION_SENTINEL_FILENAME
@@ -331,11 +311,6 @@ def test_sync_skips_when_compaction_sentinel_present(tmp_path: Path):
     result = sync(clone)
     assert result["status"] == "skipped"
     assert result["reason"] == "compaction_in_progress"
-
-
-# ---------------------------------------------------------------------------
-# Auto-sync background loop
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

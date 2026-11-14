@@ -13,8 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class TimelineScreen(Container):
-    """Shows fact creation/activity over time."""
-
     def __init__(self, data: DashboardData) -> None:
         super().__init__()
         self._data = data

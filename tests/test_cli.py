@@ -33,11 +33,6 @@ def _seed(tmp: Path, facts: list[Fact]) -> None:
     store.append_facts(facts)
 
 
-# ---------------------------------------------------------------------------
-# is_cli_invocation
-# ---------------------------------------------------------------------------
-
-
 def test_is_cli_invocation_true_for_known_subcommand():
     assert cli.is_cli_invocation(["trace", "x"]) is True
     assert cli.is_cli_invocation(["doctor"]) is True
@@ -119,11 +114,6 @@ def test_cli_run_returns_code_for_parse_errors(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
-# trace
-# ---------------------------------------------------------------------------
-
-
 def test_cli_trace_json_no_match(cli_env, capsys):
     exit_code = cli.run(["trace", "obscure", "--json"])
     assert exit_code == cli.EXIT_OK
@@ -139,11 +129,6 @@ def test_cli_recall_invalid_max_sources(cli_env, capsys):
     assert exit_code == cli.EXIT_VALIDATION
     assert parsed["errors"][0]["code"] == "validation_error"
     assert parsed["errors"][0]["details"] == {"parameter": "max_sources"}
-
-
-# ---------------------------------------------------------------------------
-# doctor
-# ---------------------------------------------------------------------------
 
 
 def test_cli_doctor_json_healthy(cli_env, capsys):
@@ -194,11 +179,6 @@ def test_cli_doctor_repairs_orphaned_supersessions(cli_env, capsys):
     assert exit_code == cli.EXIT_OK
     assert parsed["data"]["repair"]["orphaned_supersessions"]["cleared"] == 1
     assert repaired.supersedes is None
-
-
-# ---------------------------------------------------------------------------
-# correct
-# ---------------------------------------------------------------------------
 
 
 def test_cli_correct_json_success(cli_env, capsys):
@@ -266,11 +246,6 @@ def test_cli_recall_stats_aggregate_and_include_records(cli_env, capsys):
     assert with_records["data"]["records"][0]["query"] == "new"
 
 
-# ---------------------------------------------------------------------------
-# merge
-# ---------------------------------------------------------------------------
-
-
 def test_cli_merge_json_validation_one_source(cli_env, capsys):
     exit_code = cli.run(["merge", "onlyoneonlyo", "--content", "merged", "--json"])
     parsed = json.loads(capsys.readouterr().out)
@@ -304,11 +279,6 @@ def test_cli_merge_json_success(cli_env, capsys):
     }
 
 
-# ---------------------------------------------------------------------------
-# stale
-# ---------------------------------------------------------------------------
-
-
 def test_cli_stale_marks_fact_stale(cli_env, capsys):
     _seed(
         cli_env,
@@ -325,11 +295,6 @@ def test_cli_stale_not_found(cli_env, capsys):
     parsed = json.loads(capsys.readouterr().out)
     assert exit_code == cli.EXIT_NOT_FOUND
     assert parsed["errors"][0]["code"] == "not_found"
-
-
-# ---------------------------------------------------------------------------
-# inspect
-# ---------------------------------------------------------------------------
 
 
 def test_cli_inspect_json_bounded(cli_env, capsys):
@@ -382,11 +347,6 @@ def test_cli_inspect_invalid_limit(cli_env, capsys):
     assert exit_code == cli.EXIT_VALIDATION
     assert parsed["errors"][0]["code"] == "validation_error"
     assert parsed["errors"][0]["message"] == "limit must be greater than zero"
-
-
-# ---------------------------------------------------------------------------
-# Non-JSON mode still works (smoke)
-# ---------------------------------------------------------------------------
 
 
 def test_cli_inspect_text_mode_smoke(cli_env, capsys):

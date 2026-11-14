@@ -158,8 +158,6 @@ class ProjectDetailView(Container):
 
 
 class ProjectsScreen(Container):
-    """List all projects with health indicators, drill into detail."""
-
     SORT_COLUMNS: ClassVar[list[str]] = ["active", "forgotten", "expired", "total", "name"]
 
     def __init__(self, data: DashboardData) -> None:

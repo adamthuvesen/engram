@@ -96,7 +96,6 @@ class CandidateSnapshots:
         return candidates
 
     def append(self, candidates: list[MemoryCandidate]) -> None:
-        """Append memory candidates to the queue."""
         with _locked_store(self.data_dir), _locked_write(self.path):
             ensure_trailing_newline(self.path)
             with self.path.open("a") as f:

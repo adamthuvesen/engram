@@ -1,5 +1,3 @@
-"""Tests for the JSONL fact store."""
-
 import asyncio
 import json
 import tempfile

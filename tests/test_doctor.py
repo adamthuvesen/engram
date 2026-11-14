@@ -1,5 +1,3 @@
-"""Tests for the doctor diagnostics module."""
-
 from __future__ import annotations
 
 import asyncio
@@ -26,11 +24,6 @@ from tests.mcp_helpers import call_tool
 
 def _make_store() -> FactStore:
     return FactStore(data_dir=Path(tempfile.mkdtemp()))
-
-
-# ---------------------------------------------------------------------------
-# 5.1: read-only checks
-# ---------------------------------------------------------------------------
 
 
 def test_doctor_healthy_store_reports_ok():
@@ -234,11 +227,6 @@ def test_doctor_flags_stale_pending_candidates():
     assert "stale_pending_candidates" in codes
 
 
-# ---------------------------------------------------------------------------
-# 5.4: repairs
-# ---------------------------------------------------------------------------
-
-
 def test_repair_jsonl_drops_corrupt_lines():
     store = _make_store()
     fact = Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="ok")
@@ -286,11 +274,6 @@ def test_repair_orphaned_supersessions_clears_only_broken_links():
     assert facts["validchildaa"].supersedes == "parentaaaaaa"
 
 
-# ---------------------------------------------------------------------------
-# MCP doctor surface
-# ---------------------------------------------------------------------------
-
-
 def test_doctor_mcp_returns_envelope(monkeypatch):
     store = _make_store()
     app = server.create_mcp(AsyncFactStore(store))
@@ -300,11 +283,6 @@ def test_doctor_mcp_returns_envelope(monkeypatch):
     assert parsed["status"] == "ok"
     assert "report" in parsed["data"]
     assert parsed["data"]["report"]["status"] in ("ok", "warning", "error")
-
-
-# ---------------------------------------------------------------------------
-# Sync diagnostics
-# ---------------------------------------------------------------------------
 
 
 def test_doctor_sync_group_when_not_a_git_repo():

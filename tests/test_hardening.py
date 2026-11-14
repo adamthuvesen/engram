@@ -43,11 +43,6 @@ def _make_candidate(**kwargs: Any) -> MemoryCandidate:
     return MemoryCandidate(**defaults)
 
 
-# ---------------------------------------------------------------------------
-# 1.4 Concurrent appends produce no corruption
-# ---------------------------------------------------------------------------
-
-
 def test_concurrent_append_no_corruption():
     """Two threads appending 50 facts each yields 100 clean JSONL lines."""
     store = _make_store()
@@ -78,11 +73,6 @@ def test_concurrent_append_no_corruption():
         json.loads(line)  # must not raise
 
 
-# ---------------------------------------------------------------------------
-# 1.5 _rewrite failure leaves no .tmp files
-# ---------------------------------------------------------------------------
-
-
 def test_rewrite_failure_leaves_no_tmp_files():
     """If _rewrite raises before os.replace, no *.tmp file is left behind."""
     store = _make_store()
@@ -103,11 +93,6 @@ def test_rewrite_failure_leaves_no_tmp_files():
     tmp_files = list(store.data_dir.glob("*.tmp"))
     assert tmp_files == [], f"Orphaned tmp files: {tmp_files}"
     assert call_count[0] >= 1
-
-
-# ---------------------------------------------------------------------------
-# 1.6 _rewrite calls fsync before os.replace
-# ---------------------------------------------------------------------------
 
 
 def test_rewrite_calls_fsync():
@@ -142,11 +127,6 @@ def test_rewrite_calls_fsync():
     assert len(fsync_calls) >= 1 and len(replace_calls) >= 1
     # The target file should be intact
     assert store.facts_path.exists()
-
-
-# ---------------------------------------------------------------------------
-# 2.3 approve_candidates uses exactly 3 write operations for N candidates
-# ---------------------------------------------------------------------------
 
 
 def test_approve_candidates_batched_writes():
@@ -300,11 +280,6 @@ def test_reject_candidates_appends_one_snapshot_batch():
     assert len(rejected) == 5
     assert store.candidates_path.read_bytes().startswith(before)
     assert len(store.candidates_path.read_text().splitlines()) == 10
-
-
-# ---------------------------------------------------------------------------
-# 3.4 structured LLM output validation
-# ---------------------------------------------------------------------------
 
 
 class _HardeningStructuredResponse(BaseModel):
@@ -656,11 +631,6 @@ def test_mcp_tools_return_text_and_structured_content():
     assert structured["data"][0]["id"] == "aaaaaaaaaaaa"
 
 
-# ---------------------------------------------------------------------------
-# 6.4 Search index cache: built once, rebuilt when the event log changes
-# ---------------------------------------------------------------------------
-
-
 def test_search_index_cached_across_searches():
     store = _make_store()
     store.append_facts(
@@ -691,11 +661,6 @@ def test_search_index_rebuilt_after_update_and_purge():
     assert store.search_facts("JavaScript") == []
 
 
-# ---------------------------------------------------------------------------
-# 7.2 Config placeholder detection covers embedded placeholders
-# ---------------------------------------------------------------------------
-
-
 def test_placeholder_detection_embedded():
     from engram.core.config import _is_unresolved_env_placeholder
 
@@ -710,11 +675,6 @@ def test_placeholder_detection_embedded():
     assert not _is_unresolved_env_placeholder("price is $5.00")  # lowercase after $
     assert not _is_unresolved_env_placeholder(None)
     assert not _is_unresolved_env_placeholder("")
-
-
-# ---------------------------------------------------------------------------
-# 7.4 Importer _clean_project_name uses home-path-relative logic
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("home", ["/Users/alex", "/home/alex", "/root"])

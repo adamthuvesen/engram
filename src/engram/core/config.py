@@ -15,8 +15,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
-
     # Storage
     data_dir: Path = Field(
         default=Path.home() / ".engram" / "data", description="Storage directory."
@@ -234,7 +232,6 @@ def ensure_openai_api_key(cache_path: Path | None = None) -> str | None:
 
 
 def configure_logging() -> None:
-    """Configure logging based on settings."""
     log_level = get_settings().log_level
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),

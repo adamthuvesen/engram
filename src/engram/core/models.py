@@ -1,5 +1,3 @@
-"""Data models for Engram."""
-
 import threading
 import time
 from copy import copy
@@ -61,8 +59,6 @@ class FactCategory(str, Enum):
 
 
 class EvidenceKind(str, Enum):
-    """Kinds of evidence backing a memory item."""
-
     conversation = "conversation"
     imported_memory = "imported_memory"
     user_statement = "user_statement"
@@ -95,8 +91,6 @@ class CandidateStatus(str, Enum):
 
 
 class TransactionStatus(str, Enum):
-    """Lifecycle states for durable store transactions."""
-
     prepared = "prepared"
     committed = "committed"
 
@@ -143,7 +137,6 @@ class FactBase(BaseModel):
 
     @property
     def oldest_claim_at(self) -> datetime:
-        """When this card's oldest claim was observed."""
         return self.first_observed_at or self.observed_at
 
 
@@ -238,9 +231,6 @@ class StoreTransaction(BaseModel):
     committed_at: datetime | None = None
     events: list[FactEvent] = Field(default_factory=list)
     candidates: list[MemoryCandidate] = Field(default_factory=list)
-
-
-# --- Event-log model ---------------------------------------------------------
 
 
 EVENT_LOG_META_VERSION: Literal["event-log-v1"] = "event-log-v1"

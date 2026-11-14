@@ -44,9 +44,6 @@ def _at(seconds: int) -> datetime:
     return base + timedelta(seconds=seconds)
 
 
-# --- new_event_id ------------------------------------------------------------
-
-
 def test_new_event_id_is_strictly_monotonic_in_process():
     ids = [new_event_id() for _ in range(100)]
     assert ids == sorted(ids), "event ids must be strictly increasing"
@@ -58,9 +55,6 @@ def test_new_event_id_is_lexicographically_orderable():
     b = new_event_id()
     # Lexicographic comparison must agree with issue order.
     assert a < b
-
-
-# --- replay: create-only -----------------------------------------------------
 
 
 def test_replay_create_only_returns_active_fact():
@@ -113,9 +107,6 @@ def test_replay_mixed_fact_ids_raises():
     b = _make_fact(id="fact_b")
     with pytest.raises(ValueError, match="multiple fact_ids"):
         replay_fact([_created_event(a), _created_event(b)])
-
-
-# --- replay: create + edit ---------------------------------------------------
 
 
 def test_replay_create_then_edit_applies_update():
@@ -200,9 +191,6 @@ def test_replay_edit_coerces_iso_datetime_payload():
     assert result.expires_at == _at(5_000)
 
 
-# --- replay: create + forget [+ restore] -------------------------------------
-
-
 def test_replay_create_then_forget_yields_inactive():
     fact = _make_fact()
     events = [
@@ -272,9 +260,6 @@ def test_replay_create_edit_forget():
     assert is_active is False
 
 
-# --- replay: stale toggle ----------------------------------------------------
-
-
 def test_replay_stale_then_unstale():
     fact = _make_fact()
     events = [
@@ -297,9 +282,6 @@ def test_replay_stale_then_unstale():
     assert result is not None
     assert result.stale is False
     assert result.stale_reason == ""
-
-
-# --- replay: conflicting concurrent edits ------------------------------------
 
 
 def test_replay_later_timestamp_wins_for_same_field():
@@ -372,9 +354,6 @@ def test_replay_both_conflicting_events_remain_for_audit():
     assert result.content == "from-b"
 
 
-# --- replay: supersession ----------------------------------------------------
-
-
 def test_replay_superseded_fact_becomes_inactive():
     old = _make_fact(id="fact_old", content="v1")
     new_id = "fact_new"
@@ -415,9 +394,6 @@ def test_materialize_supersession_chain():
     assert new_fact.supersedes == "fact_old"
 
 
-# --- event-log meta ----------------------------------------------------------
-
-
 def test_event_log_meta_default_version():
     meta = EventLogMeta()
     assert meta.meta == EVENT_LOG_META_VERSION
@@ -433,9 +409,6 @@ def test_event_log_meta_accepts_existing_header_timestamp():
     )
 
     assert meta.created_at == _at(0)
-
-
-# --- compaction --------------------------------------------------------------
 
 
 def test_compaction_preserves_active_materialization(tmp_path):

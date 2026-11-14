@@ -1,5 +1,3 @@
-"""Tests for read-only memory audit suggestions."""
-
 from __future__ import annotations
 
 import asyncio

@@ -136,9 +136,6 @@ class ConsolidationResponse(BaseModel):
     retire: list[RetiredInputCard]
 
 
-# --- Clustering --------------------------------------------------------------
-
-
 def partition_clusters(
     facts: list[Fact],
     index: SearchIndex,
@@ -173,9 +170,6 @@ def partition_clusters(
         assigned.update(fact.id for fact in members)
         clusters.append(members)
     return clusters
-
-
-# --- One cluster -------------------------------------------------------------
 
 
 def _handles(cluster: list[Fact]) -> dict[str, str]:
@@ -458,9 +452,6 @@ def plan_cluster_changes(
         changes.stale[retired.id] = f"consolidation: {retired.reason}"
     split = sum(1 for count in uses.values() if count > 1)
     return ClusterPlan(changes=changes, merged=merged, rewritten=rewritten, split=split)
-
-
-# --- Step --------------------------------------------------------------------
 
 
 async def run_consolidation(

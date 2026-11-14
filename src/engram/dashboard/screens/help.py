@@ -62,8 +62,6 @@ FOOTER_HINTS: dict[str, str] = {
 
 
 class HelpScreen(ModalScreen[None]):
-    """Full keybinding reference, pushed as modal."""
-
     BINDINGS: ClassVar[list[BindingType]] = [
         ("escape", "dismiss", "Close"),
         ("question_mark", "dismiss", "Close"),

@@ -28,8 +28,6 @@ from engram.dashboard.tables import (
 )
 from engram.storage.store import FactStore
 
-# ── Fixtures ──
-
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
@@ -59,9 +57,6 @@ def _candidate(content="suggestion", project="engram", status=CandidateStatus.pe
         why_store="testing",
         **kw,
     )
-
-
-# ── Data layer tests ──
 
 
 def test_load_empty_store(store):
@@ -184,9 +179,6 @@ def test_sparkline_length(store):
     assert len(data.activity_7d) == 7
 
 
-# ── Content hash tests ──
-
-
 def test_content_hash_changes_on_write(store):
     store.append_facts([_fact("first")])
     hash1 = content_hash_for(store)
@@ -198,9 +190,6 @@ def test_content_hash_changes_on_write(store):
 def test_content_hash_stable_when_unchanged(store):
     store.append_facts([_fact("stable")])
     assert content_hash_for(store) == content_hash_for(store)
-
-
-# ── Formatting tests ──
 
 
 def test_format_age_days():
@@ -303,9 +292,6 @@ def test_space_on_empty_table_is_handled_without_selection():
     assert selected_ids == set()
 
 
-# ── Constants tests ──
-
-
 def test_min_confidence_threshold():
     assert MIN_ACTIVE_CONFIDENCE == 0.1
 
@@ -326,9 +312,6 @@ def test_dashboard_refresh_screen_logs_failures(store, monkeypatch, caplog):
         app._refresh_screen("overview")
 
     assert "Unable to refresh dashboard tab overview" in caplog.text
-
-
-# ── UI tests ──
 
 
 @pytest.mark.anyio

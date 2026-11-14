@@ -28,8 +28,6 @@ if TYPE_CHECKING:
 
 
 class FactsScreen(Container):
-    """Browse, filter, sort, and inspect facts."""
-
     SORT_COLUMNS: ClassVar[list[str]] = [
         "created_at",
         "category",

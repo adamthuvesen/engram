@@ -22,11 +22,6 @@ def _make_store() -> FactStore:
     return FactStore(data_dir=tmp)
 
 
-# ---------------------------------------------------------------------------
-# default text recall
-# ---------------------------------------------------------------------------
-
-
 def test_default_recall_returns_string_only():
     """recall() returns a plain string unless callers request structured data."""
     store = _make_store()
@@ -63,11 +58,6 @@ def test_default_recall_no_provenance_in_text():
     # Default text response should not embed the structured envelope.
     assert "source_fact_ids" not in answer
     assert "selected_decision" not in answer
-
-
-# ---------------------------------------------------------------------------
-# Provenance content
-# ---------------------------------------------------------------------------
 
 
 def test_cards_provenance_has_no_llm_calls():

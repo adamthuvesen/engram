@@ -146,9 +146,6 @@ def _step(report: UpkeepReport, step: UpkeepStep) -> StepReport:
     return found
 
 
-# --- projects ----------------------------------------------------------------
-
-
 def test_projects_step_canonicalizes_names_and_records_roots(tmp_path: Path):
     repo = tmp_path / "repos" / "widget"
     repo.mkdir(parents=True)
@@ -171,9 +168,6 @@ def test_projects_step_canonicalizes_names_and_records_roots(tmp_path: Path):
     assert sorted(report.steps[0].fact_ids["edited"]) == ["a", "b"]
     roots = json.loads((store.data_dir / PROJECT_ROOTS_FILE).read_text())
     assert roots == {"widget": str(repo.resolve())}
-
-
-# --- verify ------------------------------------------------------------------
 
 
 def test_anchor_classification_and_derivation():
@@ -301,9 +295,6 @@ def test_verify_respects_branches_and_restores_its_own_stale_facts(
     assert not facts["comes_back"].stale
     assert facts["user_stale"].stale  # only verify's own retirements come back
     assert report.fact_ids["restored"] == ["comes_back"]
-
-
-# --- consolidate -------------------------------------------------------------
 
 
 def test_partition_clusters_is_disjoint_and_seeded_by_new_facts():
@@ -771,9 +762,6 @@ def test_incremental_state_skips_unchanged_projects(tmp_path: Path, llm):
     assert len(calls["consolidate"]) == 5
 
 
-# --- briefs ------------------------------------------------------------------
-
-
 def test_brief_is_written_then_replaced_when_facts_change(tmp_path: Path, llm):
     calls, _ = llm
     store = _store(tmp_path, [_fact(f"f{i}", f"widget fact {i}") for i in range(5)])
@@ -808,9 +796,6 @@ def test_brief_refresh_supersedes_every_duplicate(tmp_path: Path, llm):
     assert facts["brief0"].confidence == 0.0 and facts["brief1"].confidence == 0.0
     current = asyncio.run(project_brief(store, "widget"))
     assert current is not None and current.content == "brief #1"
-
-
-# --- whole run ---------------------------------------------------------------
 
 
 def test_dry_run_writes_nothing(tmp_path: Path, widget_repo: Path, llm):

@@ -12,8 +12,6 @@ from engram.dashboard.data import format_confidence, format_timestamp
 
 
 class FactDetail(Static):
-    """Renders full metadata for a single fact."""
-
     def __init__(self, fact: Fact | MemoryCandidate | None = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._fact = fact

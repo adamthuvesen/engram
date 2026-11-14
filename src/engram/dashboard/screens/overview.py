@@ -18,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 
 class OverviewScreen(VerticalScroll):
-    """Main overview with stat cards, distributions, and activity sparkline."""
-
     def __init__(self, data: DashboardData, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._data = data

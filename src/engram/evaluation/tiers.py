@@ -23,10 +23,6 @@ from engram.evaluation.report import print_provenance, report_provenance
 from engram.recall.retriever import relevant_hits
 from engram.storage.store import FactStore
 
-# ---------------------------------------------------------------------------
-# Seed data — realistic cross-project facts
-# ---------------------------------------------------------------------------
-
 NOW = datetime.now(UTC)
 WEEK_AGO = NOW - timedelta(days=3)
 MONTH_AGO = NOW - timedelta(days=35)
@@ -74,7 +70,6 @@ FACTS = [
         FactCategory.personal_info,
         tags=["tenure"],
     ),
-    # Preferences (12)
     _fact(
         "The user prefers polars over pandas for dataframes",
         tags=["python", "polars", "data"],
@@ -209,7 +204,6 @@ FACTS = [
         "acme-dw",
         ["metrics"],
     ),
-    # Decisions (6)
     _fact(
         "Decided to use JSONL over SQLite for engram storage — inspectability wins",
         FactCategory.decision,
@@ -245,7 +239,6 @@ FACTS = [
         FactCategory.decision,
         tags=["analytics"],
     ),
-    # Conventions (6)
     _fact(
         "Convention: Python projects use pyproject.toml, never setup.py",
         FactCategory.convention,
@@ -276,7 +269,6 @@ FACTS = [
         FactCategory.convention,
         tags=["python", "config"],
     ),
-    # Pitfalls (5)
     _fact(
         "Pitfall: Snowflake VARIANT columns need explicit casting in dbt",
         FactCategory.pitfall,
@@ -305,7 +297,6 @@ FACTS = [
         FactCategory.pitfall,
         tags=["python", "linting"],
     ),
-    # Events (5)
     _fact(
         "The auth middleware was rewritten due to compliance requirements (2026-02)",
         FactCategory.event,
@@ -329,7 +320,6 @@ FACTS = [
         tags=["tooling"],
     ),
     _fact("Mobile release freeze starts 2026-03-05", FactCategory.event, tags=["release"]),
-    # Workflow (8)
     _fact(
         "Use 'uv run pytest tests/ -v' to run engram tests",
         FactCategory.workflow,
@@ -514,10 +504,6 @@ FACTS = [
     ),
 ]
 
-
-# ---------------------------------------------------------------------------
-# Query scenarios by complexity
-# ---------------------------------------------------------------------------
 
 QUERIES = [
     ("What team does Alex Chen work on?", "trivial"),

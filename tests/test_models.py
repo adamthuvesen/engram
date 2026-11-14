@@ -1,5 +1,3 @@
-"""Tests for model contracts."""
-
 import json
 
 import pytest

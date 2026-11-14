@@ -287,8 +287,6 @@ class ApprovalResult:
 
 
 class FactStore:
-    """Read/write/filter operations on the JSONL fact store."""
-
     def __init__(self, data_dir: Path | None = None, *, read_only: bool = False):
         self.data_dir = (data_dir or get_settings().data_dir).resolve()
         self.read_only = read_only
@@ -1573,7 +1571,6 @@ class FactStore:
             return {"purged": purged, "retained": len(kept)}
 
     def stats(self) -> dict[str, Any]:
-        """Get store statistics."""
         facts = self.load_facts()
         now = datetime.now(UTC)
         active = [f for f in facts if _is_active_fact(f, now)]
@@ -1602,7 +1599,6 @@ class FactStore:
         }
 
     def format_candidates_for_review(self, candidates: list[MemoryCandidate]) -> str:
-        """Format candidates as a numbered list for review."""
         if not candidates:
             return "(no candidates queued)"
 
@@ -1624,7 +1620,6 @@ class FactStore:
         return self.data_dir / "recall_log.jsonl"
 
     def log_recall(self, record: RecallRecord) -> None:
-        """Append a recall record to the recall log."""
         with (
             _locked_store(self.data_dir),
             _locked_write(self.recall_log_path),
@@ -1634,7 +1629,6 @@ class FactStore:
 
     @_snapshot_read
     def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
-        """Load recent recall log entries."""
         records, _ = load_jsonl_records(
             self.recall_log_path, RecallRecord, "recall log", strict=not self.read_only
         )

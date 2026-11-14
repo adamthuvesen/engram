@@ -37,11 +37,6 @@ def _structured(result):
     return result[1]
 
 
-# ---------------------------------------------------------------------------
-# correct_fact
-# ---------------------------------------------------------------------------
-
-
 def test_correct_fact_creates_replacement_with_supersedes():
     store = _make_store()
     store.append_facts(
@@ -118,11 +113,6 @@ def test_correct_fact_append_failure_leaves_original_active(monkeypatch):
     assert len(active) == 1
     assert active[0].id == "oldaaaaaaaaa"
     assert active[0].content == "prefers vim"
-
-
-# ---------------------------------------------------------------------------
-# merge_facts
-# ---------------------------------------------------------------------------
 
 
 def test_merge_facts_consolidates_two():
@@ -230,11 +220,6 @@ def test_merge_facts_append_failure_leaves_sources_active(monkeypatch):
     assert active_ids == {"srcaaaaaaaaa", "srcbbbbbbbbb"}
 
 
-# ---------------------------------------------------------------------------
-# mark_stale
-# ---------------------------------------------------------------------------
-
-
 def test_mark_stale_excludes_from_active_recall():
     store = _make_store()
     store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")])
@@ -270,11 +255,6 @@ def test_unmark_stale_restores_recall_eligibility():
     store.unmark_stale("aaaaaaaaaaaa")
     active_ids = [f.id for f in store.load_active_facts()]
     assert "aaaaaaaaaaaa" in active_ids
-
-
-# ---------------------------------------------------------------------------
-# MCP surfaces
-# ---------------------------------------------------------------------------
 
 
 def test_correct_memory_mcp_success(monkeypatch):

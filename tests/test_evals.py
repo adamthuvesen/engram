@@ -7,17 +7,13 @@ from tempfile import TemporaryDirectory
 
 from engram.core.interfaces import WarningCode
 from engram.core.models import FactCategory
-from engram.recall.evals import (
+from engram.evaluation.fixtures import (
     EvalBudget,
     EvalFactSpec,
     EvalFixture,
     representative_fixtures,
     run_fixture_sync,
 )
-
-# ---------------------------------------------------------------------------
-# 7.6: passing evals
-# ---------------------------------------------------------------------------
 
 
 def test_eval_passes_when_expected_source_present():
@@ -80,11 +76,6 @@ def test_eval_fails_on_excluded_source_present():
     assert result.passed is False
     failed_names = [c.name for c in result.checks if not c.passed]
     assert any(n.startswith("excluded_source:") for n in failed_names)
-
-
-# ---------------------------------------------------------------------------
-# Budget failures
-# ---------------------------------------------------------------------------
 
 
 def _answer_mode_fixture(name: str, budget: EvalBudget) -> EvalFixture:
@@ -170,11 +161,6 @@ def test_eval_checks_expected_top_and_warnings():
     assert failed == {"expected_top", "expected_warning:suspect_fact"}
 
 
-# ---------------------------------------------------------------------------
-# Provider-backed skip
-# ---------------------------------------------------------------------------
-
-
 def test_provider_eval_skipped_when_disabled(monkeypatch):
     monkeypatch.delenv("ENGRAM_EVAL_PROVIDER", raising=False)
     fixture = EvalFixture(
@@ -254,11 +240,6 @@ def test_eval_fixture_temp_store_is_cleaned_up(monkeypatch):
     assert exited is True
     assert tracked_path is not None
     assert not tracked_path.exists()
-
-
-# ---------------------------------------------------------------------------
-# Representative bundle smoke
-# ---------------------------------------------------------------------------
 
 
 def test_representative_fixtures_at_least_one_passes():

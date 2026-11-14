@@ -99,11 +99,6 @@ def _patch_select(monkeypatch, result: list[str] | Exception):
     return calls
 
 
-# ---------------------------------------------------------------------------
-# Relevance bar
-# ---------------------------------------------------------------------------
-
-
 def test_relevant_hits_require_coverage_and_relative_score():
     hits = [
         _hit("top", 10.0, 0.8),
@@ -117,11 +112,6 @@ def test_relevant_hits_require_coverage_and_relative_score():
 def test_relevant_hits_empty_when_top_hit_lacks_coverage():
     assert relevant_hits([_hit("weak", 10.0, 0.1)]) == []
     assert relevant_hits([]) == []
-
-
-# ---------------------------------------------------------------------------
-# Cards mode (default, no LLM)
-# ---------------------------------------------------------------------------
 
 
 def test_cards_mode_returns_dated_cards_without_llm(monkeypatch):
@@ -193,10 +183,6 @@ def test_cards_mode_with_async_store():
     text = asyncio.run(recall("zagblort xylophone", store=AsyncFactStore(store)))
     assert "aaaaaaaaaaa1" in text
 
-
-# ---------------------------------------------------------------------------
-# Zero-hit selection (cards mode, weak hits only)
-# ---------------------------------------------------------------------------
 
 # Matches the fixture facts only through the weak word "telemetry" amid many
 # unmatched terms, so every hit falls below the coverage floor.
@@ -289,11 +275,6 @@ def test_strong_hit_never_calls_llm_with_key(monkeypatch):
 
     assert select["n"] == 0
     assert complete["n"] == 0
-
-
-# ---------------------------------------------------------------------------
-# Answer mode
-# ---------------------------------------------------------------------------
 
 
 def test_answer_mode_makes_one_call_over_relevant_facts(monkeypatch):

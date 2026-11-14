@@ -1,5 +1,3 @@
-"""Shared pytest fixtures."""
-
 import json
 import os
 import shutil

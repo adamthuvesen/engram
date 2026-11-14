@@ -29,8 +29,6 @@ from engram.dashboard.widgets.fact_detail import FactDetail
 
 
 class CategoryDetailScreen(ModalScreen[None]):
-    """Detail view for a single category, pushed as a modal."""
-
     BINDINGS: ClassVar[list[BindingType]] = [("escape", "dismiss", "Back")]
 
     def __init__(self, category: str, data: DashboardData) -> None:

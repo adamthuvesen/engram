@@ -132,8 +132,6 @@ SECTION_IDS = frozenset(SECTION_BY_ID)
 
 
 class EngramDashboard(App[None]):
-    """Engram memory dashboard."""
-
     TITLE = "engram"
     SUB_TITLE = "memory dashboard"
     CSS_PATH = CSS_PATH
@@ -517,8 +515,6 @@ class EngramDashboard(App[None]):
 
 
 class ConfirmScreen(ModalScreen[bool]):
-    """Simple yes/no confirmation dialog."""
-
     BINDINGS: ClassVar[list[BindingType]] = [
         ("y", "confirm", "Yes"),
         ("n", "cancel", "No"),

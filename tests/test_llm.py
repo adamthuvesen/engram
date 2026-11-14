@@ -31,11 +31,6 @@ class _StructuredAnswer(BaseModel):
     answer: int
 
 
-# ---------------------------------------------------------------------------
-# Model names
-# ---------------------------------------------------------------------------
-
-
 def test_model_name_strips_openai_prefix():
     assert _model_name("openai/gpt-6-luna") == "gpt-6-luna"
     assert _model_name("gpt-6-luna") == "gpt-6-luna"
@@ -55,11 +50,6 @@ def test_non_reasoning_models_keep_temperature_path():
     assert not _accepts_reasoning_effort("openai/gpt-4.1-mini")
 
 
-# ---------------------------------------------------------------------------
-# Usage extraction
-# ---------------------------------------------------------------------------
-
-
 def test_extract_usage_openai_style():
     usage = SimpleNamespace(
         prompt_tokens=1234,
@@ -75,11 +65,6 @@ def test_extract_usage_no_cached_field():
 
 def test_extract_usage_missing_entirely():
     assert _extract_usage(cast(Any, SimpleNamespace())) == (None, None)
-
-
-# ---------------------------------------------------------------------------
-# complete_with_usage — end-to-end with a mocked OpenAI client
-# ---------------------------------------------------------------------------
 
 
 def _mock_response(text: str, prompt_tokens: int | None = None, cached: int | None = None):
