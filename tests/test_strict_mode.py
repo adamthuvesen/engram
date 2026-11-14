@@ -8,9 +8,8 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DOWNGRADE = re.compile(
-    r"^\s*#\s*pyright:\s*(?:[^#\n]*,\s*)?(?:basic|standard|off|recommended|all|strict\s*=\s*false)\b"
-)
+# Any file-level directive: a mode name or a rule override such as reportX=false.
+DOWNGRADE = re.compile(r"^\s*#\s*pyright:\s*(?!ignore\b)\S")
 # An inline suppression must end with a reason after its rule codes.
 UNEXPLAINED = re.compile(r"#\s*(?:noqa:\s*[A-Z0-9, ]+|pyright:\s*ignore(?:\[[^\]]*\])?)\s*$")
 BAN_SUPPRESSION = re.compile(r"#\s*(?:ruff:\s*)?noqa:[^#\n]*\bTID251\b", re.IGNORECASE)
@@ -58,7 +57,9 @@ def test_detector_finds_an_unstaged_downgrade(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, env=env, check=True)
     (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "loose.py").write_text("# pyright: basic\n", encoding="utf-8")
-    assert downgrades(tmp_path) == ["loose.py:1"]
+    (tmp_path / "rule.py").write_text("# pyright: reportAssignmentType=false\n")
+    (tmp_path / "inline.py").write_text("x: int = 1  # pyright: ignore[reportX]  # why\n")
+    assert downgrades(tmp_path) == ["loose.py:1", "rule.py:1"]
 
 
 def test_no_file_downgrades_type_checking_mode() -> None:
@@ -108,12 +109,20 @@ def imported_modules(source: str) -> set[str]:
 def unowned_bans(root: Path, owned: dict[str, set[str]]) -> list[str]:
     lint = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["ruff"]["lint"]
     banned = set(lint["flake8-tidy-imports"]["banned-api"])
-    owners = {
-        path
-        for path, codes in lint["per-file-ignores"].items()
-        if any(code == "ALL" or "TID251".startswith(code) for code in codes)
-    }
-    problems = [f"{path}: TID251 ignore has no OWNED_BANS entry" for path in owners - owned.keys()]
+
+    def lifts(codes: list[str]) -> bool:
+        return any(code == "ALL" or "TID251".startswith(code) for code in codes)
+
+    per_file = {**lint.get("per-file-ignores", {}), **lint.get("extend-per-file-ignores", {})}
+    owners = {path for path, codes in per_file.items() if lifts(codes)}
+    problems = [
+        f"lint.{key} lifts TID251 for every file"
+        for key in ("ignore", "extend-ignore")
+        if lifts(lint.get(key, []))
+    ]
+    if "TID251" not in lint.get("select", []):
+        problems.append("lint.select does not select TID251")
+    problems += [f"{path}: TID251 ignore has no OWNED_BANS entry" for path in owners - owned.keys()]
     for path in sorted(owners & owned.keys()):
         for module in sorted(imported_modules((root / path).read_text())):
             ban = next((b for b in banned if module == b or module.startswith(b + ".")), None)
@@ -135,7 +144,9 @@ def test_ban_checks_find_a_suppression_and_a_stray_owner_import(tmp_path: Path) 
     env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, env=env, check=True)
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.ruff.lint.per-file-ignores]\n"smoke.py" = ["TID251"]\n"extra.py" = ["TID251"]\n'
+        '[tool.ruff.lint]\nselect = ["TID251"]\nextend-ignore = ["TID"]\n'
+        '[tool.ruff.lint.per-file-ignores]\n"smoke.py" = ["TID251"]\n'
+        '[tool.ruff.lint.extend-per-file-ignores]\n"extra.py" = ["TID251"]\n'
         '[tool.ruff.lint.flake8-tidy-imports.banned-api]\n"socket".msg = "x"\n"openai".msg = "x"\n',
         encoding="utf-8",
     )
@@ -143,6 +154,19 @@ def test_ban_checks_find_a_suppression_and_a_stray_owner_import(tmp_path: Path) 
     (tmp_path / "quiet.py").write_text("import openai  # " + "noqa: TID251\n")
     assert ban_suppressions(tmp_path) == ["quiet.py:1"]
     assert unowned_bans(tmp_path, {"smoke.py": {"socket"}}) == [
+        "lint.extend-ignore lifts TID251 for every file",
         "extra.py: TID251 ignore has no OWNED_BANS entry",
         "smoke.py: imports openai.types, but owns only ['socket']",
     ]
+
+
+def test_strict_type_settings_hold_their_values() -> None:
+    import json
+
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["basedpyright"]
+    assert config["typeCheckingMode"] == "strict"
+    assert config["enableTypeIgnoreComments"] is False
+    for rule in ("reportUnnecessaryTypeIgnoreComment", "reportIgnoreCommentWithoutRule"):
+        assert config[rule] == "error", rule
+    verify_project = ROOT / ".agents/skills/verify-engram/pyrightconfig.json"
+    assert set(json.loads(verify_project.read_text())) == {"extends", "include"}

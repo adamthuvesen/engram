@@ -63,7 +63,16 @@ def check_source(source: str, path: str) -> list[BoundaryViolation]:
                     and child.func.attr == "FactStore"
                     and ast.unparse(child.func.value) in storage_modules
                 )
-                if direct_constructor or storage_class:
+                classmethod_constructor = (
+                    isinstance(child.func, ast.Attribute)
+                    and child.func.attr == "open_readonly"
+                    and (
+                        ast.unparse(child.func.value) in fact_store_names
+                        or ast.unparse(child.func.value)
+                        in {f"{module}.FactStore" for module in storage_modules}
+                    )
+                )
+                if direct_constructor or storage_class or classmethod_constructor:
                     report(
                         child,
                         "Construct FactStore through run_sync or asyncio.to_thread in async code.",

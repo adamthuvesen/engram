@@ -125,6 +125,8 @@ def test_package_smoke_isolates_locked_dependencies_and_wheel_import(
         "from engram.storage.store import FactStore as Store\nasync def read():\n return Store()\n",
         "import engram.storage.store as storage\nasync def read():\n return storage.FactStore()\n",
         "async def read(store):\n return store.sync_store.load_facts()\n",
+        "from engram.storage.store import FactStore\nasync def read(d):\n return FactStore.open_readonly(d)\n",
+        "import engram.storage.store as s\nasync def read(d):\n return s.FactStore.open_readonly(d)\n",
     ],
 )
 def test_boundary_rejects_private_policies_and_sync_async_bypasses(source):

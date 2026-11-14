@@ -380,6 +380,7 @@ DRIVES = {
             "src/engram/runtime.py",
             "src/engram/extraction/*",
             "src/engram/llm/*",
+            "src/engram/evaluation/provider.py",
         ],
         drive_memory,
     ),
