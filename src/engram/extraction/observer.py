@@ -32,13 +32,8 @@ from engram.core.structured_outputs import (
     UnresolvedDecision,
 )
 from engram.llm import complete_model
-from engram.storage.store import (
-    AsyncFactStore,
-    ChangeSet,
-    FactStore,
-    content_signature,
-    format_observed,
-)
+from engram.storage.changes import ChangeSet
+from engram.storage.store import AsyncFactStore, FactStore, content_signature, format_observed
 
 logger = logging.getLogger(__name__)
 

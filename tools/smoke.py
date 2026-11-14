@@ -1,4 +1,4 @@
-"""Verify installed assets and MCP transports with a disabled provider."""
+"""Verify the console and MCP transports with a disabled provider."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from fastmcp import Client
 from fastmcp.client.transports import ClientTransport, StdioTransport
 from pydantic import BaseModel
 
-from engram.core.config import Settings, settings_scope
+from engram.core.config import Settings
 from engram.core.models import Fact, FactCategory
 from engram.runtime import Runtime
 from engram.storage.store import AsyncFactStore, FactStore, run_sync
@@ -215,41 +215,7 @@ async def run_http(
     )
 
 
-async def run_assets(data_dir: Path) -> SmokeResult:
-    from textual.widgets import DataTable, Static
-
-    from engram.dashboard.app import CSS_PATH, EngramDashboard
-
-    if not CSS_PATH.is_file():
-        raise RuntimeError("Installed package is missing dashboard CSS.")
-    with settings_scope(Settings(data_dir=data_dir, maintenance_enabled=False, sync_enabled=False)):
-        app = EngramDashboard()
-        async with app.run_test(size=(100, 30)) as pilot:
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            await pilot.press("3")
-            await pilot.pause()
-            table = app.query_one("#facts-table", DataTable)
-            if not any(
-                "smoke0000001" in table.get_row_at(index)
-                and "Fictional smoke memory." in table.get_row_at(index)
-                for index in range(table.row_count)
-            ):
-                status = app.query_one("#status-bar", Static).render()
-                raise RuntimeError(f"Dashboard did not render the persisted smoke fact: {status}")
-    return SmokeResult(
-        transport="assets",
-        checks=[
-            "dashboard CSS",
-            "headless dashboard",
-            "persisted dashboard fact",
-        ],
-    )
-
-
-async def run_smoke(
-    *, assets: bool = False, transports: bool = True, entrypoints: bool = False
-) -> list[SmokeResult]:
+async def run_smoke(*, entrypoints: bool = False) -> list[SmokeResult]:
     with TemporaryDirectory(prefix="engram-smoke-") as temporary:
         data_dir = Path(temporary)
         store = AsyncFactStore(await run_sync(FactStore, data_dir))
@@ -265,15 +231,12 @@ async def run_smoke(
         results = []
         if entrypoints:
             results.append(await run_cli(data_dir))
-        if transports:
-            results.extend(
-                [
-                    await run_stdio(data_dir, entrypoints=entrypoints),
-                    await run_http(data_dir, entrypoints=entrypoints),
-                ]
-            )
-        if assets:
-            results.append(await run_assets(data_dir))
+        results.extend(
+            [
+                await run_stdio(data_dir, entrypoints=entrypoints),
+                await run_http(data_dir, entrypoints=entrypoints),
+            ]
+        )
         return results
 
 
@@ -305,13 +268,11 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--transport", choices=("stdio", "http"), default="stdio")
     parser.add_argument("--port", type=int, default=7422)
-    parser.add_argument("--assets", action="store_true")
     parser.add_argument(
         "--entrypoints",
         action="store_true",
         help="Exercise installed console commands with provider network calls blocked.",
     )
-    parser.add_argument("--assets-only", action="store_true")
     args = parser.parse_args()
     if args.command == "serve":
         if args.data_dir is None:
@@ -319,13 +280,7 @@ def main() -> int:
         serve(args.data_dir, args.transport, args.port)
         return 0
     try:
-        for result in asyncio.run(
-            run_smoke(
-                assets=args.assets or args.assets_only,
-                transports=not args.assets_only,
-                entrypoints=args.entrypoints,
-            )
-        ):
+        for result in asyncio.run(run_smoke(entrypoints=args.entrypoints)):
             print(result.model_dump_json())
     except Exception as exc:
         print(f"Smoke verification failed: {exc}", file=sys.stderr)

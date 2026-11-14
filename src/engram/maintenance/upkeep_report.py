@@ -7,7 +7,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from engram.storage.store import ChangeResult
+    from engram.storage.changes import ChangeResult
 
 from pydantic import BaseModel, ConfigDict, Field
 

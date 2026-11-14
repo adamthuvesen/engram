@@ -15,7 +15,7 @@ fix:
 slow: check
     uv run --locked --extra dev python -m tools.verify verify
 
-# Drive the real CLI, MCP server, dashboard, and wheel (verify-engram skill). Pass all, list, control, or drive names.
+# Drive the real CLI, MCP server, and wheel (verify-engram skill). Pass all, list, control, or drive names.
 verify *args:
     .agents/skills/verify-engram/verify {{args}}
 

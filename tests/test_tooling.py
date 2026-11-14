@@ -136,7 +136,6 @@ def test_boundary_rejects_private_policies_and_sync_async_bypasses(source):
 def test_boundary_allows_explicit_thread_facade():
     source = "from engram.storage.store import FactStore, run_sync\nasync def read():\n return await run_sync(FactStore)\n"
     assert check_source(source, "src/engram/operations.py") == []
-    assert check_source("value = store.sync_store", "src/engram/dashboard/app.py")
 
 
 def test_config_reference_normalizes_home_and_has_every_setting():
@@ -205,30 +204,11 @@ def test_smoke_environment_disables_external_side_effects(monkeypatch, tmp_path)
 
 
 @pytest.mark.subprocess_smoke
-def test_mcp_transport_restart_and_packaged_asset_smoke():
-    results = asyncio.run(run_smoke(assets=True))
-    assert [result.transport for result in results] == ["stdio", "http", "assets"]
+def test_mcp_transport_restart_smoke():
+    results = asyncio.run(run_smoke())
+    assert [result.transport for result in results] == ["stdio", "http"]
     assert "restart persistence" in results[1].checks
     assert all(result.provider == "disabled" for result in results)
-
-
-@pytest.mark.parametrize("load_error", [False, True])
-def test_asset_only_smoke_requires_persisted_fact_in_dashboard(monkeypatch, load_error):
-    if load_error:
-
-        def fail_load(store):
-            raise OSError("fixture read denied")
-
-        monkeypatch.setattr("engram.dashboard.app.load_dashboard_data", fail_load)
-        with pytest.raises(
-            RuntimeError, match="Dashboard did not render the persisted smoke fact"
-        ) as error:
-            asyncio.run(run_smoke(assets=True, transports=False))
-        assert "fixture read denied" in str(error.value)
-    else:
-        results = asyncio.run(run_smoke(assets=True, transports=False))
-        assert [result.transport for result in results] == ["assets"]
-        assert "persisted dashboard fact" in results[0].checks
 
 
 def test_report_revision_uses_loaded_source_not_custom_dataset(monkeypatch, tmp_path):

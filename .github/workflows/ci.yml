@@ -52,7 +52,7 @@ jobs:
       - run: uv sync --locked --extra dev
       - name: Subprocess and installed-wheel smokes (just slow)
         run: uv run --locked --extra dev python -m tools.verify verify
-      - name: Drive the real CLI, MCP server, dashboard, and wheel (verify-engram)
+      - name: Drive the real CLI, MCP server, and wheel (verify-engram)
         run: .agents/skills/verify-engram/verify all
       - name: Verify control observes FAIL
         run: .agents/skills/verify-engram/verify control

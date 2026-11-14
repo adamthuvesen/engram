@@ -201,7 +201,6 @@ def package_smoke(root: Path, report: VerificationReport) -> None:
             "-m",
             "tools.smoke",
             "run",
-            "--assets",
             "--entrypoints",
         ]
         print("+ " + " ".join(command), flush=True)
@@ -211,7 +210,7 @@ def package_smoke(root: Path, report: VerificationReport) -> None:
         )
         report.checks.append(
             CheckResult(
-                name="installed wheel transports and assets",
+                name="installed wheel transports",
                 status="passed" if result.returncode == 0 else "failed",
                 reason=f"exit {result.returncode}",
             )

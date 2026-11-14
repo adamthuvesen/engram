@@ -26,7 +26,8 @@ from engram.core.models import (
 )
 from engram.storage import store as store_module
 from engram.storage import sync as sync_module
-from engram.storage.store import ChangeSet, FactStore, StoreIntegrityError
+from engram.storage.changes import ChangeSet
+from engram.storage.store import FactStore, StoreIntegrityError
 from tests.mcp_helpers import json_object
 
 

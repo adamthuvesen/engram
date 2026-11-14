@@ -1,11 +1,11 @@
 ---
 name: verify-engram
-description: "Drives Engram's real CLI, MCP server, Textual dashboard, and built wheel against a throwaway store. Use to run, launch, drive, or verify engram, or to prove a change to it works."
+description: "Drives Engram's real CLI, MCP server, and built wheel against a throwaway store. Use to run, launch, drive, or verify engram, or to prove a change to it works."
 ---
 
 # Verify Engram
 
-`just check` proves the code is consistent. This skill proves the behavior. It drives the real `engram` console, the MCP server over stdio and HTTP, the dashboard through a Textual pilot, and an installed wheel. Every drive starts from a fresh temp store.
+`just check` proves the code is consistent. This skill proves the behavior. It drives the real `engram` console, the MCP server over stdio and HTTP, and an installed wheel. Every drive starts from a fresh temp store.
 
 ## Run
 
@@ -20,7 +20,7 @@ The helper is `.agents/skills/verify-engram/verify`. It runs itself under `uv ru
 ## Reading results
 
 - Each drive prints `PASS|FAIL <drive> <seconds>s <detail>`. A FAIL detail names what was expected and what happened.
-- Evidence is in `.verify/runs/<utc>-<sha7>[-dirty]/`. It holds `summary.json` and `env.json` (secrets redacted). Each drive has a directory with one file per command (command, exit code, stdout, stderr), the MCP envelopes, `stderr.log`, the HTTP server log, and a dashboard SVG screenshot.
+- Evidence is in `.verify/runs/<utc>-<sha7>[-dirty]/`. It holds `summary.json` and `env.json` (secrets redacted). Each drive has a directory with one file per command (command, exit code, stdout, stderr), the MCP envelopes, `stderr.log`, and the HTTP server log.
 - The helper never retries. Any failure is a FAIL. There is no FLAKY result.
 
 ## Isolation
@@ -37,10 +37,8 @@ The helper is `.agents/skills/verify-engram/verify`. It runs itself under `uv ru
 
 - The drives do not prove live extraction or recall-answer quality. To prove those, run the live evals by hand with `ENGRAM_EVAL_PROVIDER=1`. They spend money.
 - Git sync is not driven. Run `just verify-sync`, which pushes to temporary local remotes.
-- The dashboard drive uses Textual's pilot in process. It does not run a real terminal.
 
 ## Gotchas
 
-- The dashboard `f` key forgets the facts that are marked with space, or the row opened with Enter. A highlighted row alone is not a target.
 - `inspect --project X` also returns global cards (cards with no project). Assert on the project's own ids, not on an empty result.
 - The `package` drive needs the uv cache for its `--offline` install. The helper passes the real `UV_CACHE_DIR` into the temp HOME.

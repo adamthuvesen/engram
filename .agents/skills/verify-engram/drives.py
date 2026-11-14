@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from engram.core.config import Settings, settings_scope
+from engram.core.config import Settings
 from engram.core.models import Fact, FactCategory
 from engram.storage.store import AsyncFactStore, FactStore, run_sync
 
@@ -290,60 +290,6 @@ async def drive_serve(ctx: Context) -> str:
     return f"engram serve stdio and http: {', '.join(http.checks)}"
 
 
-async def drive_dashboard(ctx: Context) -> str:
-    from textual.widgets import DataTable, TabbedContent
-
-    from engram.dashboard.app import SECTIONS, EngramDashboard
-
-    await seed(ctx.data)
-    with settings_scope(Settings(data_dir=ctx.data, maintenance_enabled=False, sync_enabled=False)):
-        app = EngramDashboard()
-        async with app.run_test(size=(140, 40)) as pilot:
-
-            async def settle() -> None:
-                await app.workers.wait_for_complete()
-                await pilot.pause()
-
-            await settle()
-            for index, section in enumerate(SECTIONS, start=1):
-                await pilot.press(str(index))
-                await settle()
-                active = app.query_one("#tabs", TabbedContent).active
-                expect(
-                    active == section.id,
-                    f"key {index}: expected tab {section.id}, got {active}",
-                )
-            await pilot.press("3")
-            await settle()
-            table = app.query_one("#facts-table", DataTable)
-            rows = [" ".join(map(str, table.get_row_at(i))) for i in range(table.row_count)]
-            expect(
-                all(any(s[0] in r for r in rows) for s in SEEDS),
-                f"facts table: expected all seeded ids, got {rows}",
-            )
-            target = next(i for i, r in enumerate(rows) if "verifyfact02" in r)
-            table.focus()
-            for _ in range(target - table.cursor_row):
-                await pilot.press("down")
-            await pilot.press("space")
-            await pilot.press("f")
-            await settle()
-            await pilot.press("y")
-            await settle()
-            app.save_screenshot(str(ctx.evidence / "facts-after-forget.svg"))
-            rows = [" ".join(map(str, table.get_row_at(i))) for i in range(table.row_count)]
-            expect(
-                not any("verifyfact02" in r for r in rows),
-                f"facts table after forget: verifyfact02 still shown: {rows}",
-            )
-    left = ids(ctx.engram("inspect", "--json"))
-    expect(
-        left == {"verifyfact01", "smoke0000001"},
-        f"CLI read after dashboard forget: got {sorted(left)}",
-    )
-    return f"{len(SECTIONS)} tabs render, facts table lists seeds, space+f+y forgets verifyfact02 (CLI confirms)"
-
-
 async def drive_package(ctx: Context) -> str:
     result = ctx.run(
         [sys.executable, "-m", "tools.verify", "package"],
@@ -351,10 +297,12 @@ async def drive_package(ctx: Context) -> str:
         timeout=120,
     )
     expect(
-        result.returncode == 0 and "passed: installed wheel transports and assets" in result.stdout,
+        result.returncode == 0 and "passed: installed wheel transports" in result.stdout,
         f"package: expected installed wheel smoke to pass, got exit {result.returncode}: {result.stdout[-400:]}",
     )
-    return "wheel builds, installs outside the checkout, and its console serves CLI, stdio, HTTP, and dashboard assets"
+    return (
+        "wheel builds, installs outside the checkout, and its console serves CLI, stdio, and HTTP"
+    )
 
 
 @dataclass(frozen=True)
@@ -394,16 +342,10 @@ DRIVES = {
         ],
         drive_serve,
     ),
-    "dashboard": Drive(
-        "The dashboard renders every tab, lists stored facts, and forgets one through the UI",
-        ["src/engram/dashboard/*", "src/engram/storage/*"],
-        drive_dashboard,
-    ),
     "package": Drive(
-        "The built wheel installs outside the checkout and its entrypoints and assets work",
+        "The built wheel installs outside the checkout and its entrypoints work",
         [
             "tools/*",
-            "src/engram/dashboard/styles/*",
         ],
         drive_package,
         150.0,

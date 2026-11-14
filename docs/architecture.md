@@ -84,13 +84,7 @@ Changed or ineligible inputs abort the cluster. Upkeep reports conflicts and sch
 Project briefs record the exact source revisions used to create them.
 Recall invalidates a brief when an eligible source changes or disappears.
 
-## Dashboard, evaluation, and checks
-
-`dashboard.data` uses the public lifecycle policy. Textual workers load storage lazily through cancellation-safe thread calls.
-One dashboard lock serializes reads and mutations. Periodic refreshes coalesce while a read is pending.
-Failed reads retain the last successful snapshot and show a retry action. Undo records only successful mutations.
-Undo expiry waits for queued undo requests.
-Superseded facts remain distinct from forgotten facts. Expiry can refresh the view without a file change.
+## Evaluation and checks
 
 The top-level `evals` package contains typed runners, unchanged labeled datasets, fixture providers, and report provenance.
 The old test-script paths remain thin entrypoints. Default runners inject disabled or fixture providers without changing retriever globals.
@@ -100,7 +94,7 @@ The top-level `tools` package holds the development lanes. Neither `evals` nor `
 `tools.verify` defines the commands behind `just check`, `just slow`, and CI.
 `tools.boundaries` checks private storage imports and sync-store bypasses in async application code.
 `tools.reference` generates Settings and command references from source registrations.
-`tools.smoke` verifies stdio, loopback HTTP, errors, restart persistence, and dashboard assets using temporary data.
+`tools.smoke` verifies stdio, loopback HTTP, errors, and restart persistence using temporary data.
 The package profile installs locked dependencies and the wheel outside the checkout, then runs `tools.smoke` from the checkout against that installed package.
 
 `pyproject.toml` runs basedpyright in strict mode on `src`, `evals`, `tools`, and `tests`. The verify skill has its own `pyrightconfig.json`, and `check` runs it as a second project because basedpyright skips dot folders. The type check must report zero errors, with no baseline file.

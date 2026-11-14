@@ -18,7 +18,7 @@ from typing import Literal
 from engram.core.models import Durability, Fact
 from engram.core.projects import find_repo_root
 from engram.maintenance.upkeep_report import StepReport
-from engram.storage.store import ChangeSet
+from engram.storage.changes import ChangeSet
 
 logger = logging.getLogger(__name__)
 

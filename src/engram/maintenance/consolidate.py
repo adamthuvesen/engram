@@ -37,8 +37,9 @@ from engram.maintenance.upkeep_state import (
     append_state,
     load_state,
 )
+from engram.storage.changes import ChangeSet
 from engram.storage.search import SearchIndex
-from engram.storage.store import AsyncFactStore, ChangeSet, run_sync
+from engram.storage.store import AsyncFactStore, run_sync
 
 logger = logging.getLogger(__name__)
 

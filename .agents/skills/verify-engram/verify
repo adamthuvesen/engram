@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive Engram's real CLI, MCP server, dashboard, and wheel against a throwaway store.
+"""Drive Engram's real CLI, MCP server, and wheel against a throwaway store.
 
 verify | verify all | verify <drive>... | verify list | verify control
 """

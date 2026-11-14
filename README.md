@@ -17,7 +17,6 @@ Python 3.14 runs the verification profiles in CI.
 ```bash
 uv run --locked engram                              # MCP over stdio
 uv run --locked engram serve --transport http       # http://127.0.0.1:7422/mcp
-uv run --locked engram-dash                         # terminal dashboard
 uv run --locked engram inspect --json --limit 20
 uv run --locked engram recall "editor preference" --project ~/dev/app
 ```
@@ -56,7 +55,6 @@ There are no embeddings or vector databases.
 
 Background upkeep verifies anchors, consolidates cards, and builds project briefs.
 Briefs record source revisions, so changing a source invalidates the previous brief.
-The dashboard uses the shared lifecycle policy and distinguishes forgotten facts from superseded facts.
 
 ## Verify changes
 

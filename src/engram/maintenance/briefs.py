@@ -18,7 +18,8 @@ from engram.core.models import Durability, Fact, FactCategory
 from engram.llm import complete_model
 from engram.maintenance.consolidate import BRIEF_KEY
 from engram.maintenance.upkeep_report import StepReport
-from engram.storage.store import AsyncFactStore, ChangeSet, format_observed
+from engram.storage.changes import ChangeSet
+from engram.storage.store import AsyncFactStore, format_observed
 
 logger = logging.getLogger(__name__)
 
