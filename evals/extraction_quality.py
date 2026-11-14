@@ -26,7 +26,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from engram.core.models import Fact, FactCategory
 from engram.extraction.observer import ingest
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.store import FactStore
 from evals.report import (
     ReportProvenance,
     print_provenance,

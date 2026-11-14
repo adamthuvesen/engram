@@ -134,7 +134,7 @@ def test_boundary_rejects_private_policies_and_sync_async_bypasses(source):
 
 
 def test_boundary_allows_explicit_thread_facade():
-    source = "from engram.storage.store import FactStore, run_sync\nasync def read():\n return await run_sync(FactStore)\n"
+    source = "from engram.storage.async_store import run_sync\nfrom engram.storage.store import FactStore\nasync def read():\n return await run_sync(FactStore)\n"
     assert check_source(source, "src/engram/operations.py") == []
 
 

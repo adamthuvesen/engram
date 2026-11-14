@@ -12,7 +12,8 @@ import pytest
 from engram import cli, server
 from engram.core.config import get_settings
 from engram.core.models import Fact, FactCategory, RecallRecord
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 from tests.mcp_helpers import call_tool
 
 

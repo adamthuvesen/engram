@@ -11,7 +11,8 @@ from engram.core.config import get_settings
 from engram.core.projects import canonical_project
 from engram.core.structured_outputs import UnresolvedDecision
 from engram.extraction.observer import ingest
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.store import FactStore
 
 logger = logging.getLogger(__name__)
 

@@ -15,7 +15,8 @@ from typing import Any
 
 from engram.core.config import Settings
 from engram.core.models import Fact, FactCategory
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.store import FactStore
 
 SEEDS = [
     (

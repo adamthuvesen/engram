@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from engram.core.config import get_settings
+from engram.core.fact_format import format_fact_line
 from engram.core.models import Durability, Fact, FactCategory
 from engram.core.projects import PROJECT_ROOTS_FILE, record_project_root
 from engram.maintenance import briefs, consolidate
@@ -40,8 +41,9 @@ from engram.maintenance.upkeep_state import (
     upkeep_lock,
 )
 from engram.maintenance.verify import derive_anchors, normalize_anchor
+from engram.storage.async_store import AsyncFactStore
 from engram.storage.search import SearchIndex
-from engram.storage.store import AsyncFactStore, FactStore, format_fact_line
+from engram.storage.store import FactStore
 
 Responder = Callable[[list[dict[str, Any]]], ConsolidationResponse]
 

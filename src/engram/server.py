@@ -97,7 +97,8 @@ from engram.operations import (
     upkeep as op_upkeep,
 )
 from engram.runtime import Runtime
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 
 INSTRUCTIONS = """Engram — durable, cross-project memory for coding agents.
 

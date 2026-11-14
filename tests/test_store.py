@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from engram.core.fact_format import format_facts_for_llm
 from engram.core.models import (
     CandidateStatus,
     Fact,
@@ -15,12 +16,8 @@ from engram.core.models import (
     MemoryCandidate,
     RecallRecord,
 )
-from engram.storage.store import (
-    AsyncFactStore,
-    FactStore,
-    StoreIntegrityError,
-    format_facts_for_llm,
-)
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore, StoreIntegrityError
 
 
 def _make_store() -> FactStore:

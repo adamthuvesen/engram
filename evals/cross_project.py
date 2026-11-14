@@ -19,7 +19,8 @@ from tempfile import TemporaryDirectory
 
 from pydantic import BaseModel, Field
 
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.store import FactStore
 from evals.fixtures import EvalFactSpec, materialize_facts
 from evals.report import (
     ReportProvenance,

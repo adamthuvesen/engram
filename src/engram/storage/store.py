@@ -1,6 +1,5 @@
 """JSONL-based knowledge store for facts."""
 
-import asyncio
 import logging
 import os
 import tempfile
@@ -11,7 +10,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Concatenate, ParamSpec, TypeVar
+from typing import Any, Concatenate
 from uuid import uuid4
 
 from engram.core.config import get_settings
@@ -21,7 +20,6 @@ from engram.core.models import (
     EDITABLE_FACT_FIELDS,
     MIN_ACTIVE_CONFIDENCE,
     CandidateStatus,
-    Durability,
     EventLogMeta,
     EventType,
     Fact,
@@ -34,8 +32,13 @@ from engram.core.models import (
     TransactionStatus,
     materialize_events,
 )
-from engram.storage.candidates import CandidateSnapshots, candidate_promotion_id
+from engram.storage.candidates import (
+    CandidateSnapshots,
+    approval_snapshot,
+    prepare_approval,
+)
 from engram.storage.changes import ApprovalResult, ChangeResult, ChangeSet
+from engram.storage.compaction import compacted_event_log, compaction_created_event
 from engram.storage.jsonl import load_jsonl_records
 from engram.storage.search import TOKEN_RE, SearchHit, SearchIndex
 from engram.storage.transactions import (
@@ -53,13 +56,6 @@ from engram.storage.transactions import (
 )
 
 logger = logging.getLogger(__name__)
-P = ParamSpec("P")
-R = TypeVar("R")
-
-
-def content_signature(text: str) -> str:
-    """Normalize fact content for exact-match deduplication."""
-    return " ".join(text.lower().split())
 
 
 def _is_expired_fact(fact: Fact, now: datetime) -> bool:
@@ -89,107 +85,6 @@ def _exclude_superseded_facts(facts: list[Fact]) -> list[Fact]:
     if not superseded_ids:
         return facts
     return [fact for fact in facts if fact.id not in superseded_ids]
-
-
-def fact_flags(fact: Fact) -> list[str]:
-    """Short lifecycle labels shown next to a fact in recall output."""
-    flags: list[str] = []
-    if fact.durability is Durability.ephemeral:
-        flags.append("time-bound")
-    if fact.expires_at is not None:
-        flags.append(f"expires {fact.expires_at.date().isoformat()}")
-    if fact.suspect_reason:
-        flags.append(f"unverified: {fact.suspect_reason}")
-    return flags
-
-
-def format_observed(fact: Fact) -> str:
-    """The card's date, as ``oldest..newest`` when it carries older claims."""
-    newest = fact.observed_at.date()
-    oldest = fact.oldest_claim_at.date()
-    if oldest < newest:
-        return f"{oldest.isoformat()}..{newest.isoformat()}"
-    return newest.isoformat()
-
-
-def format_fact_line(fact: Fact) -> str:
-    """One dated card line: ``[category · project · YYYY-MM-DD] content (id: …)``.
-
-    A card that carries claims older than its latest update shows the range
-    ``YYYY-MM-DD..YYYY-MM-DD``.
-    """
-    meta = [fact.category.value]
-    if fact.project:
-        meta.append(fact.project)
-    meta.append(format_observed(fact))
-    line = f"[{' · '.join(meta)}] {fact.content}"
-    flags = fact_flags(fact)
-    if flags:
-        line += f" ({'; '.join(flags)})"
-    return f"{line} (id: {fact.id})"
-
-
-def format_facts_for_llm(facts: list[Fact]) -> str:
-    """Format facts as a numbered, dated list for LLM context."""
-    if not facts:
-        return "(no facts stored)"
-    lines = []
-    for i, fact in enumerate(facts, 1):
-        extra = ""
-        if fact.memory_key:
-            extra += f" [key: {fact.memory_key}]"
-        if fact.supersedes:
-            extra += f" [supersedes: {fact.supersedes}]"
-        lines.append(f"{i}.{extra} {format_fact_line(fact)}")
-    return "\n".join(lines)
-
-
-def _compaction_created_event(fact_id: str, fact: Fact) -> FactEvent:
-    return FactEvent(
-        event_type=EventType.created,
-        fact_id=fact_id,
-        timestamp=fact.created_at,
-        actor="compaction",
-        payload=fact.model_dump(),
-    )
-
-
-def _compaction_forgotten_event(fact_id: str, fact: Fact) -> FactEvent:
-    return FactEvent(
-        event_type=EventType.forgotten,
-        fact_id=fact_id,
-        timestamp=fact.updated_at,
-        actor="compaction",
-        payload={"reason": "compacted_tombstone"},
-    )
-
-
-def _compacted_event_log(
-    materialized: dict[str, tuple[Fact, bool]],
-    *,
-    keep_tombstones: bool,
-) -> tuple[list[FactEvent], int]:
-    compacted: list[FactEvent] = []
-    tombstones = 0
-    for fact_id, (fact, is_active) in materialized.items():
-        if not is_active:
-            if not keep_tombstones:
-                continue
-            compacted.append(_compaction_created_event(fact_id, fact))
-            compacted.append(
-                FactEvent(
-                    event_type=EventType.superseded,
-                    fact_id=fact_id,
-                    timestamp=fact.updated_at,
-                    payload={"superseded_by": fact.superseded_by},
-                )
-                if fact.lifecycle is FactLifecycle.superseded
-                else _compaction_forgotten_event(fact_id, fact)
-            )
-            tombstones += 1
-        else:
-            compacted.append(_compaction_created_event(fact_id, fact))
-    return compacted, tombstones
 
 
 def _unique_ids(ids: list[str]) -> list[str]:
@@ -1198,96 +1093,14 @@ class FactStore:
         unresolved: dict[str, str] | None = None,
     ) -> StoreTransaction | None:
         pending_candidates = {c.id: c for c in self.load_candidates(status=CandidateStatus.pending)}
-
-        unresolved = unresolved if unresolved is not None else {}
-        replacements: dict[str, list[str]] = {}
-        for candidate_id in dict.fromkeys(candidate_ids):
-            candidate = pending_candidates.get(candidate_id)
-            if candidate is None:
-                continue
-            for source_id in set(
-                candidate.replaces or ([candidate.supersedes] if candidate.supersedes else [])
-            ):
-                replacements.setdefault(source_id, []).append(candidate_id)
-        for source_id, competing_ids in sorted(replacements.items()):
-            if len(competing_ids) < 2:
-                continue
-            conflict = f"Source {source_id} has competing replacement candidates: {', '.join(competing_ids)}"
-            for candidate_id in competing_ids:
-                previous = unresolved.get(candidate_id)
-                unresolved[candidate_id] = f"{previous}. {conflict}" if previous else conflict
-
-        facts_by_id = self._facts_by_id()
-        fact_updates: dict[str, dict[str, Any]] = {}
-        supersessions: dict[str, str] = {}
-        candidate_updates: dict[str, dict[str, Any]] = {}
-        new_facts: list[Fact] = []
-        now = datetime.now(UTC)
-        seen_ids: set[str] = set()
-        selected_ids: list[str] = []
-
-        for candidate_id in candidate_ids:
-            if candidate_id in seen_ids:
-                continue
-            seen_ids.add(candidate_id)
-
-            candidate = pending_candidates.get(candidate_id)
-            if not candidate or candidate_id in unresolved:
-                continue
-            replaced = candidate.replaces or (
-                [candidate.supersedes] if candidate.supersedes else []
-            )
-            if candidate.replaces_expected is not None and (
-                set(candidate.replaces_expected) != set(replaced)
-                or any(
-                    old_id not in facts_by_id
-                    or not is_fact_eligible(facts_by_id[old_id], now)
-                    or facts_by_id[old_id].updated_at != revision
-                    for old_id, revision in candidate.replaces_expected.items()
-                )
-            ):
-                continue
-            if edits and candidate_id in edits:
-                candidate = MemoryCandidate.model_validate(
-                    {**candidate.model_dump(), "content": edits[candidate_id]}
-                )
-            selected_ids.append(candidate_id)
-
-            candidate_updates[candidate_id] = {"status": CandidateStatus.approved}
-            if edits and candidate_id in edits:
-                candidate_updates[candidate_id]["content"] = candidate.content
-
-            data = candidate.model_dump(
-                exclude={"status", "review_note", "replaces", "replaces_expected"}
-            )
-            data.update(
-                id=candidate_promotion_id(candidate),
-                created_at=candidate.created_at,
-                updated_at=candidate.created_at,
-            )
-            new_fact = Fact(**data)
-            new_facts.append(new_fact)
-            replaced = candidate.replaces or (
-                [candidate.supersedes] if candidate.supersedes else []
-            )
-            for old_id in replaced:
-                supersessions[old_id] = new_fact.id
-
-        if not new_facts:
-            return None
-
-        transaction = StoreTransaction(
-            type="approve_candidates",
-            status=TransactionStatus.prepared,
-            candidate_ids=selected_ids,
-            fact_updates=fact_updates,
-            supersessions=supersessions,
-            candidate_updates=candidate_updates,
-            new_facts=new_facts,
-            created_at=now,
+        transaction = prepare_approval(
+            candidate_ids,
+            pending_candidates,
+            self._facts_by_id(),
+            edits=edits,
+            unresolved=unresolved if unresolved is not None else {},
         )
-
-        return self._approval_snapshot(transaction)
+        return None if transaction is None else self._approval_snapshot(transaction)
 
     def _apply_transaction(self, transaction: StoreTransaction) -> None:
         if transaction.type != "approve_candidates":
@@ -1300,51 +1113,7 @@ class FactStore:
         self._apply_approval_transaction(transaction)
 
     def _approval_snapshot(self, transaction: StoreTransaction) -> StoreTransaction:
-        events = [
-            FactEvent(
-                event_type=EventType.created,
-                fact_id=fact.id,
-                timestamp=fact.created_at,
-                payload=fact.model_dump(),
-            )
-            for fact in transaction.new_facts
-        ]
-        events.extend(
-            FactEvent(
-                event_type=EventType.superseded,
-                fact_id=old,
-                timestamp=transaction.created_at,
-                payload={
-                    "superseded_by": new,
-                    "reason": "approved candidate replaces this memory",
-                },
-            )
-            for old, new in transaction.supersessions.items()
-        )
-        for fact_id, updates in transaction.fact_updates.items():
-            event_type = EventType.forgotten if updates == {"confidence": 0.0} else EventType.edited
-            events.append(
-                FactEvent(
-                    event_type=event_type,
-                    fact_id=fact_id,
-                    timestamp=transaction.created_at,
-                    payload={} if event_type is EventType.forgotten else updates,
-                )
-            )
-        rows = {row.id: row for row in self.load_candidates()}
-        candidates = [
-            MemoryCandidate.model_validate(
-                {
-                    **rows[candidate_id].model_dump(),
-                    **updates,
-                    "updated_at": transaction.created_at,
-                }
-            )
-            for candidate_id, updates in transaction.candidate_updates.items()
-            if candidate_id in rows
-        ]
-        transaction = transaction.model_copy(update={"events": events, "candidates": candidates})
-        return transaction
+        return approval_snapshot(transaction, {row.id: row for row in self.load_candidates()})
 
     def _apply_approval_transaction(self, transaction: StoreTransaction) -> None:
         if not transaction.events and not transaction.candidates:
@@ -1444,7 +1213,7 @@ class FactStore:
             materialized = materialize_events(events)
 
             now = datetime.now(UTC)
-            compacted, tombstones = _compacted_event_log(
+            compacted, tombstones = compacted_event_log(
                 materialized,
                 keep_tombstones=keep_tombstones,
             )
@@ -1502,7 +1271,7 @@ class FactStore:
             if purged > 0:
                 self._rewrite_event_log(
                     EventLogMeta(created_at=now),
-                    [_compaction_created_event(fact.id, fact) for fact in kept],
+                    [compaction_created_event(fact.id, fact) for fact in kept],
                 )
                 logger.info("Purged %d facts (%d retained)", purged, len(kept))
 
@@ -1667,7 +1436,7 @@ class FactStore:
             facts = [record for record in records if isinstance(record, Fact)]
             self._rewrite_event_log(
                 EventLogMeta(),
-                [_compaction_created_event(fact.id, fact) for fact in facts],
+                [compaction_created_event(fact.id, fact) for fact in facts],
             )
             return
 
@@ -1693,198 +1462,3 @@ class FactStore:
             finally:
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
-
-
-async def run_sync[**P, R](func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
-    """Wait for an in-flight thread before propagating caller cancellation."""
-    worker = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        while not worker.done():
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                continue
-            except Exception:
-                break
-        if not worker.cancelled():
-            worker.exception()
-        raise
-
-
-class AsyncFactStore:
-    """Async facade for running blocking JSONL store operations off the event loop."""
-
-    def __init__(self, store: FactStore | None = None):
-        self.sync_store = store or FactStore()
-
-    @property
-    def data_dir(self) -> Path:
-        return self.sync_store.data_dir
-
-    @property
-    def facts_path(self) -> Path:
-        return self.sync_store.facts_path
-
-    @property
-    def candidates_path(self) -> Path:
-        return self.sync_store.candidates_path
-
-    @property
-    def transaction_log_path(self) -> Path:
-        return self.sync_store.transaction_log_path
-
-    @property
-    def recall_log_path(self) -> Path:
-        return self.sync_store.recall_log_path
-
-    async def _run(self, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
-        return await run_sync(func, *args, **kwargs)
-
-    async def load_facts(self) -> list[Fact]:
-        return await self._run(self.sync_store.load_facts)
-
-    async def load_candidates(
-        self,
-        status: CandidateStatus | None = None,
-        project: str | None = None,
-        limit: int | None = None,
-    ) -> list[MemoryCandidate]:
-        return await self._run(self.sync_store.load_candidates, status, project, limit)
-
-    async def load_active_facts(
-        self,
-        category: FactCategory | None = None,
-        project: str | None = None,
-        include_global: bool = True,
-        min_confidence: float = 0.1,
-        limit: int | None = None,
-        include_stale: bool = False,
-    ) -> list[Fact]:
-        return await self._run(
-            self.sync_store.load_active_facts,
-            category,
-            project,
-            include_global,
-            min_confidence,
-            limit,
-            include_stale,
-        )
-
-    async def search_facts(
-        self,
-        query: str,
-        project: str | None = None,
-        limit: int | None = None,
-        *,
-        include_global: bool = True,
-    ) -> list[SearchHit]:
-        return await self._run(
-            self.sync_store.search_facts,
-            query,
-            project,
-            limit,
-            include_global=include_global,
-        )
-
-    async def search_index(self) -> SearchIndex:
-        return await self._run(self.sync_store.search_index)
-
-    async def apply_changes(
-        self, changes: ChangeSet, *, all_or_nothing: bool = False
-    ) -> ChangeResult:
-        return await self._run(
-            self.sync_store.apply_changes, changes, all_or_nothing=all_or_nothing
-        )
-
-    async def append_facts(self, facts: list[Fact]) -> None:
-        await self._run(self.sync_store.append_facts, facts)
-
-    async def recover_transactions(self) -> int:
-        return await self._run(self.sync_store.recover_transactions)
-
-    async def append_pending_candidates(
-        self, candidates: list[MemoryCandidate]
-    ) -> list[MemoryCandidate]:
-        return await self._run(self.sync_store.append_pending_candidates, candidates)
-
-    async def append_candidates(self, candidates: list[MemoryCandidate]) -> None:
-        await self._run(self.sync_store.append_candidates, candidates)
-
-    async def update_fact(self, fact_id: str, **updates: Any) -> Fact | None:
-        return await self._run(self.sync_store.update_fact, fact_id, **updates)
-
-    async def batch_update_candidates(
-        self, updates: dict[str, dict[str, Any]]
-    ) -> list[MemoryCandidate]:
-        return await self._run(self.sync_store.batch_update_candidates, updates)
-
-    async def update_candidate(self, candidate_id: str, **updates: Any) -> MemoryCandidate | None:
-        return await self._run(self.sync_store.update_candidate, candidate_id, **updates)
-
-    async def rename_project(self, old_project: str, new_project: str) -> int:
-        return await self._run(self.sync_store.rename_project, old_project, new_project)
-
-    async def batch_update_facts(self, updates: dict[str, dict[str, Any]]) -> list[Fact]:
-        return await self._run(self.sync_store.batch_update_facts, updates)
-
-    async def forget(self, fact_id: str, reason: str = "") -> Fact | None:
-        return await self._run(self.sync_store.forget, fact_id, reason)
-
-    async def correct_fact(
-        self,
-        fact_id: str,
-        new_content: str,
-        **kwargs: Any,
-    ) -> Fact | None:
-        return await self._run(self.sync_store.correct_fact, fact_id, new_content, **kwargs)
-
-    async def merge_facts(
-        self,
-        source_ids: list[str],
-        merged_content: str,
-        **kwargs: Any,
-    ) -> tuple[Fact, list[str]] | None:
-        return await self._run(self.sync_store.merge_facts, source_ids, merged_content, **kwargs)
-
-    async def mark_stale(self, fact_id: str, reason: str = "") -> Fact | None:
-        return await self._run(self.sync_store.mark_stale, fact_id, reason)
-
-    async def unmark_stale(self, fact_id: str) -> Fact | None:
-        return await self._run(self.sync_store.unmark_stale, fact_id)
-
-    async def approve_candidates(self, candidate_ids: list[str]) -> list[Fact]:
-        return await self._run(self.sync_store.approve_candidates, candidate_ids)
-
-    async def approve_candidates_result(
-        self,
-        candidate_ids: list[str],
-        *,
-        edits: dict[str, str] | None = None,
-    ) -> ApprovalResult:
-        return await self._run(
-            self.sync_store.approve_candidates_result,
-            candidate_ids,
-            edits=edits,
-        )
-
-    async def reject_candidates(
-        self, candidate_ids: list[str], reason: str = ""
-    ) -> list[MemoryCandidate]:
-        return await self._run(self.sync_store.reject_candidates, candidate_ids, reason)
-
-    async def purge(self) -> dict[str, Any]:
-        return await self._run(self.sync_store.purge)
-
-    async def stats(self) -> dict[str, Any]:
-        return await self._run(self.sync_store.stats)
-
-    def format_candidates_for_review(self, candidates: list[MemoryCandidate]) -> str:
-        return self.sync_store.format_candidates_for_review(candidates)
-
-    async def log_recall(self, record: RecallRecord) -> None:
-        await self._run(self.sync_store.log_recall, record)
-
-    async def load_recall_log(self, limit: int | None = 500) -> list[RecallRecord]:
-        return await self._run(self.sync_store.load_recall_log, limit)

@@ -768,7 +768,7 @@ async def test_operation_losing_approval_reports_no_edits_or_candidate_mutation(
     tmp_path, monkeypatch
 ):
     from engram import operations
-    from engram.storage.store import AsyncFactStore
+    from engram.storage.async_store import AsyncFactStore
 
     store = FactStore(tmp_path)
     row = candidate("one")

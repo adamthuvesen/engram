@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import Field, JsonValue
 
 from engram.core.config import Settings, get_settings
+from engram.core.fact_format import format_fact_line, format_facts_for_llm
 from engram.core.interfaces import EnvelopeWarning, WarningCode
 from engram.core.models import Fact, RecallRecord
 from engram.core.provenance import (
@@ -46,14 +47,9 @@ from engram.llm import (
     provider_available,
 )
 from engram.llm.client import response_format_for_model
+from engram.storage.async_store import AsyncFactStore, run_sync
 from engram.storage.search import SearchHit
-from engram.storage.store import (
-    AsyncFactStore,
-    FactStore,
-    format_fact_line,
-    format_facts_for_llm,
-    run_sync,
-)
+from engram.storage.store import FactStore
 
 logger = logging.getLogger(__name__)
 

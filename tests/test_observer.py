@@ -22,7 +22,8 @@ from engram.extraction.observer import (
     _normalize_memory_key,
     ingest,
 )
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 
 
 def _make_store() -> FactStore:

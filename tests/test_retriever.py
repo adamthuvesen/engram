@@ -21,8 +21,9 @@ from engram.recall.retriever import (
     recall_with_provenance,
     relevant_hits,
 )
+from engram.storage.async_store import AsyncFactStore
 from engram.storage.search import SearchHit
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.store import FactStore
 
 
 def _make_store() -> FactStore:

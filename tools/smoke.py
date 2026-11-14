@@ -20,7 +20,8 @@ from pydantic import BaseModel
 from engram.core.config import Settings
 from engram.core.models import Fact, FactCategory
 from engram.runtime import Runtime
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.store import FactStore
 from evals.provider import FixtureCompletionClient
 
 

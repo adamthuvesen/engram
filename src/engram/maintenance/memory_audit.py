@@ -15,8 +15,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from engram.core.models import MIN_ACTIVE_CONFIDENCE, Fact
+from engram.storage.async_store import AsyncFactStore, run_sync
 from engram.storage.search import term_set
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from engram.storage.store import FactStore
 
 SuggestionKind = Literal["duplicate", "stale", "contradiction"]
 SuggestionAction = Literal["merge_memories", "mark_stale", "review_contradiction"]

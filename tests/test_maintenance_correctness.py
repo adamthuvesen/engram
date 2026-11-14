@@ -12,7 +12,8 @@ from engram.extraction.importer import _parse_memory_file, import_claude_code_me
 from engram.maintenance import briefs, verify
 from engram.maintenance.doctor import inspect_data_dir
 from engram.maintenance.upkeep_report import StepReport, UpkeepStep
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 
 
 def fact(index: int, **fields) -> Fact:

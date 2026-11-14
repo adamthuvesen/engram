@@ -4,10 +4,21 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
-from engram.core.models import CandidateStatus, FactCategory, MemoryCandidate
+from engram.core.fact_state import is_fact_eligible
+from engram.core.models import (
+    CandidateStatus,
+    EventType,
+    Fact,
+    FactCategory,
+    FactEvent,
+    MemoryCandidate,
+    StoreTransaction,
+    TransactionStatus,
+)
 from engram.storage.jsonl import load_jsonl_records
 from engram.storage.transactions import (
     ensure_trailing_newline,
@@ -119,3 +130,146 @@ class CandidateSnapshots:
                     added.append(candidate)
             self.append(added)
             return added
+
+
+def prepare_approval(
+    candidate_ids: list[str],
+    pending_candidates: dict[str, MemoryCandidate],
+    facts_by_id: dict[str, Fact],
+    *,
+    edits: dict[str, str] | None,
+    unresolved: dict[str, str],
+) -> StoreTransaction | None:
+    """Build the approval transaction for pending candidates, without its event snapshot."""
+    replacements: dict[str, list[str]] = {}
+    for candidate_id in dict.fromkeys(candidate_ids):
+        candidate = pending_candidates.get(candidate_id)
+        if candidate is None:
+            continue
+        for source_id in set(
+            candidate.replaces or ([candidate.supersedes] if candidate.supersedes else [])
+        ):
+            replacements.setdefault(source_id, []).append(candidate_id)
+    for source_id, competing_ids in sorted(replacements.items()):
+        if len(competing_ids) < 2:
+            continue
+        conflict = (
+            f"Source {source_id} has competing replacement candidates: {', '.join(competing_ids)}"
+        )
+        for candidate_id in competing_ids:
+            previous = unresolved.get(candidate_id)
+            unresolved[candidate_id] = f"{previous}. {conflict}" if previous else conflict
+
+    fact_updates: dict[str, dict[str, Any]] = {}
+    supersessions: dict[str, str] = {}
+    candidate_updates: dict[str, dict[str, Any]] = {}
+    new_facts: list[Fact] = []
+    now = datetime.now(UTC)
+    seen_ids: set[str] = set()
+    selected_ids: list[str] = []
+
+    for candidate_id in candidate_ids:
+        if candidate_id in seen_ids:
+            continue
+        seen_ids.add(candidate_id)
+
+        candidate = pending_candidates.get(candidate_id)
+        if not candidate or candidate_id in unresolved:
+            continue
+        replaced = candidate.replaces or ([candidate.supersedes] if candidate.supersedes else [])
+        if candidate.replaces_expected is not None and (
+            set(candidate.replaces_expected) != set(replaced)
+            or any(
+                old_id not in facts_by_id
+                or not is_fact_eligible(facts_by_id[old_id], now)
+                or facts_by_id[old_id].updated_at != revision
+                for old_id, revision in candidate.replaces_expected.items()
+            )
+        ):
+            continue
+        if edits and candidate_id in edits:
+            candidate = MemoryCandidate.model_validate(
+                {**candidate.model_dump(), "content": edits[candidate_id]}
+            )
+        selected_ids.append(candidate_id)
+
+        candidate_updates[candidate_id] = {"status": CandidateStatus.approved}
+        if edits and candidate_id in edits:
+            candidate_updates[candidate_id]["content"] = candidate.content
+
+        data = candidate.model_dump(
+            exclude={"status", "review_note", "replaces", "replaces_expected"}
+        )
+        data.update(
+            id=candidate_promotion_id(candidate),
+            created_at=candidate.created_at,
+            updated_at=candidate.created_at,
+        )
+        new_fact = Fact(**data)
+        new_facts.append(new_fact)
+        replaced = candidate.replaces or ([candidate.supersedes] if candidate.supersedes else [])
+        for old_id in replaced:
+            supersessions[old_id] = new_fact.id
+
+    if not new_facts:
+        return None
+
+    return StoreTransaction(
+        type="approve_candidates",
+        status=TransactionStatus.prepared,
+        candidate_ids=selected_ids,
+        fact_updates=fact_updates,
+        supersessions=supersessions,
+        candidate_updates=candidate_updates,
+        new_facts=new_facts,
+        created_at=now,
+    )
+
+
+def approval_snapshot(
+    transaction: StoreTransaction, rows: dict[str, MemoryCandidate]
+) -> StoreTransaction:
+    """Attach the fact events and candidate rows an approval transaction appends."""
+    events = [
+        FactEvent(
+            event_type=EventType.created,
+            fact_id=fact.id,
+            timestamp=fact.created_at,
+            payload=fact.model_dump(),
+        )
+        for fact in transaction.new_facts
+    ]
+    events.extend(
+        FactEvent(
+            event_type=EventType.superseded,
+            fact_id=old,
+            timestamp=transaction.created_at,
+            payload={
+                "superseded_by": new,
+                "reason": "approved candidate replaces this memory",
+            },
+        )
+        for old, new in transaction.supersessions.items()
+    )
+    for fact_id, updates in transaction.fact_updates.items():
+        event_type = EventType.forgotten if updates == {"confidence": 0.0} else EventType.edited
+        events.append(
+            FactEvent(
+                event_type=event_type,
+                fact_id=fact_id,
+                timestamp=transaction.created_at,
+                payload={} if event_type is EventType.forgotten else updates,
+            )
+        )
+    candidates = [
+        MemoryCandidate.model_validate(
+            {
+                **rows[candidate_id].model_dump(),
+                **updates,
+                "updated_at": transaction.created_at,
+            }
+        )
+        for candidate_id, updates in transaction.candidate_updates.items()
+        if candidate_id in rows
+    ]
+    return transaction.model_copy(update={"events": events, "candidates": candidates})

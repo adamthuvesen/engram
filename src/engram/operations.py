@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import JsonValue, ValidationError
 
 from engram.core.config import get_settings
+from engram.core.fact_format import format_fact_line
 from engram.core.interfaces import (
     Envelope,
     EnvelopeError,
@@ -65,13 +66,8 @@ from engram.recall.retriever import (
     recall_result as _recall_result,
 )
 from engram.runtime import current_runtime
-from engram.storage.store import (
-    AsyncFactStore,
-    FactStore,
-    StoreIntegrityError,
-    format_fact_line,
-    run_sync,
-)
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.store import FactStore, StoreIntegrityError
 from engram.storage.sync import (
     DEFAULT_GIT_TIMEOUT_SECONDS,
     SyncError,

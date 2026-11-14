@@ -10,7 +10,8 @@ import pytest
 
 from engram import server
 from engram.core.models import Fact, FactCategory
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 from tests.mcp_helpers import call_tool
 
 

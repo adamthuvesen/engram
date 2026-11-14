@@ -37,7 +37,8 @@ from engram.core.models import (
     StoreTransaction,
     TransactionStatus,
 )
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 from engram.storage.transactions import scan_event_log
 
 logger = logging.getLogger(__name__)

@@ -487,7 +487,7 @@ def sync(
 
 async def run_sync(data_dir: Path, *, timeout: float) -> dict[str, Any]:
     """Keep cancellation pending until the synchronous sync worker has stopped."""
-    from engram.storage.store import run_sync as run_blocking
+    from engram.storage.async_store import run_sync as run_blocking
 
     return await run_blocking(sync, data_dir, timeout=timeout)
 

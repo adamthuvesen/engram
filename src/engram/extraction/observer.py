@@ -17,6 +17,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, ValidationError
 
 from engram.core.config import get_settings
+from engram.core.fact_format import content_signature, format_observed
 from engram.core.models import (
     Durability,
     EvidenceKind,
@@ -32,8 +33,9 @@ from engram.core.structured_outputs import (
     UnresolvedDecision,
 )
 from engram.llm import complete_model
+from engram.storage.async_store import AsyncFactStore
 from engram.storage.changes import ChangeSet
-from engram.storage.store import AsyncFactStore, FactStore, content_signature, format_observed
+from engram.storage.store import FactStore
 
 logger = logging.getLogger(__name__)
 

@@ -50,8 +50,8 @@ from engram.maintenance.upkeep_state import (
     upkeep_lock,
 )
 from engram.maintenance.verify import verify_facts
+from engram.storage.async_store import AsyncFactStore, run_sync
 from engram.storage.changes import ChangeSet
-from engram.storage.store import AsyncFactStore, run_sync
 
 logger = logging.getLogger(__name__)
 

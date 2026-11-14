@@ -10,7 +10,8 @@ from contextvars import ContextVar
 
 from engram.core.config import Settings, get_settings, settings_scope
 from engram.llm import CompletionClient, OpenAICompletionClient, completion_client
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.store import FactStore
 
 logger = logging.getLogger(__name__)
 _CURRENT_RUNTIME: ContextVar[Runtime | None] = ContextVar("engram_runtime", default=None)

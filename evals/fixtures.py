@@ -34,7 +34,8 @@ from engram.core.interfaces import WarningCode
 from engram.core.models import Durability, Fact, FactCategory
 from engram.llm import OpenAICompletionClient, completion_client
 from engram.recall.retriever import RecallMode, recall_with_provenance
-from engram.storage.store import AsyncFactStore, FactStore, run_sync
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.store import FactStore
 from evals.provider import FixtureCompletionClient
 from evals.report import ReportProvenance, provenance_for_bytes
 

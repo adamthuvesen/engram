@@ -29,9 +29,12 @@ Legacy event categories decode through an explicit compatibility path. Provider 
 `core.fact_state.is_fact_eligible` supplies the shared active-memory policy.
 `core.projects` canonicalizes project paths and records checkout locations.
 
-`storage.store` exposes sync operations and the async facade.
+`core.fact_format` renders facts as dated card lines.
+`storage.store` exposes sync operations. `storage.async_store` is the async facade over them.
+`storage.changes` defines `ChangeSet` and the results that the store returns.
 `storage.transactions` owns local exclusion, durable intent, recovery, and event-log writes.
-`storage.candidates` materializes append-only review history.
+`storage.candidates` materializes append-only review history and plans candidate approval transactions.
+`storage.compaction` collapses the event log to its minimal events.
 `storage.jsonl` provides validated JSONL reading.
 `storage.search` owns BM25 scoring and coverage. `storage.sync` integrates Git snapshots under the store lock.
 

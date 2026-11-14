@@ -18,7 +18,8 @@ from engram.core.models import (
     TransactionStatus,
 )
 from engram.maintenance.doctor import DoctorIssue, repair_store, run_doctor
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 from tests.mcp_helpers import call_tool
 
 

@@ -13,7 +13,8 @@ from engram.core.models import (
     MemoryCandidate,
     RecallRecord,
 )
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 from tests.mcp_helpers import json_array, json_object
 
 
