@@ -114,7 +114,11 @@ def install_tripwires(scratch: Path) -> Path:
         if real is None:
             sys.exit(f"preflight: {name} is not on PATH")
         scripts[name] = (
-            f'for arg in "$@"; do [ "$arg" = {refused} ] && {{ {trip}; }}; done\n'
+            f'skip=0; for arg in "$@"; do\n'
+            f'  if [ "$skip" = 1 ]; then skip=0; continue; fi\n'
+            f'  case "$arg" in -C|-c|--directory) skip=1; continue;; -*) continue;; esac\n'
+            f'  [ "$arg" = {refused} ] && {{ {trip}; }}; break\n'
+            f"done\n"
             f'exec {shlex.quote(real)} "$@"'
         )
     for name, body in scripts.items():

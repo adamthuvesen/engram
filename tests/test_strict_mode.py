@@ -103,6 +103,7 @@ def imported_modules(source: str) -> set[str]:
             modules.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             modules.add(node.module)
+            modules.update(f"{node.module}.{alias.name}" for alias in node.names)
     return modules
 
 
@@ -124,9 +125,11 @@ def unowned_bans(root: Path, owned: dict[str, set[str]]) -> list[str]:
         problems.append("lint.select does not select TID251")
     problems += [f"{path}: TID251 ignore has no OWNED_BANS entry" for path in owners - owned.keys()]
     for path in sorted(owners & owned.keys()):
+        reported: set[str] = set()
         for module in sorted(imported_modules((root / path).read_text())):
             ban = next((b for b in banned if module == b or module.startswith(b + ".")), None)
-            if ban and ban not in owned[path]:
+            if ban and ban not in owned[path] and ban not in reported:
+                reported.add(ban)
                 problems.append(f"{path}: imports {module}, but owns only {sorted(owned[path])}")
     return problems
 
