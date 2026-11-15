@@ -672,6 +672,10 @@ class FactStore:
                     else existing.retrieval_hints,
                     "supersedes": fact_id,
                     "why_store": reason or existing.why_store,
+                    # The correction is the fresh claim: a stale mark on the old card
+                    # would hide it from recall.
+                    "stale": False,
+                    "stale_reason": "",
                 }
             )
             self.append_events(

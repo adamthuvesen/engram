@@ -67,6 +67,19 @@ def test_correct_fact_creates_replacement_with_supersedes():
     assert new.id in active_ids
 
 
+def test_correct_fact_clears_stale_state_on_the_replacement():
+    store = _make_store()
+    store.append_facts(
+        [Fact(id="staleaaaaaaa", category=FactCategory.preference, content="prefers vim")]
+    )
+    assert store.mark_stale("staleaaaaaaa", reason="outdated") is not None
+
+    new = store.correct_fact("staleaaaaaaa", "prefers neovim")
+    assert new is not None
+    assert not new.stale
+    assert new.id in [f.id for f in store.load_active_facts()]
+
+
 def test_correct_fact_returns_none_for_missing():
     store = _make_store()
     assert store.correct_fact("doesnotexist", "anything") is None
