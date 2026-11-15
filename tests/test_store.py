@@ -1,15 +1,13 @@
-"""Tests for the JSONL fact store."""
-
 import asyncio
 import json
 import tempfile
 import threading
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
+from engram.core.fact_format import format_facts_for_llm
 from engram.core.models import (
     CandidateStatus,
     Fact,
@@ -17,7 +15,8 @@ from engram.core.models import (
     MemoryCandidate,
     RecallRecord,
 )
-from engram.storage.store import AsyncFactStore, FactStore, format_facts_for_llm
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore, StoreIntegrityError
 
 
 def _make_store() -> FactStore:
@@ -35,9 +34,7 @@ def test_empty_store():
 def test_append_and_load():
     store = _make_store()
     facts = [
-        Fact(
-            category=FactCategory.preference, content="User prefers polars over pandas"
-        ),
+        Fact(category=FactCategory.preference, content="User prefers polars over pandas"),
         Fact(category=FactCategory.personal_info, content="User works on AI team"),
     ]
     store.append_facts(facts)
@@ -48,9 +45,9 @@ def test_append_and_load():
     assert loaded[1].content == "User works on AI team"
 
 
-def test_non_event_log_file_loads_empty(tmp_path):
+def test_non_event_log_file_fails_with_integrity_error(tmp_path):
     """A plain fact-record file (no event-log sentinel) is invalid data:
-    load_facts returns empty rather than auto-migrating."""
+    load_facts reports the invalid sentinel rather than auto-migrating."""
     data_dir = tmp_path / "store"
     data_dir.mkdir()
     fact = Fact(
@@ -61,7 +58,8 @@ def test_non_event_log_file_loads_empty(tmp_path):
     (data_dir / "facts.jsonl").write_text(fact.model_dump_json() + "\n")
 
     store = FactStore(data_dir=data_dir)
-    assert store.load_facts() == []
+    with pytest.raises(StoreIntegrityError, match="sentinel"):
+        store.load_facts()
 
 
 def test_filter_by_category():
@@ -294,9 +292,9 @@ def test_update_fact():
     assert loaded[0].content == "Updated content"
 
 
-def test_stats():
+def test_stats(fixed_now):
     store = _make_store()
-    past = datetime.now(timezone.utc) - timedelta(days=1)
+    past = fixed_now - timedelta(days=1)
     store.append_facts(
         [
             Fact(category=FactCategory.preference, content="Pref 1"),
@@ -468,9 +466,7 @@ def test_candidate_rejection_is_idempotent_and_does_not_reject_approved():
 
 def test_approving_superseding_candidate_removes_old_fact_from_active_recall():
     store = _make_store()
-    old_fact = Fact(
-        id="old123", category=FactCategory.preference, content="User prefers pandas"
-    )
+    old_fact = Fact(id="old123", category=FactCategory.preference, content="User prefers pandas")
     store.append_facts([old_fact])
     candidate = MemoryCandidate(
         id="cand789",
@@ -531,9 +527,7 @@ def test_search_prioritizes_matching_content():
         ]
     )
 
-    hits = store.search_facts(
-        "What dataframe library does the user prefer? polars", limit=2
-    )
+    hits = store.search_facts("What dataframe library does the user prefer? polars", limit=2)
 
     assert len(hits) <= 2
     assert "polars" in hits[0].fact.content.lower()
@@ -571,9 +565,7 @@ def test_search_bigram_and_normalization():
                 category=FactCategory.convention,
                 content="The team uses coding_style based on PEP8",
             ),
-            Fact(
-                category=FactCategory.preference, content="Unrelated fact about pizza"
-            ),
+            Fact(category=FactCategory.preference, content="Unrelated fact about pizza"),
         ]
     )
 
@@ -638,25 +630,36 @@ async def test_async_store_facade_covers_server_operations():
     assert (await async_store.purge())["purged"] == 1
 
 
+async def _loop_turn() -> None:
+    """Return after the event loop runs one callback, which proves the loop is not blocked."""
+    loop = asyncio.get_running_loop()
+    turn = loop.create_future()
+    loop.call_soon(turn.set_result, None)
+    await turn
+
+
 @pytest.mark.asyncio
 async def test_async_store_read_does_not_block_unrelated_coroutine():
     store = _make_store()
     async_store = AsyncFactStore(store)
     original_load_facts = store.load_facts
 
+    started = threading.Event()
+    release = threading.Event()
+
     def slow_load_facts():
-        time.sleep(0.12)
+        started.set()
+        assert release.wait(5)
         return original_load_facts()
 
-    store.load_facts = slow_load_facts  # type: ignore[method-assign]
-    start = time.perf_counter()
+    store.load_facts = slow_load_facts
 
     load_task = asyncio.create_task(async_store.load_facts())
-    await asyncio.sleep(0.02)
-    elapsed = time.perf_counter() - start
+    await asyncio.to_thread(started.wait, 5)
+    await _loop_turn()
 
-    assert elapsed < 0.08
     assert not load_task.done()
+    release.set()
     assert await load_task == []
 
 
@@ -666,23 +669,24 @@ async def test_async_store_write_does_not_block_unrelated_coroutine():
     async_store = AsyncFactStore(store)
     original_append_facts = store.append_facts
 
+    started = threading.Event()
+    release = threading.Event()
+
     def slow_append_facts(facts: list[Fact]) -> None:
-        time.sleep(0.12)
+        started.set()
+        assert release.wait(5)
         original_append_facts(facts)
 
-    store.append_facts = slow_append_facts  # type: ignore[method-assign]
-    start = time.perf_counter()
+    store.append_facts = slow_append_facts
 
     append_task = asyncio.create_task(
-        async_store.append_facts(
-            [Fact(category=FactCategory.workflow, content="Async append")]
-        )
+        async_store.append_facts([Fact(category=FactCategory.workflow, content="Async append")])
     )
-    await asyncio.sleep(0.02)
-    elapsed = time.perf_counter() - start
+    await asyncio.to_thread(started.wait, 5)
+    await _loop_turn()
 
-    assert elapsed < 0.08
     assert not append_task.done()
+    release.set()
     await append_task
     assert len(store.load_facts()) == 1
 
@@ -694,9 +698,7 @@ async def test_async_concurrent_appends_keep_complete_parseable_lines():
 
     await asyncio.gather(
         *[
-            async_store.append_facts(
-                [Fact(category=FactCategory.workflow, content=f"Fact {i}")]
-            )
+            async_store.append_facts([Fact(category=FactCategory.workflow, content=f"Fact {i}")])
             for i in range(30)
         ]
     )
@@ -721,8 +723,7 @@ async def test_async_concurrent_rewrites_leave_parseable_file_and_no_tmp_files()
     store = _make_store()
     async_store = AsyncFactStore(store)
     facts = [
-        Fact(id=f"fact{i}", category=FactCategory.workflow, content=f"Fact {i}")
-        for i in range(10)
+        Fact(id=f"fact{i}", category=FactCategory.workflow, content=f"Fact {i}") for i in range(10)
     ]
     store.append_facts(facts)
 

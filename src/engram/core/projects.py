@@ -12,17 +12,20 @@ check fact anchors against the current code.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import subprocess
 import tempfile
+import threading
 from collections.abc import Collection
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOTS_FILE = "projects.local.json"
+_PROJECT_ROOTS_LOCK = threading.Lock()
 _GIT_TIMEOUT_SECONDS = 5.0
 _REPO_SEARCH_DEPTH = 3
 
@@ -40,7 +43,7 @@ def _git(path: Path, *args: str) -> str | None:
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
@@ -83,7 +86,7 @@ def resolve_project(
     if not _looks_like_path(text):
         return normalize_project_name(text), None
 
-    path = Path(os.path.expanduser(text))
+    path = Path(text).expanduser()
     root = repo_root_for_path(path)
     if root is not None:
         return normalize_project_name(root.name), root
@@ -123,36 +126,40 @@ def load_project_roots(data_dir: Path) -> dict[str, Path]:
         return {}
     try:
         raw = json.loads(path.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         logger.warning("Ignoring unreadable %s", path)
         return {}
     if not isinstance(raw, dict):
         return {}
-    return {
-        str(name): Path(root)
-        for name, root in raw.items()
-        if isinstance(root, str) and root
-    }
+    return {str(name): Path(root) for name, root in raw.items() if isinstance(root, str) and root}
 
 
 def record_project_root(data_dir: Path, name: str, root: Path) -> None:
     """Remember where ``name`` lives on this machine."""
-    roots = load_project_roots(data_dir)
-    if roots.get(name) == root:
-        return
-    roots[name] = root
-    path = data_dir / PROJECT_ROOTS_FILE
-    fd, tmp = tempfile.mkstemp(dir=data_dir, prefix=".projects-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(
-                {key: str(value) for key, value in sorted(roots.items())}, fh, indent=2
-            )
-            fh.write("\n")
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    data_dir.mkdir(parents=True, exist_ok=True)
+    with _PROJECT_ROOTS_LOCK, (data_dir / "projects.local.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            roots = load_project_roots(data_dir)
+            if roots.get(name) == root:
+                return
+            roots[name] = root
+            path = data_dir / PROJECT_ROOTS_FILE
+            fd, tmp = tempfile.mkstemp(dir=data_dir, prefix=".projects-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as fh:
+                    json.dump(
+                        {key: str(value) for key, value in sorted(roots.items())},
+                        fh,
+                        indent=2,
+                    )
+                    fh.write("\n")
+                Path(tmp).replace(path)
+            except BaseException:
+                Path(tmp).unlink(missing_ok=True)
+                raise
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def register_project(data_dir: Path, value: str | None) -> str | None:
@@ -181,7 +188,7 @@ def find_repo_root(
     if recorded is not None and (recorded / ".git").exists():
         return recorded
     for base in search_roots:
-        base = Path(os.path.expanduser(str(base)))
+        base = Path(base).expanduser()
         found = _search_repo(base, name, _REPO_SEARCH_DEPTH)
         if found is not None:
             return found

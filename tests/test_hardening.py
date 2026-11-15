@@ -6,7 +6,9 @@ import json
 import tempfile
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -20,8 +22,9 @@ from engram.core.models import (
     RecallRecord,
     TransactionStatus,
 )
-from engram.storage.store import AsyncFactStore, FactStore
-from tests.mcp_helpers import call_tool
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
+from tests.mcp_helpers import call_tool, text_of
 
 
 def _make_store() -> FactStore:
@@ -29,21 +32,16 @@ def _make_store() -> FactStore:
     return FactStore(data_dir=tmp)
 
 
-def _make_fact(**kwargs) -> Fact:
-    defaults = dict(category=FactCategory.preference, content="Test fact")
+def _make_fact(**kwargs: Any) -> Fact:
+    defaults: dict[str, Any] = {"category": FactCategory.preference, "content": "Test fact"}
     defaults.update(kwargs)
     return Fact(**defaults)
 
 
-def _make_candidate(**kwargs) -> MemoryCandidate:
-    defaults = dict(category=FactCategory.preference, content="Test candidate")
+def _make_candidate(**kwargs: Any) -> MemoryCandidate:
+    defaults: dict[str, Any] = {"category": FactCategory.preference, "content": "Test candidate"}
     defaults.update(kwargs)
     return MemoryCandidate(**defaults)
-
-
-# ---------------------------------------------------------------------------
-# 1.4 Concurrent appends produce no corruption
-# ---------------------------------------------------------------------------
 
 
 def test_concurrent_append_no_corruption():
@@ -70,17 +68,10 @@ def test_concurrent_append_no_corruption():
     assert len(loaded) == 100
     # Each on-disk line must be parseable. The event-log layout is one meta
     # sentinel followed by one ``created`` event per fact.
-    raw_lines = [
-        line for line in store.facts_path.read_text().splitlines() if line.strip()
-    ]
+    raw_lines = [line for line in store.facts_path.read_text().splitlines() if line.strip()]
     assert len(raw_lines) == 101
     for line in raw_lines:
         json.loads(line)  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# 1.5 _rewrite failure leaves no .tmp files
-# ---------------------------------------------------------------------------
 
 
 def test_rewrite_failure_leaves_no_tmp_files():
@@ -94,18 +85,15 @@ def test_rewrite_failure_leaves_no_tmp_files():
         call_count[0] += 1
         raise OSError("Simulated fsync failure")
 
-    with patch("engram.storage.store.os.fsync", side_effect=failing_fsync):
-        with pytest.raises(OSError, match="Simulated fsync failure"):
-            store._rewrite(store.load_facts())
+    with (
+        patch("engram.storage.store.os.fsync", side_effect=failing_fsync),
+        pytest.raises(OSError, match="Simulated fsync failure"),
+    ):
+        store._rewrite(store.load_facts())
 
     tmp_files = list(store.data_dir.glob("*.tmp"))
     assert tmp_files == [], f"Orphaned tmp files: {tmp_files}"
     assert call_count[0] >= 1
-
-
-# ---------------------------------------------------------------------------
-# 1.6 _rewrite calls fsync before os.replace
-# ---------------------------------------------------------------------------
 
 
 def test_rewrite_calls_fsync():
@@ -140,11 +128,6 @@ def test_rewrite_calls_fsync():
     assert len(fsync_calls) >= 1 and len(replace_calls) >= 1
     # The target file should be intact
     assert store.facts_path.exists()
-
-
-# ---------------------------------------------------------------------------
-# 2.3 approve_candidates uses exactly 3 write operations for N candidates
-# ---------------------------------------------------------------------------
 
 
 def test_approve_candidates_batched_writes():
@@ -203,7 +186,7 @@ def test_approve_candidates_writes_transaction_markers():
     assert transactions[0].new_facts[0].id == approved[0].id
 
 
-def test_recover_prepared_approval_transaction_on_startup():
+def test_recover_prepared_approval_transaction_explicitly():
     store = _make_store()
     old = _make_fact(id="old1", content="Old preference")
     candidate = _make_candidate(
@@ -219,6 +202,7 @@ def test_recover_prepared_approval_transaction_on_startup():
     store._append_transaction(transaction)
 
     recovered = FactStore(data_dir=store.data_dir)
+    recovered.recover_transactions()
 
     facts = recovered.load_facts()
     assert len(facts) == 2
@@ -229,7 +213,7 @@ def test_recover_prepared_approval_transaction_on_startup():
     ]
     assert recovered.load_candidates(status=CandidateStatus.pending) == []
     assert len(recovered.load_candidates(status=CandidateStatus.approved)) == 1
-    assert recovered._pending_transactions() == []
+    assert recovered.pending_transactions() == []
 
 
 def test_approval_recovers_when_apply_fails_after_prepare():
@@ -244,16 +228,19 @@ def test_approval_recovers_when_apply_fails_after_prepare():
     with pytest.raises(OSError, match="simulated crash after prepare"):
         store.approve_candidates(["cand1"])
 
-    assert store.load_active_facts() == []
-    assert len(store.load_candidates(status=CandidateStatus.pending)) == 1
+    with pytest.raises(RuntimeError, match="recover_transactions"):
+        store.load_active_facts()
+    with pytest.raises(RuntimeError, match="recover_transactions"):
+        store.load_candidates(status=CandidateStatus.pending)
 
     recovered = FactStore(data_dir=store.data_dir)
+    recovered.recover_transactions()
 
     facts = recovered.load_active_facts()
     assert len(facts) == 1
     assert facts[0].content == "Remember this"
     assert len(recovered.load_candidates(status=CandidateStatus.approved)) == 1
-    assert recovered._pending_transactions() == []
+    assert recovered.pending_transactions() == []
 
 
 def test_approval_recovery_does_not_duplicate_fact_after_commit_marker_failure():
@@ -272,101 +259,114 @@ def test_approval_recovery_does_not_duplicate_fact_after_commit_marker_failure()
     with pytest.raises(OSError, match="simulated crash before commit marker"):
         store.approve_candidates(["cand1"])
 
-    assert len(store.load_active_facts()) == 1
-    assert len(store.load_candidates(status=CandidateStatus.approved)) == 1
+    with pytest.raises(RuntimeError, match="recover_transactions"):
+        store.load_active_facts()
+    with pytest.raises(RuntimeError, match="recover_transactions"):
+        store.load_candidates(status=CandidateStatus.approved)
 
     recovered = FactStore(data_dir=store.data_dir)
+    recovered.recover_transactions()
 
     facts = recovered.load_active_facts()
     assert len(facts) == 1
     assert facts[0].content == "Remember this"
-    assert recovered._pending_transactions() == []
+    assert recovered.pending_transactions() == []
 
 
-def test_reject_candidates_batched_writes():
-    """Rejecting many candidates rewrites the candidate file at most once."""
+def test_reject_candidates_appends_one_snapshot_batch():
     store = _make_store()
-    candidates = [_make_candidate(id=f"cand{i}") for i in range(5)]
-    store.append_candidates(candidates)
-
-    rewrite_calls = []
-    original_rewrite = store._rewrite
-
-    def tracking_rewrite(records, path=None):
-        rewrite_calls.append(path or store.facts_path)
-        return original_rewrite(records, path=path)
-
-    store._rewrite = tracking_rewrite
-
+    store.append_candidates([_make_candidate(id=f"cand{i}") for i in range(5)])
+    before = store.candidates_path.read_bytes()
     rejected = store.reject_candidates([f"cand{i}" for i in range(5)], reason="Nope")
-
     assert len(rejected) == 5
-    assert len(rewrite_calls) == 1
-
-
-# ---------------------------------------------------------------------------
-# 3.4 structured LLM output validation
-# ---------------------------------------------------------------------------
+    assert store.candidates_path.read_bytes().startswith(before)
+    assert len(store.candidates_path.read_text().splitlines()) == 10
 
 
 class _HardeningStructuredResponse(BaseModel):
     answer: int
 
 
-def test_complete_model_raw_json_parse(monkeypatch):
-    """Raw JSON is validated into the requested Pydantic model."""
+def test_complete_model_validates_provider_parsed_payload(monkeypatch):
     from engram.llm import client as llm
 
-    async def fake_complete(**kwargs):
-        return '{"answer": 42}'
-
-    monkeypatch.setattr(llm, "complete", fake_complete)
-    result = asyncio.run(
-        llm.complete_model(
-            prompt="test",
-            system="sys",
-            response_model=_HardeningStructuredResponse,
+    parse = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content='{"answer":42}',
+                        parsed={"answer": 42},
+                        refusal=None,
+                    ),
+                )
+            ],
+            usage=None,
         )
     )
+    sdk = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(parse=parse)),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(llm, "_client", lambda: sdk)
+    result = asyncio.run(
+        llm.complete_model(prompt="test", system="sys", response_model=_HardeningStructuredResponse)
+    )
     assert result == _HardeningStructuredResponse(answer=42)
+    sdk.close.assert_awaited_once()
 
 
-def test_complete_model_unparseable_raises_validation_error(monkeypatch):
-    """Completely unparseable output fails loudly at the structured boundary."""
+def test_complete_model_invalid_parsed_payload_closes_owned_client(monkeypatch):
     from engram.llm import client as llm
 
-    async def fake_complete(**kwargs):
-        return "This is not JSON at all!"
-
-    monkeypatch.setattr(llm, "complete", fake_complete)
-
+    parse = AsyncMock(
+        return_value=SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content='{"answer":"invalid"}',
+                        parsed={"answer": "invalid"},
+                        refusal=None,
+                    ),
+                )
+            ],
+            usage=None,
+        )
+    )
+    sdk = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(parse=parse)),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(llm, "_client", lambda: sdk)
     with pytest.raises(ValidationError):
         asyncio.run(
             llm.complete_model(
-                prompt="test",
-                system="sys",
-                response_model=_HardeningStructuredResponse,
+                prompt="test", system="sys", response_model=_HardeningStructuredResponse
             )
         )
+    sdk.close.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# 3.5 LLM retry: the OpenAI client retries transient failures
-# ---------------------------------------------------------------------------
-
-
-def test_openai_client_retries_and_is_reused_per_loop(monkeypatch):
-    """Each event loop gets one client, configured with max_retries=2."""
+def test_completion_client_reuses_and_closes_its_sdk_pool(monkeypatch):
     from engram.llm import client as llm
 
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    sdk = SimpleNamespace(close=AsyncMock())
+    factory = MagicMock(return_value=sdk)
+    monkeypatch.setattr(llm, "_client", factory)
 
-    async def two_lookups():
-        return llm._client(), llm._client()
+    async def use_client():
+        client = llm.OpenAICompletionClient()
+        assert client._connection() is client._connection()
+        await client.aclose()
+        await client.aclose()
+        with pytest.raises(RuntimeError, match="closed"):
+            client._connection()
 
-    first, second = asyncio.run(two_lookups())
-    assert first is second
-    assert first.max_retries == 2
+    asyncio.run(use_client())
+    factory.assert_called_once()
+    sdk.close.assert_awaited_once()
 
 
 def test_recall_context_prompt_mode_smoke():
@@ -474,9 +474,7 @@ def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
                         "category": "project",
                         "tags": ["storage"],
                         "retrieval_hints": ["Engram MCP storage"],
-                        "covered_claims": [
-                            "Engram routes MCP storage through AsyncFactStore"
-                        ],
+                        "covered_claims": ["Engram routes MCP storage through AsyncFactStore"],
                         "why_store": "Documents the architecture",
                         "expires_at": None,
                     }
@@ -484,9 +482,7 @@ def test_import_memories_accepts_async_store(tmp_path, monkeypatch):
             }
         )
 
-    monkeypatch.setattr(
-        "engram.extraction.observer.complete_model", fake_complete_model
-    )
+    monkeypatch.setattr("engram.extraction.observer.complete_model", fake_complete_model)
 
     store = _make_store()
     result = asyncio.run(import_claude_code_memories(store=AsyncFactStore(store)))
@@ -631,14 +627,9 @@ def test_mcp_tools_return_text_and_structured_content():
 
     content, structured = asyncio.run(call_tool(app, "inspect", {"format": "json"}))
 
-    assert content[0].text.startswith('{"status":"ok"')
+    assert text_of(content[0]).startswith('{"status":"ok"')
     assert structured["status"] == "ok"
     assert structured["data"][0]["id"] == "aaaaaaaaaaaa"
-
-
-# ---------------------------------------------------------------------------
-# 6.4 Search index cache: built once, rebuilt when the event log changes
-# ---------------------------------------------------------------------------
 
 
 def test_search_index_cached_across_searches():
@@ -650,9 +641,10 @@ def test_search_index_cached_across_searches():
         ]
     )
 
-    first = store.search_index()
+    first = store._search_index()
     store.search_facts("polars dataframe library")
-    assert store.search_index() is first
+    assert store._search_index() is first
+    assert store.search_index() is not first
 
 
 def test_search_index_rebuilt_after_update_and_purge():
@@ -668,11 +660,6 @@ def test_search_index_rebuilt_after_update_and_purge():
     store.forget(fact.id)
     store.purge()
     assert store.search_facts("JavaScript") == []
-
-
-# ---------------------------------------------------------------------------
-# 7.2 Config placeholder detection covers embedded placeholders
-# ---------------------------------------------------------------------------
 
 
 def test_placeholder_detection_embedded():
@@ -691,46 +678,33 @@ def test_placeholder_detection_embedded():
     assert not _is_unresolved_env_placeholder("")
 
 
-# ---------------------------------------------------------------------------
-# 7.4 Importer _clean_project_name uses home-path-relative logic
-# ---------------------------------------------------------------------------
-
-
-def test_clean_project_name_strips_home_prefix():
+@pytest.mark.parametrize("home", ["/Users/alex", "/home/alex", "/root"])
+def test_clean_project_name_strips_home_prefix(monkeypatch, home):
     from engram.extraction.importer import _clean_project_name
 
-    # Simulate mangled path for a project under the user's home dir
-    # Claude mangles /Users/jdoe/dev/myproject as -Users-jdoe-dev-myproject
-    home_parts = [p for p in Path.home().parts if p and p != "/"]
-    username = home_parts[-1] if home_parts else "jdoe"
-    parent = home_parts[0] if len(home_parts) > 1 else "Users"
-
-    mangled = f"-{parent}-{username}-dev-myproject"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(home)))
+    mangled = home.replace("/", "-") + "-dev-myproject"
     result = _clean_project_name(mangled)
     assert result == "myproject", f"Expected 'myproject', got '{result}'"
 
 
-def test_clean_project_name_repo_named_ai_is_kept():
+@pytest.mark.parametrize("home", ["/Users/alex", "/home/alex", "/root"])
+def test_clean_project_name_repo_named_ai_is_kept(monkeypatch, home):
     from engram.extraction.importer import _clean_project_name
 
-    home_parts = [p for p in Path.home().parts if p and p != "/"]
-    username = home_parts[-1] if home_parts else "jdoe"
-    parent = home_parts[0] if len(home_parts) > 1 else "Users"
-
-    mangled = f"-{parent}-{username}-dev-ai"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(home)))
+    mangled = home.replace("/", "-") + "-dev-ai"
     result = _clean_project_name(mangled)
     # Should return 'ai', not strip it as before
     assert result == "ai", f"Expected 'ai', got '{result}'"
 
 
-def test_clean_project_name_hyphenated_repo_is_kept():
+@pytest.mark.parametrize("home", ["/Users/alex", "/home/alex", "/root"])
+def test_clean_project_name_hyphenated_repo_is_kept(monkeypatch, home):
     from engram.extraction.importer import _clean_project_name
 
-    home_parts = [p for p in Path.home().parts if p and p != "/"]
-    username = home_parts[-1] if home_parts else "jdoe"
-    parent = home_parts[0] if len(home_parts) > 1 else "Users"
-
-    mangled = f"-{parent}-{username}-dev-company-acme-dw"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(home)))
+    mangled = home.replace("/", "-") + "-dev-company-acme-dw"
     result = _clean_project_name(mangled)
     assert result == "acme-dw", f"Expected 'acme-dw', got '{result}'"
 

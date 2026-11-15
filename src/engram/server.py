@@ -1,10 +1,11 @@
 """Engram MCP Server — structured, cross-project memory for coding agents."""
 
-import asyncio
 import logging
-from collections.abc import Callable
-from contextlib import asynccontextmanager
-from typing import Literal
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from functools import wraps
+from inspect import signature
+from typing import Literal, ParamSpec
 
 from fastmcp import FastMCP
 from fastmcp.tools import ToolResult
@@ -14,40 +15,90 @@ from engram.core.config import (
     DEFAULT_HTTP_HOST,
     DEFAULT_HTTP_PORT,
     configure_logging,
-    get_settings,
 )
 from engram.core.interfaces import Envelope, validation_error
+from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
 from engram.operations import (
     EXIT_VALIDATION,
     OperationResult,
-    async_store,
+    exception_result,
+    invalid_format_result,
+)
+from engram.operations import (
     approve_candidates as op_approve_candidates,
+)
+from engram.operations import (
     audit_memories as op_audit_memories,
+)
+from engram.operations import (
     correct_memory as op_correct_memory,
+)
+from engram.operations import (
     doctor as op_doctor,
+)
+from engram.operations import (
     edit_fact as op_edit_fact,
+)
+from engram.operations import (
     forget as op_forget,
+)
+from engram.operations import (
     import_memories as op_import_memories,
+)
+from engram.operations import (
     inspect as op_inspect,
+)
+from engram.operations import (
     list_candidates as op_list_candidates,
+)
+from engram.operations import (
     mark_stale as op_mark_stale,
+)
+from engram.operations import (
     memory_stats as op_memory_stats,
+)
+from engram.operations import (
     merge_memories as op_merge_memories,
+)
+from engram.operations import (
     purge as op_purge,
+)
+from engram.operations import (
     recall as op_recall,
+)
+from engram.operations import (
     recall_context as op_recall_context,
+)
+from engram.operations import (
     recall_stats as op_recall_stats,
+)
+from engram.operations import (
     recall_trace as op_recall_trace,
+)
+from engram.operations import (
     reject_candidates as op_reject_candidates,
+)
+from engram.operations import (
     remember as op_remember,
+)
+from engram.operations import (
     rename_project as op_rename_project,
+)
+from engram.operations import (
     suggest_memories as op_suggest_memories,
+)
+from engram.operations import (
     sync as op_sync,
+)
+from engram.operations import (
     unmark_stale as op_unmark_stale,
+)
+from engram.operations import (
     upkeep as op_upkeep,
 )
-from engram.core.provenance import DEFAULT_MAX_PREFILTER_MATCHES, DEFAULT_MAX_SOURCES
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.runtime import Runtime
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 
 INSTRUCTIONS = """Engram — durable, cross-project memory for coding agents.
 
@@ -95,14 +146,9 @@ def _resolve_recall_max_sources(
 
 
 def _recall_limit_conflict_result() -> OperationResult:
-    message = (
-        "Cannot pass limit and max_sources with different values; "
-        "use one or set them equal."
-    )
+    message = "Cannot pass limit and max_sources with different values; use one or set them equal."
     return OperationResult(
-        envelope=Envelope.failure(
-            validation_error(message, details={"parameter": "limit"})
-        ),
+        envelope=Envelope.failure(validation_error(message, details={"parameter": "limit"})),
         text=message,
         exit_code=EXIT_VALIDATION,
     )
@@ -114,90 +160,71 @@ def _tool_result(
     format: str = "text",
     force_json_text: bool = False,
 ) -> ToolResult:
-    text = (
-        result.envelope.to_json() if force_json_text else _render(result, format=format)
-    )
+    text = result.envelope.to_json() if force_json_text else _render(result, format=format)
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=result.envelope.model_dump(mode="json"),
+        is_error=result.is_error,
     )
 
 
 logger = logging.getLogger(__name__)
-StoreGetter = Callable[[], AsyncFactStore]
+StoreGetter = Runtime
 
 
-def _store_getter(store: FactStore | AsyncFactStore | None) -> StoreGetter:
-    store_ref: FactStore | AsyncFactStore | None = store
-
-    def get_store() -> AsyncFactStore:
-        nonlocal store_ref
-        if store_ref is None:
-            store_ref = AsyncFactStore()
-        return async_store(store_ref)
-
-    return get_store
-
-
-def _make_lifespan(get_store: StoreGetter):
+def _make_lifespan(
+    runtime: Runtime,
+) -> Callable[[FastMCP], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
-    async def lifespan(_app: FastMCP):
-        settings = get_settings()
-        auto_sync_task: asyncio.Task | None = None
-        if settings.sync_enabled:
-            from engram.storage.sync import auto_sync_loop
-
-            data_dir = get_store().data_dir
-            auto_sync_task = asyncio.create_task(
-                auto_sync_loop(
-                    data_dir,
-                    interval=settings.sync_interval,
-                    timeout=settings.sync_timeout,
-                )
-            )
-            logger.info(
-                "engram-sync auto-loop scheduled (interval=%.1fs)",
-                settings.sync_interval,
-            )
-        upkeep_task: asyncio.Task | None = None
-        if settings.maintenance_enabled:
-            from engram.maintenance.upkeep import upkeep_loop
-
-            upkeep_task = asyncio.create_task(
-                upkeep_loop(get_store, interval=settings.maintenance_interval)
-            )
-            logger.info(
-                "engram upkeep loop scheduled (interval=%.0fs)",
-                settings.maintenance_interval,
-            )
-        try:
-            yield
-        finally:
-            if upkeep_task is not None:
-                upkeep_task.cancel()
-                try:
-                    await upkeep_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            if auto_sync_task is not None:
-                auto_sync_task.cancel()
-                try:
-                    await auto_sync_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                # Final sync attempt on shutdown — best-effort.
-                from engram.storage.sync import run_final_sync
-
-                await run_final_sync(
-                    get_store().data_dir, timeout=settings.sync_timeout
-                )
+    async def lifespan(_app: FastMCP) -> AsyncGenerator[None]:
+        with runtime.bind():
+            try:
+                await runtime.start_background()
+                yield
+            finally:
+                await runtime.aclose()
 
     return lifespan
 
 
-def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
+P = ParamSpec("P")
+
+
+def _tool(
+    app: FastMCP, runtime: Runtime
+) -> Callable[[Callable[P, Awaitable[ToolResult]]], Callable[P, Awaitable[ToolResult]]]:
+    """Validate rendering before dispatch and bind request dependencies."""
+
+    def register(
+        function: Callable[P, Awaitable[ToolResult]],
+    ) -> Callable[P, Awaitable[ToolResult]]:
+        call_signature = signature(function)
+
+        @wraps(function)
+        async def invoke(*args: P.args, **kwargs: P.kwargs) -> ToolResult:
+            arguments = call_signature.bind(*args, **kwargs)
+            output_format = arguments.arguments.get("format", "text")
+            if output_format not in ("text", "json", ""):
+                return _tool_result(invalid_format_result(output_format), format="json")
+            try:
+                with runtime.bind():
+                    return await function(*args, **kwargs)
+            except Exception as exc:
+                return _tool_result(exception_result(exc), format=output_format)
+
+        app.tool()(invoke)
+        return invoke
+
+    return register
+
+
+def create_mcp(
+    store: FactStore | AsyncFactStore | None = None, *, runtime: Runtime | None = None
+) -> FastMCP:
     """Create an Engram MCP server with an isolated, injectable store."""
-    get_store = _store_getter(store)
+    if runtime is not None and store is not None:
+        raise ValueError("Pass store or runtime, not both")
+    get_store = runtime or Runtime(store=store)
     app = FastMCP(
         "engram",
         instructions=INSTRUCTIONS,
@@ -214,7 +241,7 @@ def create_mcp(store: FactStore | AsyncFactStore | None = None) -> FastMCP:
 
 
 def _register_capture_tools(app: FastMCP, get_store: StoreGetter) -> None:
-    @app.tool()
+    @_tool(app, get_store)
     async def remember(
         content: str,
         source: str = "conversation",
@@ -231,11 +258,10 @@ def _register_capture_tools(app: FastMCP, get_store: StoreGetter) -> None:
             content,
             source=source,
             project=project,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def suggest_memories(
         content: str,
         source: str = "conversation",
@@ -247,13 +273,12 @@ def _register_capture_tools(app: FastMCP, get_store: StoreGetter) -> None:
             content,
             source=source,
             project=project,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
 
 def _register_candidate_tools(app: FastMCP, get_store: StoreGetter) -> None:
-    @app.tool()
+    @_tool(app, get_store)
     async def list_candidates(
         status: str = "pending",
         project: str | None = None,
@@ -267,11 +292,10 @@ def _register_candidate_tools(app: FastMCP, get_store: StoreGetter) -> None:
             project=project,
             search=search,
             limit=limit,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def approve_candidates(
         candidate_ids: list[str],
         edits: dict[str, str] | None = None,
@@ -281,11 +305,10 @@ def _register_candidate_tools(app: FastMCP, get_store: StoreGetter) -> None:
         result = await op_approve_candidates(
             candidate_ids,
             edits=edits,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def reject_candidates(
         candidate_ids: list[str],
         reason: str = "",
@@ -295,13 +318,12 @@ def _register_candidate_tools(app: FastMCP, get_store: StoreGetter) -> None:
         result = await op_reject_candidates(
             candidate_ids,
             reason=reason,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
 
 def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
-    @app.tool()
+    @_tool(app, get_store)
     async def recall(
         query: str,
         project: str | None = None,
@@ -323,9 +345,7 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
             resolved_max_sources = _resolve_recall_max_sources(max_sources, limit)
         except ValueError:
             result = _recall_limit_conflict_result()
-            return _tool_result(
-                result, format=format, force_json_text=bool(result.exit_code)
-            )
+            return _tool_result(result, format=format, force_json_text=bool(result.exit_code))
         result = await op_recall(
             query,
             project=project,
@@ -334,13 +354,10 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
             with_provenance=with_provenance,
             max_sources=resolved_max_sources,
             max_prefilter_matches=max_prefilter_matches,
-            store=get_store(),
         )
-        return _tool_result(
-            result, format=format, force_json_text=bool(result.exit_code)
-        )
+        return _tool_result(result, format=format, force_json_text=bool(result.exit_code))
 
-    @app.tool()
+    @_tool(app, get_store)
     async def recall_trace(
         query: str,
         project: str | None = None,
@@ -366,11 +383,10 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
             verbose=verbose,
             max_sources=resolved_max_sources,
             max_prefilter_matches=max_prefilter_matches,
-            store=get_store(),
         )
         return _tool_result(result, format="json")
 
-    @app.tool()
+    @_tool(app, get_store)
     async def recall_context(
         query: str = "",
         project: str | None = None,
@@ -387,23 +403,22 @@ def _register_recall_tools(app: FastMCP, get_store: StoreGetter) -> None:
             query,
             project=project,
             mode=mode,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
 
 def _register_fact_edit_tools(app: FastMCP, get_store: StoreGetter) -> None:
-    @app.tool()
+    @_tool(app, get_store)
     async def forget(
         fact_id: str,
         reason: str = "",
         format: str = "text",
     ) -> ToolResult:
         """Mark a fact as forgotten (soft delete)."""
-        result = await op_forget(fact_id, reason=reason, store=get_store())
+        result = await op_forget(fact_id, reason=reason)
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def edit_fact(
         fact_id: str,
         content: str | None = None,
@@ -423,11 +438,10 @@ def _register_fact_edit_tools(app: FastMCP, get_store: StoreGetter) -> None:
             tags=tags,
             retrieval_hints=retrieval_hints,
             project=project,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def inspect(
         category: str | None = None,
         project: str | None = None,
@@ -441,13 +455,12 @@ def _register_fact_edit_tools(app: FastMCP, get_store: StoreGetter) -> None:
             project=project,
             limit=limit,
             include_stale=include_stale,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
 
 def _register_fact_correction_tools(app: FastMCP, get_store: StoreGetter) -> None:
-    @app.tool()
+    @_tool(app, get_store)
     async def correct_memory(
         fact_id: str,
         new_content: str,
@@ -468,11 +481,10 @@ def _register_fact_correction_tools(app: FastMCP, get_store: StoreGetter) -> Non
             retrieval_hints=retrieval_hints,
             project=project,
             reason=reason,
-            store=get_store(),
         )
         return _tool_result(result, format="json")
 
-    @app.tool()
+    @_tool(app, get_store)
     async def merge_memories(
         source_ids: list[str],
         merged_content: str,
@@ -493,40 +505,39 @@ def _register_fact_correction_tools(app: FastMCP, get_store: StoreGetter) -> Non
             retrieval_hints=retrieval_hints,
             project=project,
             reason=reason,
-            store=get_store(),
         )
         return _tool_result(result, format="json")
 
-    @app.tool()
+    @_tool(app, get_store)
     async def mark_stale(fact_id: str, reason: str = "") -> ToolResult:
         """Exclude a fact from active recall while preserving it for inspection."""
-        result = await op_mark_stale(fact_id, reason=reason, store=get_store())
+        result = await op_mark_stale(fact_id, reason=reason)
         return _tool_result(result, format="json")
 
-    @app.tool()
+    @_tool(app, get_store)
     async def unmark_stale(fact_id: str) -> ToolResult:
         """Reverse a previous ``mark_stale`` call so the fact is recall-eligible."""
-        result = await op_unmark_stale(fact_id, store=get_store())
+        result = await op_unmark_stale(fact_id)
         return _tool_result(result, format="json")
 
 
 def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
-    @app.tool()
+    @_tool(app, get_store)
     async def import_memories(
         source: str = "claude_code",
         format: str = "text",
     ) -> ToolResult:
         """Import existing memories from Claude Code's per-project memory files."""
-        result = await op_import_memories(source=source, store=get_store())
+        result = await op_import_memories(source=source)
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def purge(format: str = "text") -> ToolResult:
         """Permanently remove forgotten and expired facts from storage."""
-        result = await op_purge(store=get_store())
+        result = await op_purge()
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def rename_project(
         old_project: str,
         new_project: str,
@@ -536,11 +547,10 @@ def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
         result = await op_rename_project(
             old_project,
             new_project,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def audit_memories(
         project: str | None = None,
         format: str = "text",
@@ -550,10 +560,10 @@ def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
         This is read-only: it emits reviewable suggestions and example commands
         but does not mutate the memory store.
         """
-        result = await op_audit_memories(project=project, store=get_store())
+        result = await op_audit_memories(project=project)
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def upkeep(
         project: str | None = None,
         steps: list[str] | None = None,
@@ -575,11 +585,10 @@ def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
             steps=steps,
             dry_run=dry_run,
             full=full,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def doctor(
         check_provider_flag: bool = False,
         repair: bool = False,
@@ -591,27 +600,23 @@ def _register_maintenance_tools(app: FastMCP, get_store: StoreGetter) -> None:
         result = await op_doctor(
             check_provider_flag=check_provider_flag,
             repair=(
-                repair
-                or repair_jsonl
-                or recover_transactions
-                or repair_orphaned_supersessions
+                repair or repair_jsonl or recover_transactions or repair_orphaned_supersessions
             ),
             repair_jsonl=repair_jsonl,
             recover_transactions=recover_transactions,
             repair_orphaned_supersessions=repair_orphaned_supersessions,
-            store=get_store(),
         )
         return _tool_result(result, format="json")
 
 
 def _register_reporting_tools(app: FastMCP, get_store: StoreGetter) -> None:
-    @app.tool()
+    @_tool(app, get_store)
     async def memory_stats(format: str = "text") -> ToolResult:
         """Show memory system statistics: fact counts, storage size, category breakdown."""
-        result = await op_memory_stats(store=get_store())
+        result = await op_memory_stats()
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def recall_stats(
         format: str = "text",
         limit: int = 500,
@@ -623,11 +628,10 @@ def _register_reporting_tools(app: FastMCP, get_store: StoreGetter) -> None:
             limit=limit,
             since=since,
             include_records=include_records,
-            store=get_store(),
         )
         return _tool_result(result, format=format)
 
-    @app.tool()
+    @_tool(app, get_store)
     async def sync(
         format: str = "text",
         timeout: float = 30.0,
@@ -638,7 +642,7 @@ def _register_reporting_tools(app: FastMCP, get_store: StoreGetter) -> None:
         Engram data directory. Requires the data directory to be a git
         repository with at least one remote — see docs/sync.md for setup.
         """
-        result = await op_sync(timeout=timeout, store=get_store())
+        result = await op_sync(timeout=timeout)
         return _tool_result(result, format=format)
 
 

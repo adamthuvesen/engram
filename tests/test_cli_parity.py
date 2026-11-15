@@ -12,7 +12,8 @@ import pytest
 from engram import cli, server
 from engram.core.config import get_settings
 from engram.core.models import Fact, FactCategory, RecallRecord
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 from tests.mcp_helpers import call_tool
 
 
@@ -81,9 +82,7 @@ def test_cli_and_mcp_inspect_json_have_matching_shape(cli_env, capsys):
 
     cli_exit = cli.run(["inspect", "--json"])
     cli_payload = json.loads(capsys.readouterr().out)
-    mcp_payload = _structured(
-        asyncio.run(_mcp_call(app, "inspect", format="json", limit=50))
-    )
+    mcp_payload = _structured(asyncio.run(_mcp_call(app, "inspect", format="json", limit=50)))
 
     assert cli_exit == cli.EXIT_OK
     assert cli_payload["status"] == mcp_payload["status"] == "ok"

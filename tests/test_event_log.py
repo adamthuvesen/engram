@@ -1,6 +1,8 @@
 """Tests for the append-only event-log model: event ids and replay."""
 
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -11,6 +13,7 @@ from engram.core.models import (
     Fact,
     FactCategory,
     FactEvent,
+    decode_stored_event,
     materialize_events,
     new_event_id,
     replay_fact,
@@ -18,7 +21,7 @@ from engram.core.models import (
 
 
 def _make_fact(**overrides) -> Fact:
-    defaults: dict = {
+    defaults: dict[str, Any] = {
         "id": "fact_a",
         "category": FactCategory.preference,
         "content": "Uses polars",
@@ -37,11 +40,8 @@ def _created_event(fact: Fact, ts: datetime | None = None) -> FactEvent:
 
 
 def _at(seconds: int) -> datetime:
-    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
     return base + timedelta(seconds=seconds)
-
-
-# --- new_event_id ------------------------------------------------------------
 
 
 def test_new_event_id_is_strictly_monotonic_in_process():
@@ -55,9 +55,6 @@ def test_new_event_id_is_lexicographically_orderable():
     b = new_event_id()
     # Lexicographic comparison must agree with issue order.
     assert a < b
-
-
-# --- replay: create-only -----------------------------------------------------
 
 
 def test_replay_create_only_returns_active_fact():
@@ -112,9 +109,6 @@ def test_replay_mixed_fact_ids_raises():
         replay_fact([_created_event(a), _created_event(b)])
 
 
-# --- replay: create + edit ---------------------------------------------------
-
-
 def test_replay_create_then_edit_applies_update():
     fact = _make_fact(content="v1")
     events = [
@@ -158,15 +152,19 @@ def test_replay_edit_only_touches_editable_fields():
     original_created_at = fact.created_at
     events = [
         _created_event(fact, ts=_at(0)),
-        FactEvent(
-            event_type=EventType.edited,
-            fact_id="fact_a",
-            timestamp=_at(1),
-            payload={
-                "id": "stolen",
-                "created_at": _at(99).isoformat(),
-                "content": "v2",
-            },
+        decode_stored_event(
+            json.dumps(
+                {
+                    "event_type": "edited",
+                    "fact_id": "fact_a",
+                    "timestamp": _at(1).isoformat(),
+                    "payload": {
+                        "id": "stolen",
+                        "created_at": _at(99).isoformat(),
+                        "content": "v2",
+                    },
+                }
+            )
         ),
     ]
     result, _ = replay_fact(events)
@@ -191,9 +189,6 @@ def test_replay_edit_coerces_iso_datetime_payload():
     result, _ = replay_fact(events)
     assert result is not None
     assert result.expires_at == _at(5_000)
-
-
-# --- replay: create + forget [+ restore] -------------------------------------
 
 
 def test_replay_create_then_forget_yields_inactive():
@@ -265,9 +260,6 @@ def test_replay_create_edit_forget():
     assert is_active is False
 
 
-# --- replay: stale toggle ----------------------------------------------------
-
-
 def test_replay_stale_then_unstale():
     fact = _make_fact()
     events = [
@@ -285,16 +277,11 @@ def test_replay_stale_then_unstale():
     assert result.stale_reason == "outdated"
     assert is_active is True, "stale facts remain active in the lifecycle sense"
 
-    events.append(
-        FactEvent(event_type=EventType.unstale, fact_id="fact_a", timestamp=_at(2))
-    )
+    events.append(FactEvent(event_type=EventType.unstale, fact_id="fact_a", timestamp=_at(2)))
     result, _ = replay_fact(events)
     assert result is not None
     assert result.stale is False
     assert result.stale_reason == ""
-
-
-# --- replay: conflicting concurrent edits ------------------------------------
 
 
 def test_replay_later_timestamp_wins_for_same_field():
@@ -367,9 +354,6 @@ def test_replay_both_conflicting_events_remain_for_audit():
     assert result.content == "from-b"
 
 
-# --- replay: supersession ----------------------------------------------------
-
-
 def test_replay_superseded_fact_becomes_inactive():
     old = _make_fact(id="fact_old", content="v1")
     new_id = "fact_new"
@@ -403,14 +387,11 @@ def test_materialize_supersession_chain():
     ]
     materialized = materialize_events(events)
     assert set(materialized) == {"fact_old", "fact_new"}
-    old_fact, old_active = materialized["fact_old"]
+    _old_fact, old_active = materialized["fact_old"]
     new_fact, new_active = materialized["fact_new"]
     assert old_active is False
     assert new_active is True
     assert new_fact.supersedes == "fact_old"
-
-
-# --- event-log meta ----------------------------------------------------------
 
 
 def test_event_log_meta_default_version():
@@ -428,9 +409,6 @@ def test_event_log_meta_accepts_existing_header_timestamp():
     )
 
     assert meta.created_at == _at(0)
-
-
-# --- compaction --------------------------------------------------------------
 
 
 def test_compaction_preserves_active_materialization(tmp_path):
@@ -486,9 +464,7 @@ def test_compaction_failure_leaves_original_intact(tmp_path, monkeypatch):
     from engram.storage.store import FactStore
 
     store = FactStore(data_dir=Path(tempfile.mkdtemp(dir=tmp_path)))
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="hello")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="hello")])
     before_bytes = store.facts_path.read_bytes()
 
     def boom(src, dst):

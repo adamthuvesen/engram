@@ -1,5 +1,3 @@
-"""Tests for model contracts."""
-
 import json
 
 import pytest
@@ -48,9 +46,9 @@ def test_memory_candidate_from_fact_model_dump():
 
 def test_removed_category_names_are_rejected():
     with pytest.raises(ValidationError):
-        Fact(category="temporal", content="x")
+        Fact(category="temporal", content="x")  # pyright: ignore[reportArgumentType]  # removed category on purpose
     with pytest.raises(ValidationError):
-        Fact(category="update", content="x")
+        Fact(category="update", content="x")  # pyright: ignore[reportArgumentType]  # removed category on purpose
 
 
 def test_recall_record_usage_fields_default_to_none_when_omitted():

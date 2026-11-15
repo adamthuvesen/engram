@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
+from engram.core import clock
 from engram.core.config import get_settings
+from engram.core.fact_format import format_observed
 from engram.core.models import Durability, Fact, FactCategory
 from engram.llm import complete_model
 from engram.maintenance.consolidate import BRIEF_KEY
 from engram.maintenance.upkeep_report import StepReport
-from engram.storage.store import AsyncFactStore, ChangeSet, format_observed
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.changes import ChangeSet
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,13 @@ class BriefResponse(BaseModel):
     content: str
     retrieval_hints: list[str]
 
+    @field_validator("content")
+    @classmethod
+    def reject_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("brief content must not be blank")
+        return value
+
 
 def _is_brief(fact: Fact) -> bool:
     return fact.memory_key == BRIEF_KEY
@@ -51,7 +61,11 @@ def _is_brief(fact: Fact) -> bool:
 async def project_brief(store: AsyncFactStore, project: str) -> Fact | None:
     """The current brief card for ``project``, if one has been written."""
     facts = await store.load_active_facts(project=project, include_global=False)
-    return next((fact for fact in facts if _is_brief(fact)), None)
+    sources = [fact for fact in facts if not _is_brief(fact)]
+    return next(
+        (fact for fact in facts if _is_brief(fact) and is_current_brief(fact, sources)),
+        None,
+    )
 
 
 def _brief_input(facts: list[Fact]) -> list[Fact]:
@@ -66,19 +80,23 @@ def _brief_input(facts: list[Fact]) -> list[Fact]:
 
 def _brief_prompt(project: str, facts: list[Fact]) -> str:
     lines = [
-        f"- [{fact.category.value} · {format_observed(fact)}] {fact.content}"
-        for fact in facts
+        f"- [{fact.category.value} · {format_observed(fact)}] {fact.content}" for fact in facts
     ]
     return f"PROJECT: {project}\n\nMEMORY CARDS:\n" + "\n".join(lines)
 
 
+def is_current_brief(brief: Fact, sources: list[Fact]) -> bool:
+    """A brief is usable only while its complete eligible source set matches."""
+    return (
+        len(sources) >= MIN_FACTS_FOR_BRIEF
+        and brief.brief_source_revisions is not None
+        and brief.brief_source_revisions == {fact.id: fact.updated_at for fact in sources}
+    )
+
+
 def _needs_brief(facts: list[Fact], previous: Fact | None) -> bool:
-    if len(facts) < MIN_FACTS_FOR_BRIEF:
-        return False
-    if previous is None:
-        return True
-    return any(
-        max(fact.created_at, fact.updated_at) > previous.created_at for fact in facts
+    return len(facts) >= MIN_FACTS_FOR_BRIEF and (
+        previous is None or not is_current_brief(previous, facts)
     )
 
 
@@ -93,7 +111,7 @@ async def run_briefs(
     """Write or refresh briefs for every project whose facts changed."""
     settings = get_settings()
     # Taken before reading: facts written after this trigger the next refresh.
-    snapshot = max(now, datetime.now(timezone.utc))
+    snapshot = max(now, clock.now())
     facts = await store.load_active_facts(project=project, include_global=False)
     by_project: dict[str, list[Fact]] = {}
     # Newest first (load order); more than one only after a concurrent write.
@@ -108,15 +126,30 @@ async def run_briefs(
 
     targets = [
         name
-        for name, project_facts in sorted(by_project.items())
-        if len(previous.get(name, [])) > 1
-        or _needs_brief(project_facts, next(iter(previous.get(name, [])), None))
+        for name in sorted(by_project.keys() | previous.keys())
+        if (len(by_project.get(name, [])) < MIN_FACTS_FOR_BRIEF and previous.get(name))
+        or len(previous.get(name, [])) > 1
+        or _needs_brief(by_project.get(name, []), next(iter(previous.get(name, [])), None))
     ]
     report.bump("projects", len(targets))
     semaphore = asyncio.Semaphore(max(1, settings.maintenance_concurrency))
 
     async def refresh(name: str) -> None:
-        inputs = _brief_input(by_project[name])
+        sources = by_project.get(name, [])
+        olds = previous.get(name, [])
+        if len(sources) < MIN_FACTS_FOR_BRIEF:
+            changes = ChangeSet(
+                stale={old.id: "brief has too few eligible source cards" for old in olds},
+                expected={old.id: old.updated_at for old in olds},
+                reason="upkeep: unsupported project brief",
+                actor=BRIEF_SOURCE,
+            )
+            report.propose("staled", *(old.id for old in olds))
+            if not dry_run:
+                result = await store.apply_changes(changes, all_or_nothing=True)
+                report.record_result(result)
+            return
+        inputs = _brief_input(sources)
         async with semaphore:
             report.llm_calls += 1
             try:
@@ -126,10 +159,9 @@ async def run_briefs(
                     response_model=BriefResponse,
                     reasoning_effort=settings.llm_reasoning_effort,
                 )
-            except Exception as exc:  # noqa: BLE001 - one project must not stop upkeep
+            except Exception as exc:
                 report.errors.append(f"{name}: brief failed ({exc})")
                 return
-        olds = previous.get(name, [])
         brief = Fact(
             category=FactCategory.project,
             memory_key=BRIEF_KEY,
@@ -145,21 +177,20 @@ async def run_briefs(
             supersedes=olds[0].id if olds else None,
             why_store="Orientation summary of the project's memories",
             durability=Durability.durable,
+            brief_source_revisions={fact.id: fact.updated_at for fact in sources},
         )
         changes = ChangeSet(
             new_facts=[brief],
             supersede={old.id: brief.id for old in olds},
-            expected={old.id: old.updated_at for old in olds},
+            expected={fact.id: fact.updated_at for fact in [*sources, *olds]},
             reason="upkeep: project brief refreshed",
             actor=BRIEF_SOURCE,
         )
+        report.propose("created", brief.id)
+        report.propose("superseded", *(old.id for old in olds))
         if not dry_run:
             result = await store.apply_changes(changes, all_or_nothing=True)
-            if result.skipped:
-                report.errors.append(f"{name}: previous brief changed concurrently")
-                return
-        report.add("created", brief.id)
-        report.add("superseded", *(old.id for old in olds))
+            report.record_result(result)
 
     await asyncio.gather(*(refresh(name) for name in targets))
     if dry_run and targets:

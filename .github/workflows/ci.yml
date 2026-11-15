@@ -10,37 +10,71 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
-
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14"]
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.13"
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v8.1.0
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
+          version: "0.13.5"
           enable-cache: true
+      - run: uv sync --locked --extra dev
+      - name: Fast lane (same entrypoint as just check)
+        run: uv run --locked --extra dev python -m tools.verify check
 
-      - name: Install dependencies
-        run: uv sync --extra dev --frozen
+  verify:
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.13.5"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - name: Subprocess and installed-wheel smokes (just slow)
+        run: uv run --locked --extra dev python -m tools.verify verify
+      - name: Drive the real CLI, MCP server, and wheel (verify-engram)
+        run: .agents/skills/verify-engram/verify all
+      - name: Verify control observes FAIL
+        run: .agents/skills/verify-engram/verify control
 
-      - name: Lint
-        run: uv run --extra dev ruff check .
-
-      - name: Format
-        run: uv run --extra dev ruff format --check .
-
-      - name: Type check
-        run: uv run --extra dev mypy
-
-      - name: Test
-        run: uv run --extra dev pytest tests/ -q
-
-      - name: Build package
-        run: uv build
+  sync-transport:
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.13.5"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - name: Temporary local Git transport integration
+        run: uv run --locked --extra dev python -m tools.verify sync-transport

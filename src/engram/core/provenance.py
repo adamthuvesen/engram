@@ -19,7 +19,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from engram.core.interfaces import EnvelopeWarning
-
+from engram.core.models import Fact
 
 # Default truncation limits for trace excerpts. Trace must be cheap by default
 # so agents can call it without flooding their context window.
@@ -70,6 +70,10 @@ class UsageSummary(BaseModel):
     """LLM usage roll-up. Missing values are reported as None, not 0."""
 
     llm_calls: int | None = None
+    llm_attempts: int | None = None
+    llm_completions: int | None = None
+    llm_failures: int | None = None
+    usage_unknown_calls: int | None = None
     input_tokens: int | None = None
     cached_tokens: int | None = None
     output_tokens: int | None = None
@@ -91,6 +95,9 @@ class RecallProvenance(BaseModel):
     prefilter_count: int
     prefilter_matches: list[PrefilterMatch] = Field(default_factory=list)
     source_fact_ids: list[str] = Field(default_factory=list)
+    candidate_fact_ids: list[str] = Field(default_factory=list)
+    selected_fact_ids: list[str] = Field(default_factory=list)
+    delivered_fact_ids: list[str] = Field(default_factory=list)
     sources: list[SourceSummary] = Field(default_factory=list)
     cited_fact_ids: list[str] = Field(default_factory=list)
     warnings: list[EnvelopeWarning] = Field(default_factory=list)
@@ -126,6 +133,31 @@ class RecallTrace(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+class RecallEvidence(BaseModel):
+    """A fact and its unchanged lexical ranking evidence."""
+
+    fact: Fact
+    score: float
+    coverage: float
+
+
+class RecallResult(BaseModel):
+    """Authoritative evidence and output for one recall operation.
+
+    Cards deliver selected facts. Answers deliver only cited facts. ``cited``
+    contains answer references, while legacy provenance also counts card IDs.
+    """
+
+    text: str
+    quality: str
+    candidates: list[RecallEvidence] = Field(default_factory=list)
+    selected: list[RecallEvidence] = Field(default_factory=list)
+    delivered: list[RecallEvidence] = Field(default_factory=list)
+    cited: list[RecallEvidence] = Field(default_factory=list)
+    provenance: RecallProvenance
+    trace: RecallTrace | None = None
+
+
 def excerpt(text: str | None, limit: int) -> tuple[str, bool]:
     """Truncate text to ``limit`` chars; return (excerpt, was_truncated)."""
     if not text:
@@ -142,7 +174,9 @@ __all__ = [
     "DEFAULT_PROMPT_EXCERPT_CHARS",
     "LLMCallTrace",
     "PrefilterMatch",
+    "RecallEvidence",
     "RecallProvenance",
+    "RecallResult",
     "RecallTrace",
     "SourceSummary",
     "TierDecision",

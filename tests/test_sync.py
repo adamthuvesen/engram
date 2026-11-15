@@ -11,6 +11,7 @@ embed a library, and the system git is the only required dependency.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import subprocess
@@ -22,9 +23,7 @@ from engram.core.models import Fact, FactCategory
 from engram.storage.store import FactStore
 from engram.storage.sync import SYNC_STATE_FILENAME, SyncError, read_sync_state, sync
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("git") is None, reason="git binary not available"
-)
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git binary not available")
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -83,11 +82,6 @@ def _commit_all(repo: Path, message: str) -> None:
     _git("commit", "-m", message, cwd=repo)
 
 
-# ---------------------------------------------------------------------------
-# Setup validation
-# ---------------------------------------------------------------------------
-
-
 def test_sync_errors_when_not_a_git_repo(tmp_path: Path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -121,11 +115,7 @@ def test_sync_errors_when_git_missing(monkeypatch, tmp_path: Path):
     assert exc.value.code == "git_not_found"
 
 
-# ---------------------------------------------------------------------------
-# Happy paths
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.sync_transport
 def test_sync_no_op_when_already_up_to_date(tmp_path: Path):
     bare = _make_bare_repo(tmp_path)
     clone = _init_clone(tmp_path, "alice", bare)
@@ -146,6 +136,7 @@ def test_sync_no_op_when_already_up_to_date(tmp_path: Path):
     assert (clone / SYNC_STATE_FILENAME).exists()
 
 
+@pytest.mark.sync_transport
 def test_sync_untracks_managed_ignore_patterns(tmp_path: Path):
     from engram.storage.sync import COMPACTION_SENTINEL_FILENAME
 
@@ -169,6 +160,7 @@ def test_sync_untracks_managed_ignore_patterns(tmp_path: Path):
     assert (clone / "store.lock").read_text() == "local-only\n"
 
 
+@pytest.mark.sync_transport
 def test_managed_setup_commits_only_managed_files(tmp_path: Path):
     from engram.storage.sync import _ensure_managed_repo_setup
 
@@ -180,14 +172,11 @@ def test_managed_setup_commits_only_managed_files(tmp_path: Path):
     changed = _ensure_managed_repo_setup(clone, timeout=5.0)
 
     assert changed is True
-    assert "pending.jsonl" not in _git(
-        "ls-tree", "-r", "--name-only", "HEAD", cwd=clone
-    )
-    assert _git("status", "--short", "--", "pending.jsonl", cwd=clone) == (
-        "A  pending.jsonl"
-    )
+    assert "pending.jsonl" not in _git("ls-tree", "-r", "--name-only", "HEAD", cwd=clone)
+    assert _git("status", "--short", "--", "pending.jsonl", cwd=clone) == ("A  pending.jsonl")
 
 
+@pytest.mark.sync_transport
 def test_sync_pushes_local_commits(tmp_path: Path):
     bare = _make_bare_repo(tmp_path)
     clone = _init_clone(tmp_path, "alice", bare)
@@ -197,9 +186,7 @@ def test_sync_pushes_local_commits(tmp_path: Path):
     sync(clone)
 
     store = FactStore(data_dir=clone)
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")])
     _commit_all(clone, "add a fact")
 
     result = sync(clone)
@@ -208,6 +195,7 @@ def test_sync_pushes_local_commits(tmp_path: Path):
     assert result["pulled_commits"] == 0
 
 
+@pytest.mark.sync_transport
 def test_sync_pulls_remote_commits(tmp_path: Path):
     bare = _make_bare_repo(tmp_path)
     alice = _init_clone(tmp_path, "alice", bare)
@@ -229,6 +217,7 @@ def test_sync_pulls_remote_commits(tmp_path: Path):
     assert {f.id for f in bob_store.load_facts()} == {"aaaaaaaaaaaa"}
 
 
+@pytest.mark.sync_transport
 def test_sync_two_machines_disjoint_facts_merge_via_append(tmp_path: Path):
     """Two clones each append a distinct event after a shared starting point;
     after both sync, both materialize the union of facts via git's line-level
@@ -283,11 +272,7 @@ def test_sync_two_machines_disjoint_facts_merge_via_append(tmp_path: Path):
     assert {f.id for f in FactStore(data_dir=bob).load_facts()} == expected_ids
 
 
-# ---------------------------------------------------------------------------
-# Sync state file
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.sync_transport
 def test_sync_state_is_json_and_carries_completed_at(tmp_path: Path):
     bare = _make_bare_repo(tmp_path)
     clone = _init_clone(tmp_path, "alice", bare)
@@ -298,6 +283,7 @@ def test_sync_state_is_json_and_carries_completed_at(tmp_path: Path):
     assert payload["status"] == "ok"
 
 
+@pytest.mark.sync_transport
 def test_sync_state_unchanged_on_failure(monkeypatch, tmp_path: Path):
     """If sync fails, a prior sync-state file must be left intact."""
     bare = _make_bare_repo(tmp_path)
@@ -315,11 +301,7 @@ def test_sync_state_unchanged_on_failure(monkeypatch, tmp_path: Path):
     assert initial["status"] == "ok"
 
 
-# ---------------------------------------------------------------------------
-# Compaction sentinel
-# ---------------------------------------------------------------------------
-
-
+@pytest.mark.sync_transport
 def test_sync_skips_when_compaction_sentinel_present(tmp_path: Path):
     from engram.storage.sync import COMPACTION_SENTINEL_FILENAME
 
@@ -331,12 +313,8 @@ def test_sync_skips_when_compaction_sentinel_present(tmp_path: Path):
     assert result["reason"] == "compaction_in_progress"
 
 
-# ---------------------------------------------------------------------------
-# Auto-sync background loop
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
+@pytest.mark.sync_transport
 async def test_auto_sync_loop_runs_sync_on_interval(tmp_path: Path):
     """The loop should call ``sync`` after each interval and surface results
     via ``on_result``.
@@ -358,18 +336,14 @@ async def test_auto_sync_loop_runs_sync_on_interval(tmp_path: Path):
         if len(calls) >= 2:
             got_two_results.set()
 
-    task = asyncio.create_task(
-        auto_sync_loop(clone, interval=0.05, timeout=5.0, on_result=collect)
-    )
+    task = asyncio.create_task(auto_sync_loop(clone, interval=0.05, timeout=5.0, on_result=collect))
 
     try:
         await asyncio.wait_for(got_two_results.wait(), timeout=2.0)
     finally:
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     assert len(calls) >= 2
     for value in calls:
@@ -377,6 +351,7 @@ async def test_auto_sync_loop_runs_sync_on_interval(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.sync_transport
 async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatch):
     """A sync error mid-loop must not stop the loop."""
     import asyncio
@@ -395,9 +370,7 @@ async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatc
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise SyncError(code="injected", message="boom")
-        return real_sync(
-            data_dir, timeout=timeout, skip_if_compacting=skip_if_compacting
-        )
+        return real_sync(data_dir, timeout=timeout, skip_if_compacting=skip_if_compacting)
 
     monkeypatch.setattr("engram.storage.sync.sync", failing_sync)
 
@@ -411,17 +384,13 @@ async def test_auto_sync_loop_continues_after_failure(tmp_path: Path, monkeypatc
         ):
             seen_failure_and_success.set()
 
-    task = asyncio.create_task(
-        auto_sync_loop(clone, interval=0.1, timeout=5.0, on_result=collect)
-    )
+    task = asyncio.create_task(auto_sync_loop(clone, interval=0.1, timeout=5.0, on_result=collect))
     try:
         await asyncio.wait_for(seen_failure_and_success.wait(), timeout=2.0)
     finally:
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     assert any(isinstance(r, SyncError) for r in results)
     assert any(isinstance(r, dict) for r in results)
@@ -457,15 +426,14 @@ async def test_auto_sync_loop_reports_unexpected_errors(tmp_path: Path, monkeypa
         await asyncio.wait_for(got_error.wait(), timeout=1.0)
     finally:
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     assert isinstance(results[0], SyncError)
     assert results[0].code == "unexpected"
 
 
+@pytest.mark.sync_transport
 def test_managed_block_gains_newly_managed_lines(tmp_path: Path):
     from engram.storage.sync import GITIGNORE_MARKER, _ensure_managed_repo_setup
 
@@ -483,7 +451,5 @@ def test_managed_block_gains_newly_managed_lines(tmp_path: Path):
     assert ignored.count("*.lock") == 1
     assert "projects.local.json" in ignored
     assert _git("ls-files", "projects.local.json", cwd=clone) == ""
-    assert (
-        "maintenance_state.jsonl merge=union" in (clone / ".gitattributes").read_text()
-    )
+    assert "maintenance_state.jsonl merge=union" in (clone / ".gitattributes").read_text()
     assert _ensure_managed_repo_setup(clone, timeout=5.0) is False

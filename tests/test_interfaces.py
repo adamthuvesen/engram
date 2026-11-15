@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from engram.core.interfaces import (
     Envelope,
@@ -158,7 +159,7 @@ def test_provider_error_helper():
 
 def test_envelope_forbids_extra_fields():
     """Agents can rely on the schema not silently growing fields they didn't expect."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         Envelope.model_validate(
             {
                 "status": "ok",

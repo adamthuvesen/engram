@@ -3,8 +3,9 @@
 import asyncio
 import tempfile
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,14 +22,15 @@ from engram.extraction.observer import (
     _normalize_memory_key,
     ingest,
 )
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 
 
 def _make_store() -> FactStore:
     return FactStore(data_dir=Path(tempfile.mkdtemp()))
 
 
-def _card(**fields) -> dict:
+def _card(**fields) -> dict[str, Any]:
     content = fields.get("content", "missing content")
     return {
         "memory_key": "test-memory",
@@ -56,9 +58,9 @@ class FakeModel:
 
     def __init__(
         self,
-        facts: list[dict],
-        retire: list[dict] | None = None,
-        during_call: Callable[[int], None] | None = None,
+        facts: list[dict[str, Any]],
+        retire: list[dict[str, Any]] | None = None,
+        during_call: Callable[[int], object] | None = None,
     ):
         self.response = {
             "facts": [_card(**fact) for fact in facts],
@@ -110,8 +112,7 @@ def test_consolidate_batch_combines_fragments_with_same_memory_identity():
 
     assert len(consolidated) == 1
     assert consolidated[0].content == (
-        "Store durable memories in Engram. "
-        "Also store them in native memory when available."
+        "Store durable memories in Engram. Also store them in native memory when available."
     )
     assert consolidated[0].tags == ["memory", "policy"]
     assert consolidated[0].retrieval_hints == ["where memories live", "dual memory"]
@@ -138,9 +139,7 @@ def test_normalize_memory_key_rejects_empty_slug():
 
 def test_ingest_makes_one_llm_call_and_stores_cards(monkeypatch):
     store = _make_store()
-    store.append_facts(
-        [Fact(id="neighbor", category=FactCategory.preference, content="Uses pnpm")]
-    )
+    store.append_facts([Fact(id="neighbor", category=FactCategory.preference, content="Uses pnpm")])
     fake = _patch(
         monkeypatch,
         FakeModel([{"content": "Atlas uses pnpm 10.", "project": "Atlas"}]),
@@ -163,9 +162,7 @@ def test_explicit_project_overrides_model_scope(monkeypatch):
         FakeModel([{"content": "Atlas uses PostgreSQL.", "project": "wrong"}]),
     )
 
-    result = asyncio.run(
-        ingest("Atlas uses PostgreSQL.", project="atlas", store=_make_store())
-    )
+    result = asyncio.run(ingest("Atlas uses PostgreSQL.", project="atlas", store=_make_store()))
 
     assert "fixed the scope to project 'atlas'" in fake.prompts[0]
     assert result.created[0].project == "atlas"
@@ -198,9 +195,7 @@ def test_unscoped_ingest_shows_project_scoped_neighbors(monkeypatch):
         ),
     )
 
-    result = asyncio.run(
-        ingest("Atlas switched to pnpm for JavaScript packages.", store=store)
-    )
+    result = asyncio.run(ingest("Atlas switched to pnpm for JavaScript packages.", store=store))
 
     assert "[id:atlas-pm] [project:atlas]" in fake.prompts[0]
     new_id = result.created[0].id
@@ -216,7 +211,7 @@ def test_replaces_supersedes_old_fact_atomically(monkeypatch):
                 category=FactCategory.preference,
                 content="The user prefers pandas for dataframes.",
                 consolidates=["ancient"],
-                observed_at=datetime(2026, 3, 22, tzinfo=timezone.utc),
+                observed_at=datetime(2026, 3, 22, tzinfo=UTC),
             )
         ]
     )
@@ -246,7 +241,7 @@ def test_replaces_supersedes_old_fact_atomically(monkeypatch):
     assert new.supersedes == "oldfact"
     assert new.consolidates == ["oldfact", "ancient"]
     # Details carried forward from the replaced card keep its age.
-    assert new.first_observed_at == datetime(2026, 3, 22, tzinfo=timezone.utc)
+    assert new.first_observed_at == datetime(2026, 3, 22, tzinfo=UTC)
     assert result.superseded == {"oldfact": new.id}
     assert appends == [2]
     assert _event_types(store, "oldfact")[-1] == EventType.superseded
@@ -270,9 +265,7 @@ def test_retire_marks_existing_fact_stale_with_reason(monkeypatch):
         FakeModel([], retire=[{"id": "freeze", "reason": "freeze lifted"}]),
     )
 
-    result = asyncio.run(
-        ingest("The Atlas deploy freeze is lifted.", project="atlas", store=store)
-    )
+    result = asyncio.run(ingest("The Atlas deploy freeze is lifted.", project="atlas", store=store))
 
     assert result.created == []
     assert result.retired == {"freeze": "freeze lifted"}
@@ -293,9 +286,7 @@ def test_duplicate_of_creates_nothing(monkeypatch):
     )
     _patch(
         monkeypatch,
-        FakeModel(
-            [{"content": "User likes concise summaries.", "duplicate_of": "existing"}]
-        ),
+        FakeModel([{"content": "User likes concise summaries.", "duplicate_of": "existing"}]),
     )
 
     result = asyncio.run(ingest("The user wants concise summaries.", store=store))
@@ -429,8 +420,8 @@ def test_existing_id_is_claimed_by_first_card_only(monkeypatch):
     assert second.supersedes is None
 
 
-def test_ephemeral_card_gets_default_expiry(monkeypatch):
-    explicit = datetime(2030, 1, 1, tzinfo=timezone.utc)
+def test_ephemeral_card_gets_default_expiry(monkeypatch, fixed_now):
+    explicit = datetime(2030, 1, 1, tzinfo=UTC)
     _patch(
         monkeypatch,
         FakeModel(
@@ -456,7 +447,7 @@ def test_ephemeral_card_gets_default_expiry(monkeypatch):
     incident, freeze, db = result.created
     assert incident.durability == Durability.ephemeral
     assert incident.expires_at is not None
-    expected = datetime.now(timezone.utc) + timedelta(days=45)
+    expected = fixed_now + timedelta(days=45)
     assert abs(incident.expires_at - expected) < timedelta(minutes=1)
     assert freeze.expires_at == explicit
     assert db.expires_at is None
@@ -515,6 +506,7 @@ def test_queue_for_review_then_approval_supersedes(monkeypatch):
     assert result.retired == {}
     (candidate,) = result.candidates
     assert candidate.replaces == ["oldfact"]
+    assert candidate.replaces_expected == {"oldfact": store.load_facts()[0].updated_at}
     assert "gone (no longer uses pandas)" in candidate.review_note
     assert len(store.load_active_facts()) == 2
 
@@ -549,9 +541,7 @@ def test_queue_for_review_skips_pending_duplicates_but_not_rejected(monkeypatch)
         ),
     )
 
-    result = asyncio.run(
-        ingest("Polars and dark mode.", store=store, queue_for_review=True)
-    )
+    result = asyncio.run(ingest("Polars and dark mode.", store=store, queue_for_review=True))
 
     assert [c.content for c in result.candidates] == ["The user prefers polars"]
     assert len(store.load_candidates(status=CandidateStatus.pending)) == 2
@@ -584,9 +574,7 @@ def test_target_changed_during_llm_call_retries_with_fresh_neighbors(monkeypatch
         if call == 1:
             store.update_fact("oldfact", tags=["python"])
 
-    fake = _patch(
-        monkeypatch, FakeModel([_POLARS_CARD], during_call=edit_on_first_call)
-    )
+    fake = _patch(monkeypatch, FakeModel([_POLARS_CARD], during_call=edit_on_first_call))
 
     result = asyncio.run(ingest("The user prefers polars now.", store=store))
 
@@ -612,11 +600,103 @@ def test_repeated_conflict_stores_card_without_the_changed_target(monkeypatch):
     assert len(fake.prompts) == 2
     (new,) = result.created
     assert new.supersedes is None
+    assert [(item.fact_id, item.action) for item in result.unresolved] == [("oldfact", "replace")]
     assert new.consolidates == []
     assert result.superseded == {}
     assert {f.id for f in store.load_active_facts()} == {"oldfact", new.id}
     stored = next(f for f in store.load_facts() if f.id == new.id)
     assert stored.supersedes is None
+
+
+@pytest.mark.parametrize("queue_for_review", [False, True])
+@pytest.mark.parametrize("mutation", ["forget", "expire"])
+def test_unavailable_duplicate_retries_with_fresh_neighbors(
+    monkeypatch, queue_for_review, mutation, fixed_now
+):
+    start = fixed_now
+
+    class Clock:
+        current = start
+
+    monkeypatch.setattr("engram.core.clock.now", lambda: Clock.current)
+    store = _pandas_store()
+    Clock.current = start + timedelta(seconds=1)
+    store.update_fact("oldfact", expires_at=start + timedelta(minutes=1))
+
+    def invalidate_on_first_call(call: int) -> None:
+        if call == 1:
+            if mutation == "forget":
+                Clock.current = start + timedelta(seconds=2)
+                store.forget("oldfact")
+            else:
+                Clock.current = start + timedelta(minutes=2)
+
+    fake = _patch(
+        monkeypatch,
+        FakeModel(
+            [
+                {
+                    "content": "The user prefers pandas for dataframes.",
+                    "duplicate_of": "oldfact",
+                }
+            ],
+            during_call=invalidate_on_first_call,
+        ),
+    )
+
+    result = asyncio.run(
+        ingest(
+            "The user prefers pandas for dataframes.",
+            store=store,
+            queue_for_review=queue_for_review,
+        )
+    )
+
+    assert len(fake.prompts) == 2
+    assert "[id:oldfact]" in fake.prompts[0]
+    assert "[id:oldfact]" not in fake.prompts[1]
+    assert result.duplicates == []
+    proposed = result.candidates if queue_for_review else result.created
+    assert [fact.content for fact in proposed] == ["The user prefers pandas for dataframes."]
+    assert [fact.id for fact in store.load_active_facts()] == (
+        [] if queue_for_review else [proposed[0].id]
+    )
+
+
+@pytest.mark.parametrize("exact_match", [False, True])
+@pytest.mark.parametrize("queue_for_review", [False, True])
+def test_repeated_duplicate_conflict_preserves_independent_card(
+    monkeypatch, exact_match, queue_for_review
+):
+    store = _pandas_store()
+    duplicate = (
+        {"content": "The user prefers pandas for dataframes."}
+        if exact_match
+        else {"content": "Pandas is preferred.", "duplicate_of": "oldfact"}
+    )
+    fake = _patch(
+        monkeypatch,
+        FakeModel(
+            [
+                duplicate,
+                {"memory_key": "theme", "content": "The user prefers dark mode."},
+            ],
+            during_call=lambda call: store.update_fact("oldfact", tags=[str(call)]),
+        ),
+    )
+
+    result = asyncio.run(
+        ingest("Pandas and dark mode.", store=store, queue_for_review=queue_for_review)
+    )
+
+    assert len(fake.prompts) == 2
+    assert result.duplicates == []
+    assert [(item.fact_id, item.action) for item in result.unresolved] == [("oldfact", "duplicate")]
+    proposed = result.candidates if queue_for_review else result.created
+    assert [fact.content for fact in proposed] == ["The user prefers dark mode."]
+    assert {fact.id for fact in store.load_active_facts()} == (
+        {"oldfact"} if queue_for_review else {"oldfact", proposed[0].id}
+    )
 
 
 def test_retire_changed_during_llm_call_is_not_applied(monkeypatch):
@@ -634,6 +714,7 @@ def test_retire_changed_during_llm_call_is_not_applied(monkeypatch):
 
     assert len(result.created) == 1
     assert result.retired == {}
+    assert [(item.fact_id, item.action) for item in result.unresolved] == [("oldfact", "retire")]
     assert not next(f for f in store.load_facts() if f.id == "oldfact").stale
 
 
@@ -689,15 +770,13 @@ def test_unscoped_ingest_may_retire_global_cards(monkeypatch):
         FakeModel([], retire=[{"id": "global-pm", "reason": "moved to bun"}]),
     )
 
-    result = asyncio.run(
-        ingest("The user no longer prefers pnpm packages.", store=store)
-    )
+    result = asyncio.run(ingest("The user no longer prefers pnpm packages.", store=store))
 
     assert result.retired == {"global-pm": "moved to bun"}
 
 
-def test_past_expiry_on_ephemeral_card_falls_back_to_ttl(monkeypatch):
-    past = datetime(2020, 1, 1, tzinfo=timezone.utc)
+def test_past_expiry_on_ephemeral_card_falls_back_to_ttl(monkeypatch, fixed_now):
+    past = datetime(2020, 1, 1, tzinfo=UTC)
     _patch(
         monkeypatch,
         FakeModel(
@@ -715,4 +794,4 @@ def test_past_expiry_on_ephemeral_card_falls_back_to_ttl(monkeypatch):
 
     expires_at = result.created[0].expires_at
     assert expires_at is not None
-    assert expires_at > datetime.now(timezone.utc) + timedelta(days=44)
+    assert expires_at > fixed_now + timedelta(days=44)

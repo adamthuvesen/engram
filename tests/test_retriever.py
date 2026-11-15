@@ -3,23 +3,27 @@
 import asyncio
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from engram.core.interfaces import WarningCode
 from engram.core.models import Fact, FactCategory
-from engram.llm import Completion
+from engram.llm import Completion, ModelCompletion
 from engram.recall.retriever import (
     ZERO_HIT_MAX_CANDIDATES,
+    AnswerClaim,
+    RecallAnswer,
     RecallSelection,
-    _extract_quality,
-    _relevant_hits,
-    _scrub_invalid_citations,
+    _render_answer,
     recall,
+    recall_result,
     recall_with_provenance,
+    relevant_hits,
 )
+from engram.storage.async_store import AsyncFactStore
 from engram.storage.search import SearchHit
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.store import FactStore
 
 
 def _make_store() -> FactStore:
@@ -52,9 +56,15 @@ def _xylophone_store() -> FactStore:
     return store
 
 
+def _answer_json(text: str, fact_ids: list[str], quality: str = "high") -> str:
+    import json
+
+    return json.dumps({"claims": [{"text": text, "fact_ids": fact_ids}], "quality": quality})
+
+
 def _patch_complete(monkeypatch, responses):
     """Queue-backed stand-in for ``complete_with_usage``; records calls."""
-    calls: dict = {"n": 0, "prompts": [], "kwargs": []}
+    calls: dict[str, Any] = {"n": 0, "prompts": [], "kwargs": []}
     queue = list(responses)
 
     async def fake(prompt, system="", **kwargs):
@@ -70,7 +80,7 @@ def _patch_complete(monkeypatch, responses):
 
 def _patch_select(monkeypatch, result: list[str] | Exception):
     """Stand-in for the structured selection call via ``complete_model``."""
-    calls: dict = {"n": 0, "prompts": [], "kwargs": []}
+    calls: dict[str, Any] = {"n": 0, "prompts": [], "kwargs": []}
 
     async def fake(prompt, system, response_model, **kwargs):
         calls["n"] += 1
@@ -79,15 +89,15 @@ def _patch_select(monkeypatch, result: list[str] | Exception):
         assert response_model is RecallSelection
         if isinstance(result, Exception):
             raise result
-        return RecallSelection(relevant_ids=result)
+        return ModelCompletion(
+            value=RecallSelection(relevant_ids=result),
+            input_tokens=25,
+            cached_tokens=0,
+            output_tokens=5,
+        )
 
-    monkeypatch.setattr("engram.recall.retriever.complete_model", fake)
+    monkeypatch.setattr("engram.recall.retriever.complete_model_with_usage", fake)
     return calls
-
-
-# ---------------------------------------------------------------------------
-# Relevance bar
-# ---------------------------------------------------------------------------
 
 
 def test_relevant_hits_require_coverage_and_relative_score():
@@ -97,17 +107,12 @@ def test_relevant_hits_require_coverage_and_relative_score():
         _hit("low-coverage", 9.0, 0.1),
         _hit("low-score", 2.0, 0.9),
     ]
-    assert [hit.fact.id for hit in _relevant_hits(hits)] == ["top", "close"]
+    assert [hit.fact.id for hit in relevant_hits(hits)] == ["top", "close"]
 
 
 def test_relevant_hits_empty_when_top_hit_lacks_coverage():
-    assert _relevant_hits([_hit("weak", 10.0, 0.1)]) == []
-    assert _relevant_hits([]) == []
-
-
-# ---------------------------------------------------------------------------
-# Cards mode (default, no LLM)
-# ---------------------------------------------------------------------------
+    assert relevant_hits([_hit("weak", 10.0, 0.1)]) == []
+    assert relevant_hits([]) == []
 
 
 def test_cards_mode_returns_dated_cards_without_llm(monkeypatch):
@@ -136,10 +141,7 @@ def test_cards_mode_returns_dated_cards_without_llm(monkeypatch):
 def test_cards_capped_at_max_sources():
     store = _make_store()
     store.append_facts(
-        [
-            Fact(category=FactCategory.preference, content=f"zagblort note {i}")
-            for i in range(6)
-        ]
+        [Fact(category=FactCategory.preference, content=f"zagblort note {i}") for i in range(6)]
     )
 
     text, _, provenance, _ = asyncio.run(
@@ -183,10 +185,6 @@ def test_cards_mode_with_async_store():
     assert "aaaaaaaaaaa1" in text
 
 
-# ---------------------------------------------------------------------------
-# Zero-hit selection (cards mode, weak hits only)
-# ---------------------------------------------------------------------------
-
 # Matches the fixture facts only through the weak word "telemetry" amid many
 # unmatched terms, so every hit falls below the coverage floor.
 _ZERO_HIT_QUERY = "which analytics platform keeps our event telemetry history?"
@@ -209,7 +207,7 @@ def _weak_hit_store(count: int = 1) -> FactStore:
 
 def test_zero_hit_selection_returns_llm_chosen_cards(monkeypatch):
     monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
-    calls = _patch_select(monkeypatch, ["000000000000", "ffffffffffff"])
+    calls = _patch_select(monkeypatch, ["000000000000"])
     store = _weak_hit_store()
 
     text, _quality, provenance, trace = asyncio.run(
@@ -218,7 +216,7 @@ def test_zero_hit_selection_returns_llm_chosen_cards(monkeypatch):
 
     assert calls["n"] == 1
     assert calls["kwargs"][0]["reasoning_effort"] == "low"
-    # The invented ID is dropped; the real candidate becomes a card.
+    # The real candidate becomes a card.
     assert provenance.cited_fact_ids == ["000000000000"]
     assert text.startswith("Memory (1 of 1 matches):")
     assert provenance.tier == 1
@@ -235,9 +233,7 @@ def test_zero_hit_selection_bounds_candidates(monkeypatch):
     calls = _patch_select(monkeypatch, [])
     store = _weak_hit_store(count=ZERO_HIT_MAX_CANDIDATES + 10)
 
-    text, quality, _, _ = asyncio.run(
-        recall_with_provenance(_ZERO_HIT_QUERY, store=store)
-    )
+    text, quality, _, _ = asyncio.run(recall_with_provenance(_ZERO_HIT_QUERY, store=store))
 
     assert calls["n"] == 1
     assert calls["prompts"][0].count("(id: ") == ZERO_HIT_MAX_CANDIDATES
@@ -249,9 +245,7 @@ def test_zero_hit_without_key_makes_no_call(monkeypatch):
     calls = _patch_select(monkeypatch, ["000000000000"])
     store = _weak_hit_store()
 
-    text, _, provenance, _ = asyncio.run(
-        recall_with_provenance(_ZERO_HIT_QUERY, store=store)
-    )
+    text, _, provenance, _ = asyncio.run(recall_with_provenance(_ZERO_HIT_QUERY, store=store))
 
     assert calls["n"] == 0
     assert text == "No relevant memories found for this query."
@@ -264,9 +258,7 @@ def test_zero_hit_selection_failure_degrades_with_warning(monkeypatch):
     _patch_select(monkeypatch, TimeoutError())
     store = _weak_hit_store()
 
-    text, quality, provenance, _ = asyncio.run(
-        recall_with_provenance(_ZERO_HIT_QUERY, store=store)
-    )
+    text, quality, provenance, _ = asyncio.run(recall_with_provenance(_ZERO_HIT_QUERY, store=store))
 
     assert text == "No relevant memories found for this query."
     assert quality == "none"
@@ -286,23 +278,22 @@ def test_strong_hit_never_calls_llm_with_key(monkeypatch):
     assert complete["n"] == 0
 
 
-# ---------------------------------------------------------------------------
-# Answer mode
-# ---------------------------------------------------------------------------
-
-
 def test_answer_mode_makes_one_call_over_relevant_facts(monkeypatch):
     monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
     calls = _patch_complete(
         monkeypatch,
-        [("Zagblort fixes xylophones (id: aaaaaaaaaaa1).\n[quality: high]", 300, 100)],
+        [
+            (
+                _answer_json("Zagblort fixes xylophones.", ["aaaaaaaaaaa1"], "high"),
+                300,
+                100,
+            )
+        ],
     )
     store = _xylophone_store()
 
     text, quality, provenance, trace = asyncio.run(
-        recall_with_provenance(
-            "zagblort xylophone", store=store, mode="answer", with_trace=True
-        )
+        recall_with_provenance("zagblort xylophone", store=store, mode="answer", with_trace=True)
     )
 
     assert calls["n"] == 1
@@ -310,7 +301,7 @@ def test_answer_mode_makes_one_call_over_relevant_facts(monkeypatch):
     # Only relevant facts reach the prompt, with dates and IDs.
     assert "aaaaaaaaaaa1" in calls["prompts"][0]
     assert "banana" not in calls["prompts"][0]
-    assert text == "Zagblort fixes xylophones (id: aaaaaaaaaaa1)."
+    assert text == "Zagblort fixes xylophones. (id: aaaaaaaaaaa1)"
     assert quality == "high"
     assert provenance.tier == 1
     assert provenance.cited_fact_ids == ["aaaaaaaaaaa1"]
@@ -324,9 +315,7 @@ def test_answer_mode_makes_one_call_over_relevant_facts(monkeypatch):
 
 def test_answer_mode_zero_hit_uses_top_candidates(monkeypatch):
     monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
-    calls = _patch_complete(
-        monkeypatch, [("Nothing relevant.\n[quality: none]", 50, 0)]
-    )
+    calls = _patch_complete(monkeypatch, [(_answer_json("Nothing relevant.", [], "none"), 50, 0)])
     store = _weak_hit_store(count=3)
 
     _, quality, provenance, _ = asyncio.run(
@@ -361,9 +350,7 @@ def test_answer_mode_provider_error_returns_cards_with_warning(monkeypatch):
     monkeypatch.setattr("engram.recall.retriever.complete_with_usage", boom)
 
     text, _, provenance, _ = asyncio.run(
-        recall_with_provenance(
-            "zagblort xylophone", store=_xylophone_store(), mode="answer"
-        )
+        recall_with_provenance("zagblort xylophone", store=_xylophone_store(), mode="answer")
     )
 
     assert text.startswith("Memory (1 of 1 matches):")
@@ -371,56 +358,114 @@ def test_answer_mode_provider_error_returns_cards_with_warning(monkeypatch):
     assert [w.code for w in provenance.warnings] == [WarningCode.provider_unavailable]
 
 
-# ---------------------------------------------------------------------------
-# Quality extraction
-# ---------------------------------------------------------------------------
+# Structured citations preserve content and reject unsupported references.
 
 
-def test_extract_quality():
-    clean, level = _extract_quality("The answer is yes.\n\n[quality: high]")
-    assert level == "high"
-    assert "[quality:" not in clean
+def test_answer_preserves_hashes_dates_and_numbers():
+    fact = Fact(id="aaaaaaaaaaaa", category=FactCategory.convention, content="release")
+    prose = "Commit deadbeef01234567 ships 20261104 after 12345678 rows and SHA abcdef123456."
+    answer = RecallAnswer(claims=[AnswerClaim(text=prose, fact_ids=[fact.id])], quality="high")
+    text, cited = _render_answer(answer, [fact])
+    assert text == prose + " (id: aaaaaaaaaaaa)"
+    assert cited == [fact]
 
 
-def test_extract_quality_missing():
-    text = "Just a plain answer."
-    assert _extract_quality(text) == (text, "")
-
-
-# ---------------------------------------------------------------------------
-# Citation scrubbing — invented/mangled IDs never reach the answer
-# ---------------------------------------------------------------------------
-
-_VALID_IDS = {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
-
-
-def test_scrub_keeps_valid_citations():
-    text = "Use stg_* models [aaaaaaaaaaaa] and int__* [bbbbbbbbbbbb]."
-    assert _scrub_invalid_citations(text, _VALID_IDS) == text
-
-
-def test_scrub_removes_wrong_length_id():
-    # 15-hex run: a real ID with extra digits merged in by the model.
-    text = "Rename carefully ([aaaaaaaaaaaa], [179c6a107298f24])."
-    assert (
-        _scrub_invalid_citations(text, _VALID_IDS)
-        == "Rename carefully ([aaaaaaaaaaaa])."
+@pytest.mark.parametrize("reference", ["ffffffffffff", "179c6a107298f24", "aaaaaaaa"])
+def test_answer_rejects_unknown_or_mangled_references(reference):
+    answer = RecallAnswer(
+        claims=[AnswerClaim(text="Use natural keys.", fact_ids=[reference])],
+        quality="high",
     )
+    with pytest.raises(ValueError, match="outside the supplied evidence"):
+        _render_answer(answer, [])
 
 
-def test_scrub_removes_unknown_id_from_facts_group():
-    text = "Looker shuts down 2026-08-31 [facts: aaaaaaaaaaaa, cccccccccccc]."
-    assert (
-        _scrub_invalid_citations(text, _VALID_IDS)
-        == "Looker shuts down 2026-08-31 [facts: aaaaaaaaaaaa]."
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Use keys [ffffffffffff].",
+        "Use keys (id: aaaaaaaaaaaa).",
+        "Use keys [facts: ffffffffffff].",
+    ],
+)
+def test_answer_rejects_provider_citations_in_claim_text(text):
+    answer = RecallAnswer(claims=[AnswerClaim(text=text, fact_ids=[])], quality="none")
+    with pytest.raises(ValueError, match="without citation markers"):
+        _render_answer(answer, [])
+
+
+@pytest.mark.parametrize("max_sources,configured_limit", [(1, 5), (5, 1)])
+def test_answer_cap_applies_before_generation(monkeypatch, max_sources, configured_limit):
+    from engram.core.config import get_settings
+
+    settings = get_settings().model_copy(update={"max_facts_per_agent": configured_limit})
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    store = _make_store()
+    facts = [
+        Fact(id=f"{i:012x}", category=FactCategory.preference, content="zagblort note")
+        for i in range(3)
+    ]
+    store.append_facts(facts)
+    top = store.search_facts("zagblort note")[0].fact
+    calls = _patch_complete(monkeypatch, [(_answer_json("The note.", [top.id]), 25, 0)])
+    result = asyncio.run(
+        recall_result(
+            "zagblort note",
+            store=store,
+            mode="answer",
+            max_sources=max_sources,
+            settings=settings,
+        )
     )
+    assert calls["prompts"][0].count("(id: ") == 1
+    assert len(result.selected) == len(result.delivered) == len(result.cited) == 1
+    assert [source.id for source in result.provenance.sources] == result.provenance.cited_fact_ids
+    assert result.provenance.selected_fact_ids == [top.id]
 
 
-def test_scrub_drops_fully_invalid_citation_group():
-    text = "Prefer natural keys [facts: cccccccccccc, dddddddddddd]."
-    assert _scrub_invalid_citations(text, _VALID_IDS) == "Prefer natural keys."
+def test_selector_keeps_usage_and_selected_ids(monkeypatch):
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    _patch_select(monkeypatch, ["000000000000"])
+    result = asyncio.run(recall_result(_ZERO_HIT_QUERY, store=_weak_hit_store()))
+    assert result.provenance.source_fact_ids == ["000000000000"]
+    assert result.provenance.usage.input_tokens == 25
+    assert result.provenance.usage.output_tokens == 5
+    assert result.provenance.usage.usage_unknown_calls == 0
+    assert result.cited == []
 
 
-def test_scrub_leaves_plain_text_untouched():
-    text = "No citations here, just a decade of prose."
-    assert _scrub_invalid_citations(text, _VALID_IDS) is text
+def test_selector_rejects_fabricated_id_with_explicit_failure(monkeypatch):
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    _patch_select(monkeypatch, ["000000000000", "ffffffffffff"])
+    result = asyncio.run(recall_result(_ZERO_HIT_QUERY, store=_weak_hit_store(), with_trace=True))
+    assert result.delivered == []
+    assert result.provenance.usage.llm_attempts == 1
+    assert result.provenance.usage.llm_completions == 1
+    assert result.provenance.usage.llm_failures == 1
+    assert result.provenance.usage.llm_calls == 0
+    assert result.trace is not None
+    assert result.trace.calls[0].error == "ProviderResponseError"
+
+
+@pytest.mark.parametrize("response", ["", "   ", "not JSON", '{"claims":[],"quality":"high"}'])
+def test_empty_or_malformed_answers_return_cards_with_failure(monkeypatch, response):
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    _patch_complete(monkeypatch, [(response, None, None)])
+    result = asyncio.run(
+        recall_result("zagblort xylophone", store=_xylophone_store(), mode="answer")
+    )
+    assert result.text.startswith("Memory (")
+    assert result.provenance.usage.llm_failures == 1
+    assert result.provenance.usage.usage_unknown_calls == 1
+
+
+def test_timeout_is_attempted_and_unknown_usage_with_error_trace(monkeypatch):
+    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: True)
+    _patch_select(monkeypatch, TimeoutError())
+    result = asyncio.run(recall_result(_ZERO_HIT_QUERY, store=_weak_hit_store(), with_trace=True))
+    assert result.provenance.usage.llm_attempts == 1
+    assert result.provenance.usage.llm_completions == 0
+    assert result.provenance.usage.llm_failures == 1
+    assert result.provenance.usage.usage_unknown_calls == 1
+    assert result.trace is not None
+    assert result.trace.calls[0].error == "TimeoutError"

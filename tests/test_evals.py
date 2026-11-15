@@ -5,20 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from engram.recall.evals import (
+from engram.core.interfaces import WarningCode
+from engram.core.models import FactCategory
+from evals.fixtures import (
     EvalBudget,
     EvalFactSpec,
     EvalFixture,
     representative_fixtures,
     run_fixture_sync,
 )
-from engram.core.interfaces import WarningCode
-from engram.core.models import FactCategory
-
-
-# ---------------------------------------------------------------------------
-# 7.6: passing evals
-# ---------------------------------------------------------------------------
 
 
 def test_eval_passes_when_expected_source_present():
@@ -83,11 +78,6 @@ def test_eval_fails_on_excluded_source_present():
     assert any(n.startswith("excluded_source:") for n in failed_names)
 
 
-# ---------------------------------------------------------------------------
-# Budget failures
-# ---------------------------------------------------------------------------
-
-
 def _answer_mode_fixture(name: str, budget: EvalBudget) -> EvalFixture:
     """Answer mode spends one mocked LLM call, which lands at tier 1."""
     return EvalFixture(
@@ -103,14 +93,18 @@ def _answer_mode_fixture(name: str, budget: EvalBudget) -> EvalFixture:
             for i in range(5)
         ],
         budget=budget,
-        mocked_responses=[("ok (id: f00aaaaaaaaa)\n[quality: low]", 100, 0)],
+        mocked_responses=[
+            (
+                '{"claims":[{"text":"ok","fact_ids":["f00aaaaaaaaa"]}],"quality":"low"}',
+                100,
+                0,
+            )
+        ],
     )
 
 
 def test_eval_fails_on_tier_budget_exceeded():
-    result = run_fixture_sync(
-        _answer_mode_fixture("tier_budget", EvalBudget(max_tier=0))
-    )
+    result = run_fixture_sync(_answer_mode_fixture("tier_budget", EvalBudget(max_tier=0)))
     assert result.passed is False
     tier_check = next(c for c in result.checks if c.name == "max_tier")
     assert tier_check.passed is False
@@ -118,9 +112,7 @@ def test_eval_fails_on_tier_budget_exceeded():
 
 
 def test_eval_fails_on_llm_call_budget():
-    result = run_fixture_sync(
-        _answer_mode_fixture("llm_budget", EvalBudget(max_llm_calls=0))
-    )
+    result = run_fixture_sync(_answer_mode_fixture("llm_budget", EvalBudget(max_llm_calls=0)))
     assert result.passed is False
     call_check = next(c for c in result.checks if c.name == "max_llm_calls")
     assert call_check.passed is False
@@ -167,11 +159,6 @@ def test_eval_checks_expected_top_and_warnings():
     result = run_fixture_sync(fixture)
     failed = {c.name for c in result.checks if not c.passed}
     assert failed == {"expected_top", "expected_warning:suspect_fact"}
-
-
-# ---------------------------------------------------------------------------
-# Provider-backed skip
-# ---------------------------------------------------------------------------
 
 
 def test_provider_eval_skipped_when_disabled(monkeypatch):
@@ -230,9 +217,7 @@ def test_eval_fixture_temp_store_is_cleaned_up(monkeypatch):
             exited = True
             return self._tmp.__exit__(exc_type, exc, tb)
 
-    monkeypatch.setattr(
-        "engram.recall.evals.TemporaryDirectory", TrackingTemporaryDirectory
-    )
+    monkeypatch.setattr("evals.fixtures.TemporaryDirectory", TrackingTemporaryDirectory)
 
     fixture = EvalFixture(
         name="cleanup",
@@ -255,11 +240,6 @@ def test_eval_fixture_temp_store_is_cleaned_up(monkeypatch):
     assert exited is True
     assert tracked_path is not None
     assert not tracked_path.exists()
-
-
-# ---------------------------------------------------------------------------
-# Representative bundle smoke
-# ---------------------------------------------------------------------------
 
 
 def test_representative_fixtures_at_least_one_passes():

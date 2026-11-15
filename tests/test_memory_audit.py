@@ -1,17 +1,15 @@
-"""Tests for read-only memory audit suggestions."""
-
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from engram.maintenance.memory_audit import audit_facts, format_audit_result
 from engram.core.models import Fact, FactCategory
+from engram.maintenance.memory_audit import audit_facts, format_audit_result
 from engram.operations import audit_memories
 from engram.storage.store import FactStore
+from tests.mcp_helpers import json_object
 
-
-NOW = datetime(2026, 6, 19, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 19, tzinfo=UTC)
 
 
 def _fact(
@@ -146,7 +144,7 @@ def test_audit_flags_expired_facts_without_mutating_store(tmp_path):
 
     result = asyncio.run(audit_memories(store=store))
 
-    assert result.envelope.data["stale_facts"] == 1
+    assert json_object(result.envelope.data)["stale_facts"] == 1
     assert store.load_facts()[0].stale is False
     assert store.load_facts()[0].confidence == 1.0
 

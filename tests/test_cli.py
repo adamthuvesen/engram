@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -30,11 +31,6 @@ def cli_env(monkeypatch):
 def _seed(tmp: Path, facts: list[Fact]) -> None:
     store = FactStore(data_dir=tmp)
     store.append_facts(facts)
-
-
-# ---------------------------------------------------------------------------
-# is_cli_invocation
-# ---------------------------------------------------------------------------
 
 
 def test_is_cli_invocation_true_for_known_subcommand():
@@ -67,7 +63,7 @@ def test_is_cli_invocation_true_for_unknown_argv():
     ],
 )
 def test_serve_starts_server_with_requested_transport(monkeypatch, argv, expected):
-    calls: list[dict] = []
+    calls: list[dict[str, Any]] = []
     monkeypatch.setattr("engram.server.main", lambda **kwargs: calls.append(kwargs))
 
     assert cli.main_dispatch(argv) == cli.EXIT_OK
@@ -118,19 +114,12 @@ def test_cli_run_returns_code_for_parse_errors(capsys):
     assert "invalid choice" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
-# trace
-# ---------------------------------------------------------------------------
-
-
 def test_cli_trace_json_no_match(cli_env, capsys):
     exit_code = cli.run(["trace", "obscure", "--json"])
     assert exit_code == cli.EXIT_OK
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["status"] == "ok"
-    assert (
-        parsed["data"]["trace"] is not None
-    )  # tier-0 still emits a (possibly empty) trace
+    assert parsed["data"]["trace"] is not None  # tier-0 still emits a (possibly empty) trace
     assert parsed["data"]["quality"] in ("none", "low")
 
 
@@ -140,11 +129,6 @@ def test_cli_recall_invalid_max_sources(cli_env, capsys):
     assert exit_code == cli.EXIT_VALIDATION
     assert parsed["errors"][0]["code"] == "validation_error"
     assert parsed["errors"][0]["details"] == {"parameter": "max_sources"}
-
-
-# ---------------------------------------------------------------------------
-# doctor
-# ---------------------------------------------------------------------------
 
 
 def test_cli_doctor_json_healthy(cli_env, capsys):
@@ -163,9 +147,7 @@ def test_cli_doctor_json_with_corrupt_jsonl(cli_env, capsys):
     # This keeps the test focused on event-log corruption rather than a wholly
     # invalid facts file.
     store = FactStore(data_dir=cli_env)
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="x")])
     with store.facts_path.open("a") as fh:
         fh.write("not json\n")
 
@@ -190,20 +172,13 @@ def test_cli_doctor_repairs_orphaned_supersessions(cli_env, capsys):
         ]
     )
 
-    exit_code = cli.run(
-        ["doctor", "--repair", "--repair-orphaned-supersessions", "--json"]
-    )
+    exit_code = cli.run(["doctor", "--repair", "--repair-orphaned-supersessions", "--json"])
     parsed = json.loads(capsys.readouterr().out)
     repaired = FactStore(data_dir=cli_env).load_facts()[0]
 
     assert exit_code == cli.EXIT_OK
     assert parsed["data"]["repair"]["orphaned_supersessions"]["cleared"] == 1
     assert repaired.supersedes is None
-
-
-# ---------------------------------------------------------------------------
-# correct
-# ---------------------------------------------------------------------------
 
 
 def test_cli_correct_json_success(cli_env, capsys):
@@ -230,9 +205,9 @@ def test_cli_correct_json_not_found(cli_env, capsys):
     assert parsed["errors"][0]["code"] == "not_found"
 
 
-def test_cli_recall_stats_aggregate_and_include_records(cli_env, capsys):
+def test_cli_recall_stats_aggregate_and_include_records(cli_env, capsys, fixed_now):
     store = FactStore(data_dir=cli_env)
-    now = datetime.now(timezone.utc)
+    now = fixed_now
     store.log_recall(
         RecallRecord(
             query="old",
@@ -271,11 +246,6 @@ def test_cli_recall_stats_aggregate_and_include_records(cli_env, capsys):
     assert with_records["data"]["records"][0]["query"] == "new"
 
 
-# ---------------------------------------------------------------------------
-# merge
-# ---------------------------------------------------------------------------
-
-
 def test_cli_merge_json_validation_one_source(cli_env, capsys):
     exit_code = cli.run(["merge", "onlyoneonlyo", "--content", "merged", "--json"])
     parsed = json.loads(capsys.readouterr().out)
@@ -309,11 +279,6 @@ def test_cli_merge_json_success(cli_env, capsys):
     }
 
 
-# ---------------------------------------------------------------------------
-# stale
-# ---------------------------------------------------------------------------
-
-
 def test_cli_stale_marks_fact_stale(cli_env, capsys):
     _seed(
         cli_env,
@@ -330,11 +295,6 @@ def test_cli_stale_not_found(cli_env, capsys):
     parsed = json.loads(capsys.readouterr().out)
     assert exit_code == cli.EXIT_NOT_FOUND
     assert parsed["errors"][0]["code"] == "not_found"
-
-
-# ---------------------------------------------------------------------------
-# inspect
-# ---------------------------------------------------------------------------
 
 
 def test_cli_inspect_json_bounded(cli_env, capsys):
@@ -387,11 +347,6 @@ def test_cli_inspect_invalid_limit(cli_env, capsys):
     assert exit_code == cli.EXIT_VALIDATION
     assert parsed["errors"][0]["code"] == "validation_error"
     assert parsed["errors"][0]["message"] == "limit must be greater than zero"
-
-
-# ---------------------------------------------------------------------------
-# Non-JSON mode still works (smoke)
-# ---------------------------------------------------------------------------
 
 
 def test_cli_inspect_text_mode_smoke(cli_env, capsys):

@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from tests.run_extraction_quality_evals import (
+from evals.extraction_quality import (
     DATASET_PATH,
     MAX_FRAGMENTATION,
     MIN_DURABLE_CLAIM_COVERAGE,
@@ -65,9 +65,10 @@ def test_dataset_covers_required_memory_shapes():
 
     correction_unit = cases_by_kind["correction-update"].canonical_memory_units[0]
     assert correction_unit.expected_supersedes is not None
-    assert {
-        unit.project for unit in cases_by_kind["project-scope"].canonical_memory_units
-    } == {"atlas", "beacon"}
+    assert {unit.project for unit in cases_by_kind["project-scope"].canonical_memory_units} == {
+        "atlas",
+        "beacon",
+    }
 
     for case in dataset.cases:
         assert case.raw_input
@@ -137,9 +138,7 @@ def test_transient_claim_is_counted_and_makes_card_imprecise():
     summary = evaluate(extracted_cards_by_case=outputs)
 
     result = next(
-        result
-        for result in summary.results
-        if result.case_id == "durable-rule-with-progress"
+        result for result in summary.results if result.case_id == "durable-rule-with-progress"
     )
     assert summary.forbidden_transient_claims == 1
     assert result.precise_cards == result.emitted_cards - 1
@@ -161,9 +160,7 @@ def test_merged_related_memories_fail_coherent_unit_separation():
 
     summary = evaluate(extracted_cards_by_case=outputs)
     result = next(
-        result
-        for result in summary.results
-        if result.case_id == "related-resilience-decisions"
+        result for result in summary.results if result.case_id == "related-resilience-decisions"
     )
 
     assert result.merged_card_indexes == [1]
@@ -198,30 +195,44 @@ def test_live_cli_reports_provider_failure_without_traceback(monkeypatch, capsys
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(
-        "tests.run_extraction_quality_evals.extract_live_provider_outputs",
+        "evals.extraction_quality.extract_live_provider_outputs",
         fail_live_run,
     )
 
     assert main(live=True) == 2
-    assert capsys.readouterr().err == (
-        "Live extraction eval failed: provider unavailable\n"
-    )
+    assert capsys.readouterr().err == ("Live extraction eval failed: provider unavailable\n")
 
 
 @pytest.mark.skipif(
     os.environ.get("ENGRAM_EVAL_PROVIDER") != "1",
     reason="provider mode disabled (set ENGRAM_EVAL_PROVIDER=1)",
 )
+@pytest.mark.live_provider
 def test_live_provider_meets_extraction_quality_gates():
     outputs = asyncio.run(extract_live_provider_outputs())
 
     summary = evaluate(extracted_cards_by_case=outputs)
 
     failures = [
-        result.model_dump(
-            include={"case_id", "uncovered_claims", "forbidden_transient_hits"}
-        )
+        result.model_dump(include={"case_id", "uncovered_claims", "forbidden_transient_hits"})
         for result in summary.results
         if result.uncovered_claims or result.forbidden_transient_hits
     ]
     assert summary.passes_gates, failures
+
+
+def test_live_extraction_refuses_without_approval(monkeypatch):
+    import asyncio
+
+    from evals import extraction_quality
+
+    async def no_ingest(*args: object, **kwargs: object) -> object:
+        raise AssertionError("ingest ran before the approval gate")
+
+    monkeypatch.delenv("ENGRAM_EVAL_PROVIDER", raising=False)
+    monkeypatch.setattr(extraction_quality, "ingest", no_ingest)
+    with pytest.raises(extraction_quality.SpendRefusedError, match="ENGRAM_EVAL_PROVIDER=1 uv run"):
+        asyncio.run(extraction_quality.extract_live_provider_outputs())
+    # main() catches Exception around the live run; the refusal must escape it.
+    with pytest.raises(extraction_quality.SpendRefusedError):
+        extraction_quality.main(live=True)

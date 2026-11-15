@@ -2,25 +2,41 @@
 
 import logging
 from pathlib import Path
+from typing import Any, Literal
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field
 
 from engram.core.config import get_settings
 from engram.core.projects import canonical_project
+from engram.core.structured_outputs import UnresolvedDecision
 from engram.extraction.observer import ingest
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.store import FactStore
 
 logger = logging.getLogger(__name__)
 
 
+class ImportFileResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: str
+    project: str | None
+    status: Literal["ok", "partial", "error"]
+    facts_extracted: int = 0
+    unresolved: list[UnresolvedDecision] = Field(default_factory=list)
+    error: str | None = None
+
+
 async def import_claude_code_memories(
     store: FactStore | AsyncFactStore | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Walk ~/.claude/projects/*/memory/*.md and import as structured facts.
 
     Returns summary of what was imported.
     """
-    store = store or FactStore()
+    if store is None:
+        store = AsyncFactStore(await run_sync(FactStore))
     projects_dir = get_settings().claude_projects_dir
 
     if not projects_dir.exists():
@@ -39,67 +55,77 @@ async def import_claude_code_memories(
         }
 
     total_facts = 0
-    imported_files = []
+    imported_files: list[ImportFileResult] = []
+    failed_files = 0
 
     for memory_file in memory_files:
-        content, metadata = _parse_memory_file(memory_file)
-        if not content:
+        project_name = canonical_project(_clean_project_name(memory_file.parent.parent.name))
+        try:
+            content, metadata = await run_sync(_parse_memory_file, memory_file)
+            if not content.strip():
+                raise ValueError("memory file has no content")
+            source = f"claude_code:{memory_file.relative_to(projects_dir)}"
+            result = await ingest(
+                content=f"Memory type: {metadata.get('type', 'unknown')}\n"
+                f"Name: {metadata.get('name', 'unknown')}\n"
+                f"Description: {metadata.get('description', '')}\n\n{content}",
+                source=source,
+                project=project_name,
+                store=store,
+            )
+            if result.errors:
+                raise ValueError("; ".join(result.errors))
+        except Exception as exc:
+            failed_files += 1
+            imported_files.append(
+                ImportFileResult(
+                    file=memory_file.name,
+                    project=project_name,
+                    status="error",
+                    error=str(exc),
+                )
+            )
             continue
-
-        # Derive project name from the directory path
-        project_dir = memory_file.parent.parent.name
-        project_name = canonical_project(_clean_project_name(project_dir))
-
-        source = f"claude_code:{memory_file.relative_to(projects_dir)}"
-        logger.info("Importing %s (project: %s)", source, project_name)
-
-        result = await ingest(
-            content=f"Memory type: {metadata.get('type', 'unknown')}\n"
-            f"Name: {metadata.get('name', 'unknown')}\n"
-            f"Description: {metadata.get('description', '')}\n\n"
-            f"{content}",
-            source=source,
-            project=project_name,
-            store=store,
-        )
 
         total_facts += len(result.created)
         imported_files.append(
-            {
-                "file": str(memory_file.name),
-                "project": project_name,
-                "facts_extracted": len(result.created),
-            }
+            ImportFileResult(
+                file=memory_file.name,
+                project=project_name,
+                facts_extracted=len(result.created),
+                status="partial" if result.unresolved else "ok",
+                unresolved=result.unresolved,
+            )
         )
 
     return {
-        "imported_files": len(imported_files),
+        "imported_files": len(imported_files) - failed_files,
+        "failed_files": failed_files,
+        "status": "partial"
+        if failed_files or any(item.status == "partial" for item in imported_files)
+        else "ok",
         "total_facts": total_facts,
-        "details": imported_files,
+        "details": [item.model_dump() for item in imported_files],
     }
 
 
-def _parse_memory_file(path: Path) -> tuple[str, dict]:
+def _parse_memory_file(path: Path) -> tuple[str, dict[str, Any]]:
     """Parse a Claude Code memory file with YAML frontmatter.
 
     Returns (body_content, frontmatter_dict).
     """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except Exception as e:
-        logger.warning("Failed to read %s: %s", path, e)
-        return "", {}
-
-    metadata: dict = {}
+    text = path.read_text(encoding="utf-8")
+    metadata: dict[str, Any] = {}
     body = text
     if text.startswith("---"):
         parts = text.split("---", 2)
-        if len(parts) >= 3:
-            try:
-                metadata = yaml.safe_load(parts[1]) or {}
-            except yaml.YAMLError:
-                pass
-            body = parts[2].strip()
+        if len(parts) < 3:
+            raise ValueError("memory frontmatter has no closing delimiter")
+        parsed = yaml.safe_load(parts[1])
+        if parsed is not None and not isinstance(parsed, dict):
+            raise ValueError("memory frontmatter must be a YAML mapping")
+        metadata = parsed or {}
+        body = parts[2].strip()
 
     return body, metadata
 

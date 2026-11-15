@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""Drive Engram's real CLI, MCP server, and wheel against a throwaway store.
+
+verify | verify all | verify <drive>... | verify list | verify control
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Awaitable, Callable
+from fnmatch import fnmatch
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+HELPER = Path(__file__).resolve()
+if Path(sys.prefix).resolve() != (ROOT / ".venv").resolve():
+    uv = ["uv", "run", "--quiet", "--locked", "--extra", "dev", "--project", str(ROOT)]
+    os.execvp("uv", [*uv, "python", str(HELPER), *sys.argv[1:]])
+# The drives import the checkout's evals and tools packages, which the wheel does not ship.
+sys.path.insert(1, str(ROOT))
+
+from drives import (  # noqa: E402 - imports after the venv re-exec above
+    CONTROL_FAILURE,
+    DRIVES,
+    SMOKE,
+    Context,
+    Failure,
+    control,
+)
+
+import engram  # noqa: E402 - imports after the venv re-exec above
+from engram.core import clock  # noqa: E402 - imports after the venv re-exec above
+
+GLOBAL_PATHS = ["pyproject.toml", "uv.lock", ".agents/skills/verify-engram/*"]
+REDACT = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def git(*args: str) -> str:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    result = subprocess.run(["git", *args], cwd=ROOT, env=env, capture_output=True, text=True)
+    return result.stdout.rstrip("\n") if result.returncode == 0 else ""
+
+
+# Paths a drive may change: evidence, the environment, and tool caches.
+UNWATCHED = {".git", ".venv", ".verify", "__pycache__", ".pytest_cache", ".ruff_cache"}
+
+# Git state of this checkout only. Shared refs are left out: other worktrees move them.
+GIT_FACTS = {
+    "HEAD commit": ("rev-parse", "HEAD"),
+    "HEAD branch": ("symbolic-ref", "-q", "HEAD"),
+    "git index": ("ls-files", "--stage"),
+    "git index flags": ("ls-files", "-v"),
+    "git config": ("config", "--local", "--list"),
+    "git worktree config": ("config", "--worktree", "--list"),
+}
+CheckoutState = tuple[dict[str, str], dict[str, tuple[int, int]]]
+
+
+def checkout_state() -> CheckoutState:
+    """GIT_FACTS, and the size and mtime of every file outside UNWATCHED."""
+    facts = {fact: git(*args) for fact, args in GIT_FACTS.items()}
+    files: dict[str, tuple[int, int]] = {}
+    for directory, subdirs, names in os.walk(ROOT):
+        subdirs[:] = [d for d in subdirs if d not in UNWATCHED]
+        for name in names:
+            path = Path(directory) / name
+            stat = path.lstat()
+            files[str(path.relative_to(ROOT))] = (stat.st_size, stat.st_mtime_ns)
+    return facts, files
+
+
+def checkout_changes(before: CheckoutState, after: CheckoutState) -> list[str]:
+    changes = [f"{fact} changed" for fact in GIT_FACTS if before[0][fact] != after[0][fact]]
+    paths = before[1].keys() | after[1].keys()
+    return changes + sorted(p for p in paths if before[1].get(p) != after[1].get(p))
+
+
+def changed_files() -> set[str]:
+    base = git("merge-base", "HEAD", "main") or git("merge-base", "HEAD", "origin/main")
+    files = set(git("diff", "--name-only", base).splitlines()) if base else set()
+    for line in git("status", "--porcelain", "--untracked-files=all").splitlines():
+        files.add(line[3:].split(" -> ")[-1])
+    return {f for f in files if f}
+
+
+def select(files: set[str]) -> list[str]:
+    if any(fnmatch(f, g) for f in files for g in GLOBAL_PATHS):
+        return list(DRIVES)
+    picked = [n for n, d in DRIVES.items() if any(fnmatch(f, g) for f in files for g in d.paths)]
+    return picked or [SMOKE]
+
+
+# Commands a drive must never run. Each stub logs the call and exits 97.
+TRIPWIRES = ("curl", "wget", "ssh", "scp", "gh")
+# Commands drives need, refused only for the subcommand that leaves the machine.
+GUARDED = {"git": "push", "uv": "publish"}
+
+
+def install_tripwires(scratch: Path) -> Path:
+    """Put stubs first on PATH. A drive that runs one leaves a line in the returned log."""
+    stubs = scratch / "tripwires"
+    stubs.mkdir()
+    log = scratch / "tripwire.log"
+    trip = f'echo "$(basename "$0") $*" >> {shlex.quote(str(log))}; exit 97'
+    scripts: dict[str, str] = dict.fromkeys(TRIPWIRES, trip)
+    for name, refused in GUARDED.items():
+        real = shutil.which(name)
+        if real is None:
+            sys.exit(f"preflight: {name} is not on PATH")
+        scripts[name] = (
+            f'skip=0; for arg in "$@"; do\n'
+            f'  if [ "$skip" = 1 ]; then skip=0; continue; fi\n'
+            f'  case "$arg" in -C|-c|--directory|--git-dir|--work-tree|--namespace|--project|-p) skip=1; continue;; -*) continue;; esac\n'
+            f'  [ "$arg" = {refused} ] && {{ {trip}; }}; break\n'
+            f"done\n"
+            f'exec {shlex.quote(real)} "$@"'
+        )
+    for name, body in scripts.items():
+        stub = stubs / name
+        stub.write_text(f"#!/bin/sh\n{body}\n")
+        stub.chmod(0o755)
+    return log
+
+
+def tripwire_hits(log: Path) -> list[str]:
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def child_env(scratch: Path) -> dict[str, str]:
+    keep = ("PATH", "LANG", "LC_ALL", "TERM", "TMPDIR", "UV_PYTHON")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    env["PATH"] = os.pathsep.join([str(scratch / "tripwires"), env.get("PATH", os.defpath)])
+    home = scratch / "home"
+    env.update(
+        HOME=str(home),
+        XDG_CONFIG_HOME=str(home / ".config"),
+        XDG_DATA_HOME=str(home / ".local/share"),
+        XDG_CACHE_HOME=str(home / ".cache"),
+        XDG_STATE_HOME=str(home / ".local/state"),
+        UV_CACHE_DIR=subprocess.run(
+            ["uv", "cache", "dir"], capture_output=True, text=True
+        ).stdout.strip(),
+        ENGRAM_MAINTENANCE_ENABLED="false",
+        ENGRAM_SYNC_ENABLED="false",
+        ENGRAM_LOG_LEVEL="WARNING",
+        ENGRAM_REPO_SEARCH_ROOTS=json.dumps([str(scratch / "repos")]),
+        ENGRAM_CLAUDE_PROJECTS_DIR=str(home / ".claude/projects"),
+        OPENAI_API_KEY="engram-verify-synthetic-key",
+        OPENAI_BASE_URL="http://127.0.0.1:1/v1",
+        FASTMCP_CHECK_FOR_UPDATES="off",
+    )
+    for path in (home / ".config", scratch / "repos"):
+        path.mkdir(parents=True, exist_ok=True)
+    return env
+
+
+def preflight(env: dict[str, str], scratch: Path) -> None:
+    src = Path(engram.__file__).resolve()
+    if not src.is_relative_to(ROOT / "src"):
+        sys.exit(f"preflight: engram imports from {src}, not this checkout's src/")
+    if not Path(sys.executable).with_name("engram").is_file():
+        sys.exit(
+            "preflight: the engram console script is missing; run uv sync --locked --extra dev"
+        )
+    probe = scratch / "probe-data"
+    probe_env = {**env, "ENGRAM_DATA_DIR": str(probe)}
+    code = "from engram.core.config import Settings as S; s=S(); print(s.data_dir, s.sync_enabled, s.maintenance_enabled)"
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        env=probe_env,
+        cwd=scratch,
+        capture_output=True,
+        text=True,
+    )
+    if out.stdout.split() != [str(probe), "False", "False"]:
+        sys.exit(
+            f"preflight: child settings are not isolated: {out.stdout.strip()} {out.stderr[-300:]}"
+        )
+    if not env["OPENAI_BASE_URL"].startswith("http://127.0.0.1:1/"):
+        sys.exit("preflight: the provider endpoint is not blocked")
+
+
+def run_dir() -> Path:
+    sha = git("rev-parse", "--short=7", "HEAD") or "nogit"
+    dirty = "-dirty" if git("status", "--porcelain") else ""
+    stamp = clock.now().strftime("%Y%m%dT%H%M%S%fZ")
+    path = ROOT / ".verify" / "runs" / f"{stamp}-{sha}{dirty}"
+    path.mkdir(parents=True, exist_ok=False)
+    return path
+
+
+async def run_one(
+    name: str, fn: Callable[[Context], Awaitable[str]], ctx: Context, timeout: float
+) -> tuple[str, float, str]:
+    start = time.monotonic()
+    saved = os.dup(2)
+    with (ctx.evidence / "stderr.log").open("w") as log:
+        os.dup2(log.fileno(), 2)
+    try:
+        detail = await asyncio.wait_for(fn(ctx), timeout)
+        result = "PASS"
+    except Failure as exc:
+        result, detail = "FAIL", str(exc)
+    except TimeoutError:
+        result, detail = "FAIL", f"timed out after {timeout:.0f}s"
+    except Exception as exc:  # a crash inside a drive is a FAIL with its reason
+        result, detail = "FAIL", f"{type(exc).__name__}: {exc}"
+    finally:
+        ctx.stop_processes()
+        os.dup2(saved, 2)
+        os.close(saved)
+    seconds = time.monotonic() - start
+    print(f"{result} {name} {seconds:.1f}s {detail}", flush=True)
+    return result, seconds, detail
+
+
+def main(argv: list[str]) -> int:
+    command = argv[0] if argv else ""
+    if command == "list":
+        for name, drive in DRIVES.items():
+            print(
+                f"{name}{' (smoke)' if name == SMOKE else ''}: {drive.proves}\n  paths: {', '.join(drive.paths)}"
+            )
+        return 0
+    if command == "control":
+        names = ["control"]
+    elif command == "all":
+        names = list(DRIVES)
+    elif argv:
+        unknown = [n for n in argv if n not in DRIVES]
+        if unknown:
+            print(
+                f"unknown drive(s): {', '.join(unknown)}. Run verify list.",
+                file=sys.stderr,
+            )
+            return 2
+        names = argv
+    else:
+        names = select(changed_files())
+    evidence = run_dir()
+    before = checkout_state()
+    results: list[dict[str, object]] = []
+    with tempfile.TemporaryDirectory(prefix="engram-verify-") as temporary:
+        scratch = Path(temporary)
+        tripwire_log = install_tripwires(scratch)
+        env = child_env(scratch)
+        preflight(env, scratch)
+        (evidence / "env.json").write_text(
+            json.dumps(
+                {k: "<redacted>" if any(r in k for r in REDACT) else v for k, v in env.items()},
+                indent=2,
+            )
+        )
+        # Children a drive starts without ctx.env (smoke helpers, direct subprocess calls)
+        # inherit os.environ, so they get the temp HOME and tripwire PATH too.
+        outer_environ = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(env)
+        for name in names:
+            if name == "control":
+                fn, timeout = control, 30.0
+            else:
+                fn, timeout = DRIVES[name].run, DRIVES[name].timeout
+            ctx = Context(
+                name=name,
+                scratch=scratch / name,
+                evidence=evidence / name,
+                env=env,
+                helper=HELPER,
+                root=ROOT,
+            )
+            try:
+                result, seconds, detail = asyncio.run(run_one(name, fn, ctx, timeout))
+            except SystemExit as exc:  # asyncio re-raises a task's SystemExit past run_one
+                result, seconds, detail = "FAIL", 0.0, f"SystemExit({exc.code!r})"
+                print(f"{result} {name} {detail}", flush=True)
+            results.append(
+                {
+                    "drive": name,
+                    "result": result,
+                    "seconds": round(seconds, 2),
+                    "detail": detail,
+                }
+            )
+        os.environ.clear()
+        os.environ.update(outer_environ)
+        hits = tripwire_hits(tripwire_log)
+    changed = checkout_changes(before, checkout_state())
+    if changed:
+        print(f"FAIL checkout: the run changed {changed[:10]}", flush=True)
+    if hits:
+        print(f"FAIL tripwire: a drive ran {hits[:10]}", flush=True)
+    if command == "control":
+        failures = [str(r["detail"]) for r in results if r["result"] == "FAIL"]
+        ok = failures == [CONTROL_FAILURE] and not changed and not hits
+        if ok:
+            print("control: FAIL observed")
+        elif failures:
+            print(f"control: failed for another reason; expected {CONTROL_FAILURE!r}")
+        else:
+            print("control: the wrong expectation passed, so the drive asserts nothing")
+    else:
+        ok = not changed and not hits and all(r["result"] == "PASS" for r in results)
+    summary = {
+        "ok": ok,
+        "sha": git("rev-parse", "HEAD"),
+        "dirty": bool(git("status", "--porcelain")),
+        "drives": results,
+        "checkout_changes": changed,
+        "tripwire_hits": hits,
+    }
+    (evidence / "summary.json").write_text(json.dumps(summary, indent=2))
+    print(f"evidence: {evidence}")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["_serve-fixture"]:
+        from drives import serve_fixture
+
+        serve_fixture(Path(sys.argv[2]), Path(sys.argv[3]))
+    else:
+        sys.exit(main(sys.argv[1:]))

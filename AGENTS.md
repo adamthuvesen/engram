@@ -1,80 +1,51 @@
-# AGENTS.md - Engram
+# Engram
 
-Engram is structured, cross-project memory for coding agents, served over MCP.
-It uses LLM-powered extraction, BM25 recall, and self-maintaining upkeep over an append-only event
-log. There are no embeddings and no vector DB.
-
-User-level guidance (tone, principles, git etiquette) lives in
-`~/.claude/CLAUDE.md` and `~/dotfiles/agents/AGENTS.md` and is *not* duplicated
-here. This file is for project-specific facts.
-
-## Layout
-
-```
-src/engram/
-├── server.py       FastMCP entrypoint, tool definitions, auto-sync lifespan
-├── cli.py          `engram` console-script command surface
-├── operations.py   shared operation layer behind the MCP tools and CLI
-├── core/           domain models, agent-facing contracts, config
-├── storage/        event-log store, BM25 search index, git sync
-├── llm/            OpenAI SDK client
-├── extraction/     single-call extract + reconcile (ingest)
-├── recall/         BM25 card recall + answer mode + eval harness
-├── maintenance/    upkeep (verify, consolidate, briefs), audit, doctor
-└── dashboard/      Textual TUI (`engram-dash`)
-
-tests/              pytest suite + eval datasets and runners
-docs/               Subsystem docs; start with the Index below
-```
-
-Annotated module map and data flow: [docs/architecture.md](docs/architecture.md).
-
-## Quickstart
+Engram serves structured coding-agent memory through MCP and a CLI. It uses BM25, an event log, and the OpenAI SDK.
 
 ```bash
-uv sync --extra dev                          # install deps
-uv run pre-commit install                    # git hooks: ruff check + format
-uv run engram                                # start MCP server
-uv run fastmcp dev src/engram/server.py      # dev mode (inspector)
-uv run --extra dev pytest tests/ -q          # run tests
-uv run --extra dev ruff check .              # lint (CI gate)
-uv run --extra dev ruff format --check .     # format check (CI gate)
-uv run --extra dev mypy                      # type check (CI gate)
+uv sync --locked --extra dev
+just check
+just fix
+just verify
+just reference
 ```
 
-## Critical Conventions
+`just check` runs static checks, then the offline suite on parallel pytest workers. `just slow` adds subprocess smokes and an installed-wheel smoke.
+Both use the same verification entrypoint as CI. Prove changes with `just verify` (`verify-engram` skill at `.agents/skills/verify-engram/`). Missing prerequisites and excluded profiles appear in the report.
+`just verify-sync` pushes to temporary local Git remotes. CI runs it after `verify`; locally it stays separate because a machine-level push freeze can refuse it.
 
-- **The event log is append-only.** Mutations (`forget`, `edit_fact`,
-  `mark_stale`, ...) append typed `FactEvent` records. Never rewrite
-  `facts.jsonl`. The only methods that rewrite it are `purge`, `repair`, and
-  `compact_event_log`; see [src/engram/storage/store.py](src/engram/storage/store.py)
-  and [docs/data.md](docs/data.md).
-- **Storage is sync; the MCP surface is async.** All tools are async and reach
-  storage through the `AsyncFactStore` `asyncio.to_thread` facade
-  ([src/engram/storage/store.py](src/engram/storage/store.py)). Don't call the
-  blocking `FactStore` directly from async code.
-- **MCP tool names are a stable public surface.** Agents wire to them by name;
-  renaming or removing one is a breaking change. Tool defs live in
-  [src/engram/server.py](src/engram/server.py); see [docs/mcp-tools.md](docs/mcp-tools.md).
-- **All config is `ENGRAM_*` env vars** via pydantic-settings (`env_prefix =
-  "ENGRAM_"`) in [src/engram/core/config.py](src/engram/core/config.py). Add
-  settings there, not ad-hoc `os.environ` reads; document them in
-  [docs/config.md](docs/config.md).
-- Never commit secrets, `.env`, or AI-attribution lines.
+Read [architecture](docs/architecture.md) before subsystem changes.
+Read [data](docs/data.md) for persistence, [sync](docs/sync.md) for Git integration, and [configuration](docs/config.md) for settings.
+The generated [tool reference](docs/mcp-tools.md) comes from actual MCP registrations and CLI handlers.
+Regenerate references after changing either surface or Settings descriptions.
 
-## Read The Docs First
+## Limits
 
-Before editing a subsystem, read the matching doc:
+Compatibility changes still require judgment. Preserve MCP tool names, persisted event formats, and documented adapters.
+Add settings to `Settings` with descriptions, then regenerate references.
+Upgrade all writers before concurrent review. Local storage guarantees do not imply distributed serializability.
+`remember`, ingest, `recall` answer mode, and `doctor --check-provider` call OpenAI by design: a user triggers each call, so they have no spend gate. Background upkeep (consolidation, briefs) also calls OpenAI with no gate: the user set up the daemon, and that setup is the approval.
 
-- **Architecture / data flow**: [docs/architecture.md](docs/architecture.md)
-- **MCP tool surface**: [docs/mcp-tools.md](docs/mcp-tools.md)
-- **Storage / event log / JSONL files**: [docs/data.md](docs/data.md)
-- **Cross-machine sync**: [docs/sync.md](docs/sync.md)
-- **Config / env vars**: [docs/config.md](docs/config.md)
+Evals run as modules, for example `uv run --locked python -m evals.recall`.
 
-If a doc disagrees with code, fix the doc in the same change.
+## Enforced Rules
 
-## Index
+`tests/test_tooling.py::test_enforced_rules_cite_existing_paths` fails when a cited path, test, or recipe is missing. `tests/test_tooling.py::test_citation_check_finds_rotten_citations` proves it finds each kind.
 
-Start in [docs/architecture.md](docs/architecture.md), then follow the
-subsystem docs above.
+| Rule | Enforced by |
+| --- | --- |
+| Validate and recover fact batches before ordinary snapshots. | `src/engram/storage/transactions.py`, `tests/test_storage_transactions.py::test_recovery_reuses_exact_events_and_replays_twice` |
+| Use the shared lifecycle eligibility policy. | `src/engram/core/fact_state.py`, `tests/test_storage_transactions.py::test_required_dependencies_must_be_eligible_without_revision_change` |
+| Use public storage APIs and async facades. | `tools/boundaries.py`, `tests/test_tooling.py::test_boundary_rejects_private_policies_and_sync_async_bypasses` |
+| Keep runtime resource ownership explicit. | `src/engram/runtime.py`, `tests/test_runtime.py::test_provider_closes_when_final_sync_fails` |
+| Keep generated references aligned with source. | `tools/reference.py`, `tests/test_tooling.py::test_generated_references_are_current` |
+| Tests never call a live provider. | `tests/conftest.py`, `tests/test_tooling.py::test_tests_cannot_reach_live_provider` |
+| Live evals refuse without `ENGRAM_EVAL_PROVIDER=1`. | `evals/extraction_quality.py::extract_live_provider_outputs`, `tests/test_extraction_quality_evals.py::test_live_extraction_refuses_without_approval` |
+| `just verify control` must observe FAIL before a verify pass counts. | `.agents/skills/verify-engram/drives.py::control` |
+| A verify run fails when it changes the checkout, ignored paths and git state included. | `.agents/skills/verify-engram/verify::checkout_changes` |
+| Tests use a temporary store, never the live `~/.engram/data`. | `tests/conftest.py::_isolated_store`, `tests/test_config.py::test_tests_never_default_to_the_live_store` |
+| A verify run fails when a drive runs `curl`, `wget`, `ssh`, `scp`, `gh`, `git push`, or `uv publish`. | `.agents/skills/verify-engram/verify::install_tripwires` |
+| Git transport tests need explicit opt-in. | `tests/conftest.py`, `tests/test_tooling.py::test_wrong_marker_expression_cannot_enable_git_push_fixtures` |
+| Only `src/engram/llm/client.py` and `tests/test_llm.py` import the OpenAI SDK or HTTP clients, and only `tools/smoke.py` opens sockets. | `pyproject.toml::"openai".msg`, `pyproject.toml::"socket".msg`, `tests/test_strict_mode.py::test_ban_owners_import_only_the_modules_they_own`, `tests/test_strict_mode.py::test_no_file_suppresses_an_import_ban` |
+| Source code reads the clock and makes fresh ids only through `src/engram/core/clock.py` and `src/engram/core/ids.py`. | `pyproject.toml::"datetime.datetime.now".msg`, `pyproject.toml::"uuid.uuid4".msg`, `tests/test_strict_mode.py::test_ban_owners_import_only_the_modules_they_own` |
+| Every skip and xfail mark gives a non-empty reason | `tests/test_strict_mode.py::test_every_skip_gives_a_reason` |

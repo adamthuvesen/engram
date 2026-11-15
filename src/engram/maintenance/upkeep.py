@@ -25,13 +25,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Sequence
-from datetime import datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from engram.core.config import ensure_openai_api_key, get_settings
+from engram.core import clock
+from engram.core.config import get_settings
 from engram.core.models import Fact
 from engram.core.projects import canonical_project, record_project_root, resolve_project
+from engram.llm import provider_available
 from engram.maintenance.briefs import project_brief, run_briefs
 from engram.maintenance.consolidate import BRIEF_KEY, run_consolidation
 from engram.maintenance.upkeep_report import (
@@ -49,13 +51,14 @@ from engram.maintenance.upkeep_state import (
     upkeep_lock,
 )
 from engram.maintenance.verify import verify_facts
-from engram.storage.store import AsyncFactStore, ChangeSet
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.changes import ChangeSet
 
 logger = logging.getLogger(__name__)
 
 
 def llm_available() -> bool:
-    return ensure_openai_api_key() is not None
+    return provider_available()
 
 
 def _canonicalize_projects(
@@ -69,9 +72,7 @@ def _canonicalize_projects(
     changes = ChangeSet(reason="upkeep: canonical project names", actor="engram:upkeep")
     resolved: dict[str, tuple[str | None, Path | None]] = {}
     known = {
-        fact.project
-        for fact in facts
-        if fact.project and not fact.project.startswith(("/", "~"))
+        fact.project for fact in facts if fact.project and not fact.project.startswith(("/", "~"))
     }
     for fact in facts:
         if fact.project is None:
@@ -84,7 +85,7 @@ def _canonicalize_projects(
         if name and name != fact.project:
             changes.edits[fact.id] = {"project": name}
             changes.expected[fact.id] = fact.updated_at
-            report.add("edited", fact.id)
+            report.propose("edited", fact.id)
     for raw, (name, root) in sorted(resolved.items()):
         if name and name != raw:
             report.notes.append(f"{raw!r} -> {name!r}")
@@ -97,7 +98,7 @@ async def _run_projects(
     store: AsyncFactStore, project: str | None, dry_run: bool, report: StepReport
 ) -> None:
     facts = await store.load_active_facts(include_stale=True)
-    changes = await asyncio.to_thread(
+    changes = await run_sync(
         _canonicalize_projects,
         facts,
         data_dir=store.data_dir,
@@ -107,7 +108,7 @@ async def _run_projects(
     )
     if changes.edits and not dry_run:
         result = await store.apply_changes(changes)
-        report.bump("skipped_changed", len(result.skipped))
+        report.record_result(result)
 
 
 async def _run_verify(
@@ -121,7 +122,7 @@ async def _run_verify(
         )
         if fact.memory_key != BRIEF_KEY
     ]
-    plan = await asyncio.to_thread(
+    plan = await run_sync(
         verify_facts,
         facts,
         data_dir=store.data_dir,
@@ -130,12 +131,10 @@ async def _run_verify(
     )
     if dry_run:
         return
-    for fact_id in plan.unstale:
-        await store.unmark_stale(fact_id)
     changes = plan.changes
-    if changes.stale or changes.edits:
+    if changes.stale or changes.edits or changes.unstale:
         result = await store.apply_changes(changes)
-        report.bump("skipped_changed", len(result.skipped))
+        report.record_result(result)
 
 
 async def run_upkeep(
@@ -153,7 +152,7 @@ async def run_upkeep(
     call the LLM so their proposals can be reviewed. ``full`` ignores the
     incremental consolidation state and reprocesses every project.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or clock.now()
     project = canonical_project(project)
     report = UpkeepReport(started_at=now, dry_run=dry_run, project=project)
     ordered = [step for step in ALL_STEPS if step in steps]
@@ -166,11 +165,9 @@ async def run_upkeep(
         else:
             if not dry_run and project is None and set(ordered) == set(ALL_STEPS):
                 # Recorded at start so a server restarted mid-run waits too.
-                await asyncio.to_thread(
-                    append_state, store.data_dir, [StateLine(kind="run", at=now)]
-                )
+                await run_sync(append_state, store.data_dir, [StateLine(kind="run", at=now)])
             await _run_steps(store, report, ordered, project, dry_run, now, full)
-    report.finished_at = datetime.now(timezone.utc)
+    report.finished_at = clock.now()
     return report
 
 
@@ -212,7 +209,7 @@ async def _run_steps(
                     dry_run=dry_run,
                     now=now,
                 )
-        except Exception as exc:  # noqa: BLE001 - later steps still run
+        except Exception as exc:
             logger.exception("upkeep step %s failed", step.value)
             step_report.errors.append(f"step failed: {exc}")
 
@@ -225,15 +222,16 @@ def seconds_until_due(
     last = load_state(data_dir).last_run_at
     if last is None:
         return minimum
-    now = now or datetime.now(timezone.utc)
+    now = now or clock.now()
     due = last + timedelta(seconds=interval)
     return max(minimum, (due - now).total_seconds())
 
 
 async def upkeep_loop(
-    get_store: Callable[[], AsyncFactStore],
+    get_store: Callable[[], AsyncFactStore | Awaitable[AsyncFactStore]],
     *,
     interval: float,
+    data_dir: Path | None = None,
     initial_delay: float = 120.0,
 ) -> None:
     """Run ``run_upkeep`` every ``interval`` seconds until cancelled.
@@ -245,19 +243,27 @@ async def upkeep_loop(
     """
     while True:
         try:
-            store = get_store()
-            delay = await asyncio.to_thread(
+            store = None
+            schedule_dir = data_dir
+            if schedule_dir is None:
+                dependency = get_store()
+                store = dependency if isinstance(dependency, AsyncFactStore) else await dependency
+                schedule_dir = store.data_dir
+            delay = await run_sync(
                 seconds_until_due,
-                store.data_dir,
+                schedule_dir,
                 interval=interval,
                 minimum=initial_delay,
             )
             await asyncio.sleep(delay)
+            if store is None:
+                dependency = get_store()
+                store = dependency if isinstance(dependency, AsyncFactStore) else await dependency
             report = await run_upkeep(store)
             logger.info("%s", format_upkeep_report(report))
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - the background loop must not die
+        except Exception:
             logger.exception("upkeep run failed")
             await asyncio.sleep(max(initial_delay, 1.0))
 

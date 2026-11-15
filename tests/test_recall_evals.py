@@ -1,6 +1,6 @@
 """CI guard for the deterministic lexical recall numbers.
 
-Runs the labeled dataset through ``tests/run_evals.py`` and asserts the recall
+Runs the labeled dataset through ``evals.recall`` and asserts the recall
 floors, the zero-LLM cost floor, the no-match behavior, the per-kind division
 of labor, and dataset integrity. Fully deterministic — no LLM calls, no API
 keys — so this is safe to run in CI on every push. If search ranking or the
@@ -13,14 +13,14 @@ import json
 
 import pytest
 
-from engram.recall.evals import EvalFixture, run_fixture_sync
-from tests.run_evals import (
+from evals.fixtures import EvalFixture, run_fixture_sync
+from evals.recall import (
     DATASET_PATH,
     MIN_HIT_RATE,
+    MIN_LEXICAL_FRACTION,
     MIN_MRR,
     MIN_RECALL_AT_1,
     MIN_RECALL_AT_5,
-    MIN_LEXICAL_FRACTION,
     evaluate,
 )
 
@@ -44,8 +44,7 @@ def test_lexical_cost_floor(summary):
     # Most of a representative query mix must resolve with no LLM call, even
     # when a key is configured.
     assert summary.lexical_fraction >= MIN_LEXICAL_FRACTION, (
-        f"lexical share {summary.lexical_fraction:.2f} below floor "
-        f"{MIN_LEXICAL_FRACTION}"
+        f"lexical share {summary.lexical_fraction:.2f} below floor {MIN_LEXICAL_FRACTION}"
     )
 
 
@@ -127,9 +126,7 @@ def test_knowledge_update_set_is_large_enough():
     assert len(_knowledge_update_fixtures()) >= 6
 
 
-@pytest.mark.parametrize(
-    "fixture", _knowledge_update_fixtures(), ids=lambda fixture: fixture.name
-)
+@pytest.mark.parametrize("fixture", _knowledge_update_fixtures(), ids=lambda fixture: fixture.name)
 def test_knowledge_update_fixture(fixture):
     result = run_fixture_sync(fixture)
     failed = [check for check in result.checks if not check.passed]

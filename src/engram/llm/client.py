@@ -1,17 +1,10 @@
-"""LLM client: OpenAI Chat Completions through the official SDK.
+"""Typed, closeable OpenAI completion clients and compatibility helpers."""
 
-Engram talks to OpenAI directly rather than through a multi-provider layer:
-the SDK imports in a fraction of the time, adds no per-call overhead, and
-supports new models and request parameters (``reasoning_effort``,
-``service_tier``) the day they ship.
-"""
-
-import asyncio
-import copy
-import logging
-import weakref
+from collections.abc import Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from pydantic import BaseModel
 
@@ -19,47 +12,96 @@ from engram.core.config import ensure_openai_api_key, get_settings
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
+    from openai.types.chat import ChatCompletion, ChatCompletionMessage
 
-logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
-
 _MAX_RETRIES = 2
-# Model families that take ``reasoning_effort`` instead of ``temperature``.
 _REASONING_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
-# One client per event loop: the SDK's HTTP pool is bound to the loop it
-# first ran on, and the CLI and tests start fresh loops.
-_CLIENTS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, AsyncOpenAI]" = (
-    weakref.WeakKeyDictionary()
-)
+
+
+class ProviderResponseError(ValueError):
+    """The provider refused or returned an incomplete response."""
+
+
+def is_provider_error(exc: BaseException) -> bool:
+    from openai import OpenAIError
+
+    return isinstance(exc, (OpenAIError, ProviderResponseError))
 
 
 @dataclass
 class Completion:
-    """LLM completion result with optional usage counters.
-
-    input_tokens and cached_tokens are None when the provider does not report
-    them. Callers aggregating usage should treat None as "unknown" and skip it.
-    """
+    """Provider text and optional usage. Missing counters mean unknown."""
 
     text: str
     input_tokens: int | None = None
     cached_tokens: int | None = None
+    output_tokens: int | None = None
 
 
-def _client() -> "AsyncOpenAI":
-    """The OpenAI client for the running event loop (imported lazily)."""
-    loop = asyncio.get_running_loop()
-    client = _CLIENTS.get(loop)
-    if client is None:
-        from openai import AsyncOpenAI
+@dataclass
+class ModelCompletion[T: BaseModel]:
+    value: T
+    input_tokens: int | None = None
+    cached_tokens: int | None = None
+    output_tokens: int | None = None
 
-        client = AsyncOpenAI(max_retries=_MAX_RETRIES)
-        _CLIENTS[loop] = client
-    return client
+
+class CompletionClient(Protocol):
+    """Completion dependency shared by extraction, recall, and maintenance."""
+
+    @property
+    def available(self) -> bool: ...
+
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
+    ) -> Completion: ...
+
+    async def complete_model(
+        self,
+        prompt: str,
+        system: str,
+        response_model: type[T],
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> ModelCompletion[T]: ...
+
+    async def aclose(self) -> None: ...
+
+
+_CURRENT_CLIENT: ContextVar[CompletionClient | None] = ContextVar(
+    "engram_completion_client", default=None
+)
+
+
+@contextmanager
+def completion_client(client: CompletionClient) -> Generator[CompletionClient]:
+    """Bind a caller-owned client. The caller closes it after dependent tasks stop."""
+    token = _CURRENT_CLIENT.set(client)
+    try:
+        yield client
+    finally:
+        _CURRENT_CLIENT.reset(token)
+
+
+def provider_available() -> bool:
+    client = _CURRENT_CLIENT.get()
+    return client.available if client is not None else ensure_openai_api_key() is not None
+
+
+def _client() -> AsyncOpenAI:
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(max_retries=_MAX_RETRIES)
 
 
 def _model_name(model: str) -> str:
-    """Strip an ``openai/`` prefix; reject other providers loudly."""
     provider, _, name = model.rpartition("/")
     if provider and provider != "openai":
         raise ValueError(
@@ -70,12 +112,10 @@ def _model_name(model: str) -> str:
 
 
 def _accepts_reasoning_effort(model: str) -> bool:
-    """Reasoning models take ``reasoning_effort``; others take temperature."""
     return _model_name(model).lower().startswith(_REASONING_PREFIXES)
 
 
-def _extract_usage(response) -> tuple[int | None, int | None]:
-    """Pull ``(input_tokens, cached_tokens)`` out of a completion response."""
+def _extract_usage(response: ChatCompletion) -> tuple[int | None, int | None]:
     usage = getattr(response, "usage", None)
     if usage is None:
         return None, None
@@ -84,50 +124,183 @@ def _extract_usage(response) -> tuple[int | None, int | None]:
     return getattr(usage, "prompt_tokens", None), cached
 
 
+def _request(
+    prompt: str,
+    system: str,
+    model: str | None,
+    temperature: float | None,
+    reasoning_effort: str | None,
+) -> dict[str, Any]:
+    ensure_openai_api_key()
+    settings = get_settings()
+    model = model or settings.llm_model
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    kwargs: dict[str, Any] = {"model": _model_name(model), "messages": messages}
+    if _accepts_reasoning_effort(model):
+        kwargs["reasoning_effort"] = reasoning_effort or settings.llm_reasoning_effort
+    else:
+        kwargs["temperature"] = temperature if temperature is not None else settings.llm_temperature
+    if settings.llm_service_tier:
+        kwargs["service_tier"] = settings.llm_service_tier
+    return kwargs
+
+
+def _message(response: ChatCompletion) -> ChatCompletionMessage:
+    if not response.choices:
+        raise ProviderResponseError("Provider returned no completion choices.")
+    choice = response.choices[0]
+    message = choice.message
+    if getattr(message, "refusal", None):
+        raise ProviderResponseError("Provider refused the completion.")
+    finish_reason = getattr(choice, "finish_reason", "stop")
+    if finish_reason != "stop":
+        raise ProviderResponseError(f"Provider completion ended with {finish_reason!r}.")
+    if not message.content or not message.content.strip():
+        raise ProviderResponseError("Provider returned empty completion text.")
+    return message
+
+
+class OpenAICompletionClient:
+    """One lazy SDK connection pool, owned and closed by its runtime."""
+
+    def __init__(self) -> None:
+        self._sdk: AsyncOpenAI | None = None
+        self._closed = False
+
+    @property
+    def available(self) -> bool:
+        return not self._closed and ensure_openai_api_key() is not None
+
+    def _connection(self) -> AsyncOpenAI:
+        if self._closed:
+            raise RuntimeError("Completion client is closed.")
+        if self._sdk is None:
+            self._sdk = _client()
+        return self._sdk
+
+    async def aclose(self) -> None:
+        if not self._closed:
+            self._closed = True
+            if self._sdk is not None:
+                await self._sdk.close()
+
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        temperature: float | None = None,
+        response_format: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
+    ) -> Completion:
+        kwargs = _request(prompt, system, model, temperature, reasoning_effort)
+        if response_format:
+            kwargs["response_format"] = response_format
+        response = await self._connection().chat.completions.create(**kwargs)
+        message = _message(response)
+        assert message.content is not None
+        input_tokens, cached_tokens = _extract_usage(response)
+        return Completion(
+            text=message.content,
+            input_tokens=input_tokens,
+            cached_tokens=cached_tokens,
+            output_tokens=getattr(getattr(response, "usage", None), "completion_tokens", None),
+        )
+
+    async def complete_model(
+        self,
+        prompt: str,
+        system: str,
+        response_model: type[T],
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+    ) -> ModelCompletion[T]:
+        kwargs = _request(prompt, system, model, None, reasoning_effort)
+        response = await self._connection().chat.completions.parse(
+            **kwargs, response_format=response_model
+        )
+        message = _message(response)
+        parsed = getattr(message, "parsed", None)
+        if parsed is None:
+            raise ProviderResponseError("Provider returned no parsed completion.")
+        value = response_model.model_validate(parsed)
+        input_tokens, cached_tokens = _extract_usage(response)
+        return ModelCompletion(
+            value=value,
+            input_tokens=input_tokens,
+            cached_tokens=cached_tokens,
+            output_tokens=getattr(getattr(response, "usage", None), "completion_tokens", None),
+        )
+
+
 async def complete(
     prompt: str,
     system: str = "",
     model: str | None = None,
     temperature: float | None = None,
-    response_format: dict | None = None,
+    response_format: dict[str, Any] | None = None,
     reasoning_effort: str | None = None,
 ) -> str:
-    """Make an async LLM completion call and return the text.
-
-    OpenAI caches shared prompt prefixes automatically, so callers get cache
-    hits by keeping stable content (system prompt, instructions) first.
-    """
     result = await complete_with_usage(
-        prompt=prompt,
-        system=system,
-        model=model,
-        temperature=temperature,
-        response_format=response_format,
-        reasoning_effort=reasoning_effort,
+        prompt, system, model, temperature, response_format, reasoning_effort
     )
     return result.text
 
 
-async def complete_model(
+async def complete_with_usage(
+    prompt: str,
+    system: str = "",
+    model: str | None = None,
+    temperature: float | None = None,
+    response_format: dict[str, Any] | None = None,
+    reasoning_effort: str | None = None,
+) -> Completion:
+    client = _CURRENT_CLIENT.get()
+    owned = client is None
+    client = client or OpenAICompletionClient()
+    try:
+        return await client.complete(
+            prompt, system, model, temperature, response_format, reasoning_effort
+        )
+    finally:
+        if owned:
+            await client.aclose()
+
+
+async def complete_model_with_usage[T: BaseModel](
+    prompt: str,
+    system: str,
+    response_model: type[T],
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> ModelCompletion[T]:
+    client = _CURRENT_CLIENT.get()
+    owned = client is None
+    client = client or OpenAICompletionClient()
+    try:
+        return await client.complete_model(prompt, system, response_model, model, reasoning_effort)
+    finally:
+        if owned:
+            await client.aclose()
+
+
+async def complete_model[T: BaseModel](
     prompt: str,
     system: str,
     response_model: type[T],
     model: str | None = None,
     reasoning_effort: str | None = None,
 ) -> T:
-    """Make an LLM call expecting JSON matching a Pydantic model."""
-    raw = await complete(
-        prompt=prompt,
-        system=system,
-        model=model,
-        response_format=_response_format_for_model(response_model),
-        reasoning_effort=reasoning_effort,
+    result = await complete_model_with_usage(
+        prompt, system, response_model, model, reasoning_effort
     )
-    return response_model.model_validate_json(raw or "")
+    return result.value
 
 
-def _response_format_for_model(response_model: type[BaseModel]) -> dict:
-    """Build OpenAI's strict JSON-schema response_format payload."""
+def response_format_for_model(response_model: type[BaseModel]) -> dict[str, Any]:
     return {
         "type": "json_schema",
         "json_schema": {
@@ -138,67 +311,8 @@ def _response_format_for_model(response_model: type[BaseModel]) -> dict:
     }
 
 
-def _openai_strict_schema(response_model: type[BaseModel]) -> dict:
-    """Return a JSON schema compatible with OpenAI strict structured outputs."""
-    schema = copy.deepcopy(response_model.model_json_schema())
-    _require_all_object_properties(schema)
-    return schema
+def _openai_strict_schema(response_model: type[BaseModel]) -> dict[str, Any]:
+    # The SDK owns schema conversion for both parsing and legacy text completions.
+    from openai.lib._pydantic import to_strict_json_schema
 
-
-def _require_all_object_properties(schema: object) -> None:
-    if isinstance(schema, dict):
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            schema["additionalProperties"] = False
-            schema["required"] = list(properties)
-
-        schema.pop("default", None)
-
-        for value in schema.values():
-            _require_all_object_properties(value)
-    elif isinstance(schema, list):
-        for item in schema:
-            _require_all_object_properties(item)
-
-
-async def complete_with_usage(
-    prompt: str,
-    system: str = "",
-    model: str | None = None,
-    temperature: float | None = None,
-    response_format: dict | None = None,
-    reasoning_effort: str | None = None,
-) -> Completion:
-    """Like `complete`, but also returns reported token usage.
-
-    ``reasoning_effort`` overrides ``ENGRAM_LLM_REASONING_EFFORT`` for this
-    call (reasoning models only).
-    """
-    ensure_openai_api_key()
-    settings = get_settings()
-    model = model or settings.llm_model
-
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-
-    kwargs: dict = {"model": _model_name(model), "messages": messages}
-    if _accepts_reasoning_effort(model):
-        kwargs["reasoning_effort"] = reasoning_effort or settings.llm_reasoning_effort
-    else:
-        kwargs["temperature"] = (
-            temperature if temperature is not None else settings.llm_temperature
-        )
-    if settings.llm_service_tier:
-        kwargs["service_tier"] = settings.llm_service_tier
-    if response_format:
-        kwargs["response_format"] = response_format
-
-    response = await _client().chat.completions.create(**kwargs)
-    input_tokens, cached_tokens = _extract_usage(response)
-    return Completion(
-        text=response.choices[0].message.content or "",
-        input_tokens=input_tokens,
-        cached_tokens=cached_tokens,
-    )
+    return to_strict_json_schema(response_model)

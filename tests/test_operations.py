@@ -1,10 +1,8 @@
-"""Tests for shared MCP/CLI operation functions."""
-
 from __future__ import annotations
 
 import asyncio
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
 from engram import operations
@@ -15,7 +13,9 @@ from engram.core.models import (
     MemoryCandidate,
     RecallRecord,
 )
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
+from tests.mcp_helpers import json_array, json_object
 
 
 def _store() -> FactStore:
@@ -32,7 +32,7 @@ def test_inspect_operation_returns_text_and_envelope():
 
     assert result.exit_code == operations.EXIT_OK
     assert result.envelope.status == "ok"
-    assert result.envelope.data[0]["id"] == "aaaaaaaaaaaa"
+    assert json_array(result.envelope.data)[0]["id"] == "aaaaaaaaaaaa"
     assert "uses vim" in result.text
 
 
@@ -71,9 +71,7 @@ def test_list_candidates_metadata_is_exact_at_limit():
         ]
     )
 
-    result = asyncio.run(
-        operations.list_candidates(limit=2, store=AsyncFactStore(store))
-    )
+    result = asyncio.run(operations.list_candidates(limit=2, store=AsyncFactStore(store)))
 
     assert result.envelope.meta.returned == 2
     assert result.envelope.meta.total == 2
@@ -98,7 +96,7 @@ def test_candidate_review_operations_use_shared_payloads():
     )
 
     assert approved.exit_code == operations.EXIT_OK
-    assert approved.envelope.data["facts"][0]["content"] == (
+    assert json_object(approved.envelope.data)["facts"][0]["content"] == (
         "Use the shared operation layer"
     )
     assert "Approved 1 candidate" in approved.text
@@ -153,7 +151,7 @@ def test_approve_candidates_applies_valid_edits():
     )
 
     assert result.exit_code == operations.EXIT_OK
-    assert result.envelope.data["facts"][0]["content"] == "edited content"
+    assert json_object(result.envelope.data)["facts"][0]["content"] == "edited content"
 
 
 def test_recall_stats_json_defaults_to_aggregate_only():
@@ -173,15 +171,15 @@ def test_recall_stats_json_defaults_to_aggregate_only():
     result = asyncio.run(operations.recall_stats(store=AsyncFactStore(store)))
 
     assert result.exit_code == operations.EXIT_OK
-    assert result.envelope.data["total_queries"] == 1
-    assert result.envelope.data["by_tier"]["0"]["count"] == 1
-    assert result.envelope.data["token_usage"]["llm_calls"] == 0
-    assert "records" not in result.envelope.data
+    assert json_object(result.envelope.data)["total_queries"] == 1
+    assert json_object(result.envelope.data)["by_tier"]["0"]["count"] == 1
+    assert json_object(result.envelope.data)["token_usage"]["llm_calls"] == 0
+    assert "records" not in json_object(result.envelope.data)
 
 
-def test_recall_stats_can_include_records_and_filter_window():
+def test_recall_stats_can_include_records_and_filter_window(fixed_now):
     store = _store()
-    now = datetime.now(timezone.utc)
+    now = fixed_now
     store.log_recall(
         RecallRecord(
             query="old",
@@ -211,8 +209,8 @@ def test_recall_stats_can_include_records_and_filter_window():
         )
     )
 
-    assert result.envelope.data["total_queries"] == 1
-    assert result.envelope.data["records"][0]["query"] == "new"
+    assert json_object(result.envelope.data)["total_queries"] == 1
+    assert json_object(result.envelope.data)["records"][0]["query"] == "new"
     assert result.envelope.meta.returned == 1
     assert result.envelope.meta.total == 1
 

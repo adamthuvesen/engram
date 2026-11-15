@@ -1,20 +1,98 @@
-"""Shared pytest fixtures."""
+import json
+import os
+import shutil
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
+FIXED_NOW = datetime(2026, 6, 11, 12, 0, tzinfo=UTC)
+_session_home = Path(tempfile.mkdtemp(prefix="engram-session-home-"))
+
+
+def pytest_configure(config):
+    # Collection, module-level code and wider-scoped fixtures run before the per-test
+    # `_isolated_store` fixture, so the live store must already be out of reach here.
+    os.environ["ENGRAM_DATA_DIR"] = str(_session_home / "data")
+    os.environ["ENGRAM_CLAUDE_PROJECTS_DIR"] = str(_session_home / "claude-projects")
+    os.environ["ENGRAM_REPO_SEARCH_ROOTS"] = json.dumps([str(_session_home / "repos")])
+    config.addinivalue_line(
+        "markers",
+        "live_provider: permits provider calls only with ENGRAM_EVAL_PROVIDER=1",
+    )
+    config.addinivalue_line("markers", "sync_transport: pushes only to temporary local Git remotes")
+    config.addinivalue_line(
+        "markers", "subprocess_smoke: starts installed entrypoints; runs in verify only"
+    )
+
+
+def pytest_unconfigure(config):
+    shutil.rmtree(_session_home, ignore_errors=True)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-sync-transport",
+        action="store_true",
+        default=False,
+        help="Allow sync tests that push to temporary local Git remotes.",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-sync-transport"):
+        return
+    skip = pytest.mark.skip(
+        reason="Sync transport requires --run-sync-transport and permission to push to temporary local remotes."
+    )
+    for item in items:
+        if item.get_closest_marker("sync_transport"):
+            item.add_marker(skip)
+
 
 @pytest.fixture(autouse=True)
-def _no_llm_key(monkeypatch):
-    """Run every test as if no LLM provider key were configured.
+def _isolated_store(monkeypatch, tmp_path_factory):
+    """Point default settings paths at a temporary home, never the user's live store."""
+    from engram.core.config import get_settings
 
-    Recall spends an LLM call only when ``_llm_available()`` is true (answer
-    mode, or cards mode when no hit clears the relevance bar), and that check
-    auto-loads keys from the developer's key cache — without this pin, any
-    such recall in a test would make a real, billed LLM call on a keyed
-    machine. Tests that exercise those paths monkeypatch ``_llm_available``
-    back to True and mock ``complete_with_usage`` / ``complete_model``.
+    home = tmp_path_factory.mktemp("engram-home")
+    monkeypatch.setenv("ENGRAM_DATA_DIR", str(home / "data"))
+    monkeypatch.setenv("ENGRAM_CLAUDE_PROJECTS_DIR", str(home / "claude-projects"))
+    monkeypatch.setenv("ENGRAM_REPO_SEARCH_ROOTS", json.dumps([str(home / "repos")]))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_key(monkeypatch, request):
+    """Disable key discovery and reject unmocked provider connections.
+
+    Live provider tests need both the explicit marker and environment opt-in.
+    Unit tests can replace the provider factory or bind an injected fake client.
     """
-    monkeypatch.setattr("engram.recall.retriever._llm_available", lambda: False)
+
+    def reject_provider_connection():
+        raise AssertionError("Real provider calls are disabled in tests. Inject a fake client.")
+
+    live_allowed = (
+        request.node.get_closest_marker("live_provider")
+        and os.environ.get("ENGRAM_EVAL_PROVIDER") == "1"
+    )
+    if not live_allowed:
+        monkeypatch.setattr("engram.llm.client._client", reject_provider_connection)
+    if not live_allowed:
+        monkeypatch.setattr("engram.llm.client.ensure_openai_api_key", lambda: None)
     # Upkeep's LLM steps (consolidate, briefs) check the same key cache.
     monkeypatch.setattr("engram.maintenance.upkeep.llm_available", lambda: False)
     monkeypatch.setenv("ENGRAM_MAINTENANCE_ENABLED", "false")
+
+
+@pytest.fixture
+def fixed_now(monkeypatch):
+    """Pin engram.core.clock.now so expected values never depend on the real date."""
+    from engram.core import clock
+
+    monkeypatch.setattr(clock, "now", lambda: FIXED_NOW)
+    return FIXED_NOW

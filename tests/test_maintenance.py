@@ -10,7 +10,8 @@ import pytest
 
 from engram import server
 from engram.core.models import Fact, FactCategory
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 from tests.mcp_helpers import call_tool
 
 
@@ -35,11 +36,6 @@ async def _call(tool_name: str, **kwargs):
 
 def _structured(result):
     return result[1]
-
-
-# ---------------------------------------------------------------------------
-# correct_fact
-# ---------------------------------------------------------------------------
 
 
 def test_correct_fact_creates_replacement_with_supersedes():
@@ -69,6 +65,19 @@ def test_correct_fact_creates_replacement_with_supersedes():
     active_ids = [f.id for f in store.load_active_facts()]
     assert "oldaaaaaaaaa" not in active_ids
     assert new.id in active_ids
+
+
+def test_correct_fact_clears_stale_state_on_the_replacement():
+    store = _make_store()
+    store.append_facts(
+        [Fact(id="staleaaaaaaa", category=FactCategory.preference, content="prefers vim")]
+    )
+    assert store.mark_stale("staleaaaaaaa", reason="outdated") is not None
+
+    new = store.correct_fact("staleaaaaaaa", "prefers neovim")
+    assert new is not None
+    assert not new.stale
+    assert new.id in [f.id for f in store.load_active_facts()]
 
 
 def test_correct_fact_returns_none_for_missing():
@@ -118,11 +127,6 @@ def test_correct_fact_append_failure_leaves_original_active(monkeypatch):
     assert len(active) == 1
     assert active[0].id == "oldaaaaaaaaa"
     assert active[0].content == "prefers vim"
-
-
-# ---------------------------------------------------------------------------
-# merge_facts
-# ---------------------------------------------------------------------------
 
 
 def test_merge_facts_consolidates_two():
@@ -230,16 +234,9 @@ def test_merge_facts_append_failure_leaves_sources_active(monkeypatch):
     assert active_ids == {"srcaaaaaaaaa", "srcbbbbbbbbb"}
 
 
-# ---------------------------------------------------------------------------
-# mark_stale
-# ---------------------------------------------------------------------------
-
-
 def test_mark_stale_excludes_from_active_recall():
     store = _make_store()
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")])
     fact = store.mark_stale("aaaaaaaaaaaa", reason="outdated")
     assert fact is not None
     assert fact.stale is True
@@ -274,11 +271,6 @@ def test_unmark_stale_restores_recall_eligibility():
     assert "aaaaaaaaaaaa" in active_ids
 
 
-# ---------------------------------------------------------------------------
-# MCP surfaces
-# ---------------------------------------------------------------------------
-
-
 def test_correct_memory_mcp_success(monkeypatch):
     store = _setup_server(monkeypatch)
     store.append_facts(
@@ -305,9 +297,7 @@ def test_correct_memory_mcp_success(monkeypatch):
 
 def test_correct_memory_mcp_not_found(monkeypatch):
     _setup_server(monkeypatch)
-    result = asyncio.run(
-        _call("correct_memory", fact_id="missingmissi", new_content="x")
-    )
+    result = asyncio.run(_call("correct_memory", fact_id="missingmissi", new_content="x"))
     parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "not_found"
@@ -338,9 +328,7 @@ def test_merge_memories_mcp_success(monkeypatch):
 
 def test_merge_memories_mcp_validation_for_one_source(monkeypatch):
     _setup_server(monkeypatch)
-    result = asyncio.run(
-        _call("merge_memories", source_ids=["onlyoneonlyo"], merged_content="x")
-    )
+    result = asyncio.run(_call("merge_memories", source_ids=["onlyoneonlyo"], merged_content="x"))
     parsed = _structured(result)
     assert parsed["status"] == "error"
     assert parsed["errors"][0]["code"] == "validation_error"
@@ -348,9 +336,7 @@ def test_merge_memories_mcp_validation_for_one_source(monkeypatch):
 
 def test_mark_stale_mcp(monkeypatch):
     store = _setup_server(monkeypatch)
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a")])
     result = asyncio.run(_call("mark_stale", fact_id="aaaaaaaaaaaa", reason="old"))
     parsed = _structured(result)
     assert parsed["status"] == "ok"

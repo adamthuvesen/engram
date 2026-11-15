@@ -8,16 +8,18 @@ term that actually identifies the answer.
 
 from __future__ import annotations
 
+import itertools
 import math
 import re
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 
-import snowballstemmer  # type: ignore[import-untyped]
+import snowballstemmer
 
+from engram.core import clock
 from engram.core.models import Durability, Fact, FactCategory
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -25,17 +27,140 @@ TOKEN_RE = re.compile(r"[a-z0-9]+")
 # English function words carry no retrieval signal. Domain verbs ("run",
 # "use", "set") are deliberately kept.
 STOPWORDS = frozenset(
-    """
-    a about above after again against all also an and any are as at be because
-    been before being below between both but by can could did do does doing done
-    down during each either else etc few for from further had has have having
-    here how however i if in into is it its itself just like likes may me might more most
-    must my no nor not now of off on once only or other our out over own per
-    rather same shall should so some such than that the their them then there
-    these they this those through thus to too under until up upon us very via
-    was we were what when where whether which while who whom whose why will with
-    within without would yet you your
-    """.split()
+    [
+        "a",
+        "about",
+        "above",
+        "after",
+        "again",
+        "against",
+        "all",
+        "also",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "at",
+        "be",
+        "because",
+        "been",
+        "before",
+        "being",
+        "below",
+        "between",
+        "both",
+        "but",
+        "by",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "doing",
+        "done",
+        "down",
+        "during",
+        "each",
+        "either",
+        "else",
+        "etc",
+        "few",
+        "for",
+        "from",
+        "further",
+        "had",
+        "has",
+        "have",
+        "having",
+        "here",
+        "how",
+        "however",
+        "i",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "itself",
+        "just",
+        "like",
+        "likes",
+        "may",
+        "me",
+        "might",
+        "more",
+        "most",
+        "must",
+        "my",
+        "no",
+        "nor",
+        "not",
+        "now",
+        "of",
+        "off",
+        "on",
+        "once",
+        "only",
+        "or",
+        "other",
+        "our",
+        "out",
+        "over",
+        "own",
+        "per",
+        "rather",
+        "same",
+        "shall",
+        "should",
+        "so",
+        "some",
+        "such",
+        "than",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "through",
+        "thus",
+        "to",
+        "too",
+        "under",
+        "until",
+        "up",
+        "upon",
+        "us",
+        "very",
+        "via",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "whether",
+        "which",
+        "while",
+        "who",
+        "whom",
+        "whose",
+        "why",
+        "will",
+        "with",
+        "within",
+        "without",
+        "would",
+        "yet",
+        "you",
+        "your",
+    ]
 )
 
 # Query-side vocabulary bridges for common paraphrases in memory lookups.
@@ -77,7 +202,7 @@ _stemmer = snowballstemmer.stemmer("english")
 
 @lru_cache(maxsize=65536)
 def stem(word: str) -> str:
-    return _stemmer.stemWord(word)
+    return str(_stemmer.stemWord(word))
 
 
 def raw_tokens(text: str) -> list[str]:
@@ -88,17 +213,13 @@ def raw_tokens(text: str) -> list[str]:
 def tokenize(text: str) -> list[str]:
     """Stemmed content terms plus adjacent-pair bigram terms, in order."""
     words = [stem(token) for token in raw_tokens(text) if token not in STOPWORDS]
-    bigrams = [f"{left}_{right}" for left, right in zip(words, words[1:])]
+    bigrams = [f"{left}_{right}" for left, right in itertools.pairwise(words)]
     return words + bigrams
 
 
 def term_set(text: str) -> set[str]:
     """Stemmed unigrams only; for overlap heuristics outside ranking."""
-    return {
-        stem(token)
-        for token in raw_tokens(text)
-        if token not in STOPWORDS and len(token) > 1
-    }
+    return {stem(token) for token in raw_tokens(text) if token not in STOPWORDS and len(token) > 1}
 
 
 @dataclass(frozen=True)
@@ -128,7 +249,9 @@ def _field_counts(
     del fact_id, updated_at  # cache key only
     freqs: defaultdict[str, float] = defaultdict(float)
     length = 0.0
-    for weight, text in zip(_FIELD_WEIGHTS, (content, hint_text, tag_text, scope_text)):
+    for weight, text in zip(
+        _FIELD_WEIGHTS, (content, hint_text, tag_text, scope_text), strict=False
+    ):
         terms = tokenize(text)
         length += weight * len(terms)
         for term in terms:
@@ -177,7 +300,7 @@ def freshness_weight(fact: Fact, now: datetime) -> float:
     if fact.durability is Durability.ephemeral or fact.category is FactCategory.event:
         observed = fact.observed_at
         if observed.tzinfo is None:
-            observed = observed.replace(tzinfo=timezone.utc)
+            observed = observed.replace(tzinfo=UTC)
         age_days = max(0.0, (now - observed).total_seconds() / 86400)
         weight *= max(_MIN_DECAY, 0.5 ** (age_days / EPHEMERAL_HALF_LIFE_DAYS))
     if fact.suspect_reason:
@@ -226,7 +349,7 @@ class SearchIndex:
         terms = _query_terms(query)
         if not terms or not self._docs:
             return []
-        now = now or datetime.now(timezone.utc)
+        now = now or clock.now()
         # Coverage is measured over the query's own words; an alias match
         # credits the word it stands for.
         origins = {term.origin for term in terms.values() if term.origin}

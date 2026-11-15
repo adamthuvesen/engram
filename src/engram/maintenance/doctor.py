@@ -18,27 +18,29 @@ import logging
 import os
 import subprocess
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from engram.core import clock
 from engram.core.config import get_settings
+from engram.core.fact_state import is_fact_eligible
 from engram.core.models import (
+    MIN_ACTIVE_CONFIDENCE,
     CandidateStatus,
     Durability,
-    EVENT_LOG_META_VERSION,
-    EventLogMeta,
     Fact,
-    FactEvent,
-    MIN_ACTIVE_CONFIDENCE,
     MemoryCandidate,
     RecallRecord,
+    StateLine,
     StoreTransaction,
     TransactionStatus,
 )
-from engram.storage.store import AsyncFactStore, FactStore, _is_active_fact
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
+from engram.storage.transactions import scan_event_log
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +48,7 @@ logger = logging.getLogger(__name__)
 class DoctorIssue(BaseModel):
     code: str
     severity: str  # "info" | "warning" | "error"
-    category: (
-        str  # "storage" | "config" | "provider" | "recall_log" | "facts" | "candidates"
-    )
+    category: str  # "storage" | "config" | "provider" | "recall_log" | "facts" | "candidates"
     message: str
     ids: list[str] = Field(default_factory=list)
     repair: str | None = None
@@ -65,9 +65,13 @@ class DoctorReport(BaseModel):
     checks_skipped: list[str] = Field(default_factory=list)
 
 
-def _resolve_store(store: FactStore | AsyncFactStore | None) -> FactStore:
+def _resolve_store(
+    store: FactStore | AsyncFactStore | None, *, read_only: bool = False
+) -> FactStore:
     if store is None:
-        return FactStore()
+        return FactStore.open_readonly() if read_only else FactStore()
+    if read_only:
+        return FactStore.open_readonly(store.data_dir)
     if isinstance(store, AsyncFactStore):
         return store.sync_store
     return store
@@ -113,51 +117,19 @@ def _check_jsonl_integrity(
         return 0
 
     if label == "facts":
-        first_lineno = 0
-        with path.open() as fh:
-            for lineno, line in enumerate(fh, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                first_lineno = lineno
-                try:
-                    payload = EventLogMeta.model_validate_json(line)
-                except (ValueError, ValidationError):
-                    _append_event_log_sentinel_issue(
-                        path, issues, code="facts_event_log_sentinel_invalid"
-                    )
-                    return 0
-                if payload.meta != EVENT_LOG_META_VERSION:
-                    _append_event_log_sentinel_issue(
-                        path, issues, code="facts_event_log_sentinel_invalid"
-                    )
-                    return 0
-                break
-        if first_lineno == 0:
+        scanned = scan_event_log(path)
+        if scanned.meta is None:
             _append_event_log_sentinel_issue(
-                path, issues, code="facts_event_log_sentinel_missing"
+                path,
+                issues,
+                code="facts_event_log_sentinel_invalid"
+                if scanned.sentinel_line
+                else "facts_event_log_sentinel_missing",
             )
             return 0
-
-        valid = 0
-        event_corrupt: list[int] = []
-        first_data_line = True
-        with path.open() as fh:
-            for lineno, line in enumerate(fh, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                if first_data_line:
-                    first_data_line = False
-                    continue
-                try:
-                    FactEvent.model_validate_json(line)
-                    valid += 1
-                except (ValueError, ValidationError):
-                    event_corrupt.append(lineno)
-        if event_corrupt:
-            _append_jsonl_issue(path, label, event_corrupt, issues)
-        return valid
+        if scanned.corrupt_lines:
+            _append_jsonl_issue(path, label, scanned.corrupt_lines, issues)
+        return len(scanned.events)
 
     valid = 0
     corrupt: list[int] = []
@@ -169,7 +141,7 @@ def _check_jsonl_integrity(
             try:
                 model_cls.model_validate_json(line)
                 valid += 1
-            except (ValueError, ValidationError):
+            except ValueError, ValidationError:
                 corrupt.append(lineno)
     if corrupt:
         _append_jsonl_issue(path, label, corrupt, issues)
@@ -203,17 +175,23 @@ def _append_jsonl_issue(
     corrupt: list[int],
     issues: list[DoctorIssue],
 ) -> None:
+    repairable = label in {"facts", "candidates"}
     issues.append(
         DoctorIssue(
             code=f"{label}_jsonl_corrupt",
             severity="error",
             category="storage",
             message=(
-                f"{len(corrupt)} corrupt line(s) in {path.name}: "
-                f"{corrupt[:5]}{'…' if len(corrupt) > 5 else ''}"
+                f"{len(corrupt)} corrupt line(s): "
+                + ", ".join(f"{path}:{line}" for line in corrupt[:5])
+                + ("…" if len(corrupt) > 5 else "")
             ),
-            repair="Run `engram doctor --repair-jsonl` to drop corrupt lines.",
-            repairable=True,
+            repair=(
+                "Run `engram doctor --repair-jsonl` to drop corrupt lines."
+                if repairable
+                else "Inspect the listed rows. Restore the file from backup or explicitly remove only the corrupt rows."
+            ),
+            repairable=repairable,
         )
     )
 
@@ -230,7 +208,7 @@ def _check_transactions(store: FactStore, issues: list[DoctorIssue]) -> None:
                 continue
             try:
                 transactions.append(StoreTransaction.model_validate_json(line))
-            except (ValueError, ValidationError):
+            except ValueError, ValidationError:
                 issues.append(
                     DoctorIssue(
                         code="transaction_log_corrupt",
@@ -254,9 +232,7 @@ def _check_transactions(store: FactStore, issues: list[DoctorIssue]) -> None:
                 code="prepared_transactions_pending",
                 severity="warning",
                 category="storage",
-                message=(
-                    f"{len(pending)} prepared transaction(s) need to be rolled forward."
-                ),
+                message=(f"{len(pending)} prepared transaction(s) need to be rolled forward."),
                 ids=pending,
                 repair="Run `engram doctor --recover-transactions` (or any store write) to roll forward.",
                 repairable=True,
@@ -276,7 +252,7 @@ def _check_recall_log(store: FactStore, issues: list[DoctorIssue]) -> None:
                 continue
             try:
                 RecallRecord.model_validate_json(line)
-            except (ValueError, ValidationError):
+            except ValueError, ValidationError:
                 bad.append(lineno)
     if bad:
         issues.append(
@@ -373,9 +349,7 @@ def _check_facts_relationships(
 
 def _fact_relationship_issues(facts: list[Fact]) -> list[DoctorIssue | None]:
     fact_ids = {fact.id for fact in facts}
-    edges: dict[str, str] = {
-        fact.id: fact.supersedes for fact in facts if fact.supersedes
-    }
+    edges: dict[str, str] = {fact.id: fact.supersedes for fact in facts if fact.supersedes}
     return [
         _duplicate_fact_issue(facts),
         _orphaned_supersession_issue(facts, fact_ids),
@@ -416,9 +390,7 @@ def _orphaned_supersession_issue(
     facts: list[Fact],
     fact_ids: set[str],
 ) -> DoctorIssue | None:
-    orphans = [
-        fact.id for fact in facts if fact.supersedes and fact.supersedes not in fact_ids
-    ]
+    orphans = [fact.id for fact in facts if fact.supersedes and fact.supersedes not in fact_ids]
     if not orphans:
         return None
     return DoctorIssue(
@@ -478,7 +450,21 @@ def _check_candidates(
 ) -> None:
     if not candidates:
         return
-    now = datetime.now(timezone.utc)
+    conflicted = [
+        candidate.id for candidate in candidates if candidate.status is CandidateStatus.conflicted
+    ]
+    if conflicted:
+        issues.append(
+            DoctorIssue(
+                code="candidate_review_conflict",
+                severity="warning",
+                category="candidates",
+                message=f"{len(conflicted)} candidate(s) have conflicting review decisions.",
+                ids=conflicted,
+                repair="Review the candidate snapshots before changing their status.",
+            )
+        )
+    now = clock.now()
     stale_pending = [
         c.id
         for c in candidates
@@ -490,9 +476,7 @@ def _check_candidates(
                 code="stale_pending_candidates",
                 severity="info",
                 category="candidates",
-                message=(
-                    f"{len(stale_pending)} candidate(s) have been pending for over 30 days."
-                ),
+                message=(f"{len(stale_pending)} candidate(s) have been pending for over 30 days."),
                 ids=stale_pending,
                 repair="Approve, reject, or delete via the maintenance tools.",
             )
@@ -562,11 +546,11 @@ def _doctor_counts(
     candidates_valid: int,
     issues: list[DoctorIssue],
 ) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
+    now = clock.now()
     return {
         "facts_valid": facts_valid,
         "candidates_valid": candidates_valid,
-        "active_facts": sum(1 for fact in facts if _is_active_fact(fact, now)),
+        "active_facts": sum(1 for fact in facts if is_fact_eligible(fact, now)),
         "stale_facts": sum(1 for fact in facts if fact.stale),
         "forgotten_facts": sum(1 for fact in facts if fact.confidence == 0.0),
         "issues": len(issues),
@@ -577,11 +561,9 @@ _VOLUME_TOP_PROJECTS = 10
 _DELIVERY_WINDOW_DAYS = 90
 
 
-def _volume_counts(
-    facts: list[Fact], recalls: list[RecallRecord], now: datetime
-) -> dict[str, Any]:
+def _volume_counts(facts: list[Fact], recalls: list[RecallRecord], now: datetime) -> dict[str, Any]:
     """How big memory is, where it sits, and how much of it recall never uses."""
-    active = [fact for fact in facts if _is_active_fact(fact, now)]
+    active = [fact for fact in facts if is_fact_eligible(fact, now)]
     per_project = Counter(fact.project or "(global)" for fact in active)
     since = now - timedelta(days=_DELIVERY_WINDOW_DAYS)
     recent = [record for record in recalls if record.timestamp >= since]
@@ -590,17 +572,14 @@ def _volume_counts(
         "active_by_project": dict(per_project.most_common(_VOLUME_TOP_PROJECTS)),
         "ephemeral_share": (
             round(
-                sum(fact.durability is Durability.ephemeral for fact in active)
-                / len(active),
+                sum(fact.durability is Durability.ephemeral for fact in active) / len(active),
                 3,
             )
             if active
             else 0.0
         ),
         "suspect_facts": sum(1 for fact in active if fact.suspect_reason),
-        "recalls_with_delivery_90d": sum(
-            1 for record in recent if record.delivered_ids
-        ),
+        "recalls_with_delivery_90d": sum(1 for record in recent if record.delivered_ids),
         "never_delivered_90d": sum(1 for fact in active if fact.id not in delivered),
     }
 
@@ -617,7 +596,7 @@ def run_doctor(
     represented in the report; the actual call is async and lives in
     :func:`check_provider` so callers can run it under their own event loop.
     """
-    sync_store = _resolve_store(store)
+    sync_store = _resolve_store(store, read_only=True)
     issues: list[DoctorIssue] = []
     checks_run: list[str] = []
     checks_skipped: list[str] = []
@@ -631,6 +610,14 @@ def run_doctor(
     )
     checks_run.append("jsonl_integrity")
 
+    _check_jsonl_integrity(
+        sync_store.data_dir / "maintenance_state.jsonl",
+        "maintenance_state",
+        StateLine,
+        issues,
+    )
+    checks_run.append("maintenance_state")
+
     _check_transactions(sync_store, issues)
     checks_run.append("transactions")
 
@@ -640,8 +627,36 @@ def run_doctor(
     _check_config(issues)
     checks_run.append("config")
 
-    facts = sync_store.load_facts()
-    candidates = sync_store.load_candidates()
+    facts_available = not any(
+        issue.code.startswith("facts_") and issue.severity == "error" for issue in issues
+    )
+    candidates_available = not any(issue.code == "candidates_jsonl_corrupt" for issue in issues)
+    try:
+        facts = sync_store.load_facts() if facts_available else []
+    except (ValueError, OSError) as exc:
+        facts = []
+        facts_available = False
+        issues.append(
+            DoctorIssue(
+                code="facts_projection_unavailable",
+                severity="error",
+                category="storage",
+                message=str(exc),
+            )
+        )
+    try:
+        candidates = sync_store.load_candidates() if candidates_available else []
+    except (ValueError, OSError) as exc:
+        candidates = []
+        candidates_available = False
+        issues.append(
+            DoctorIssue(
+                code="candidates_projection_unavailable",
+                severity="error",
+                category="storage",
+                message=str(exc),
+            )
+        )
     _check_facts_relationships(facts, issues)
     _check_candidates(candidates, issues)
     checks_run.extend(["facts_relationships", "candidates_lifecycle"])
@@ -660,8 +675,15 @@ def run_doctor(
         issues=issues,
     )
 
-    counts["volume"] = _volume_counts(
-        facts, sync_store.load_recall_log(limit=None), datetime.now(timezone.utc)
+    counts["facts_projection_available"] = facts_available
+    counts["candidates_projection_available"] = candidates_available
+    if not facts_available:
+        for key in ("active_facts", "stale_facts", "forgotten_facts"):
+            counts[key] = None
+    counts["volume"] = (
+        _volume_counts(facts, sync_store.load_recall_log(limit=None), clock.now())
+        if facts_available
+        else None
     )
 
     _check_sync(sync_store, issues, counts=counts)
@@ -674,6 +696,11 @@ def run_doctor(
         checks_run=checks_run,
         checks_skipped=checks_skipped,
     )
+
+
+def inspect_data_dir(data_dir: Path) -> DoctorReport:
+    """Inspect raw storage without creating a directory or recovering writes."""
+    return run_doctor(FactStore.open_readonly(data_dir))
 
 
 def repair_store(
@@ -697,9 +724,7 @@ def repair_store(
         facts = sync_store.load_facts()
         fact_ids = {fact.id for fact in facts}
         orphan_ids = [
-            fact.id
-            for fact in facts
-            if fact.supersedes and fact.supersedes not in fact_ids
+            fact.id for fact in facts if fact.supersedes and fact.supersedes not in fact_ids
         ]
         updated = sync_store.batch_update_facts(
             {fact_id: {"supersedes": None} for fact_id in orphan_ids}
@@ -716,6 +741,7 @@ __all__ = [
     "DoctorIssue",
     "DoctorReport",
     "check_provider",
+    "inspect_data_dir",
     "repair_store",
     "run_doctor",
 ]

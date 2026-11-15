@@ -1,14 +1,13 @@
-"""Tests for the doctor diagnostics module."""
-
 from __future__ import annotations
 
 import asyncio
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
+import pytest
+
 from engram import server
-from engram.maintenance.doctor import DoctorIssue, repair_store, run_doctor
 from engram.core.models import (
     Durability,
     Fact,
@@ -18,17 +17,14 @@ from engram.core.models import (
     StoreTransaction,
     TransactionStatus,
 )
-from engram.storage.store import AsyncFactStore, FactStore
+from engram.maintenance.doctor import DoctorIssue, repair_store, run_doctor
+from engram.storage.async_store import AsyncFactStore
+from engram.storage.store import FactStore
 from tests.mcp_helpers import call_tool
 
 
 def _make_store() -> FactStore:
     return FactStore(data_dir=Path(tempfile.mkdtemp()))
-
-
-# ---------------------------------------------------------------------------
-# 5.1: read-only checks
-# ---------------------------------------------------------------------------
 
 
 def test_doctor_healthy_store_reports_ok():
@@ -68,9 +64,7 @@ def test_doctor_detects_missing_event_log_sentinel():
 
 def test_doctor_labels_corrupt_event_line_as_repairable():
     store = _make_store()
-    store.append_facts(
-        [Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="ok")]
-    )
+    store.append_facts([Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="ok")])
     with store.facts_path.open("a") as fh:
         fh.write("not json\n")
 
@@ -184,9 +178,9 @@ def test_doctor_skips_provider_by_default():
     assert "provider" in report.checks_skipped
 
 
-def test_doctor_counts_active_stale_forgotten():
+def test_doctor_counts_active_stale_forgotten(fixed_now):
     store = _make_store()
-    past = datetime.now(timezone.utc) - timedelta(days=1)
+    past = fixed_now - timedelta(days=1)
     store.append_facts(
         [
             Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a"),
@@ -216,11 +210,11 @@ def test_doctor_counts_active_stale_forgotten():
     assert report.counts["forgotten_facts"] == 1
 
 
-def test_doctor_flags_stale_pending_candidates():
+def test_doctor_flags_stale_pending_candidates(fixed_now):
     store = _make_store()
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta
 
-    old = datetime.now(timezone.utc) - timedelta(days=45)
+    old = fixed_now - timedelta(days=45)
     candidate = MemoryCandidate(
         id="oldpendingcan",
         category=FactCategory.preference,
@@ -232,11 +226,6 @@ def test_doctor_flags_stale_pending_candidates():
     report = run_doctor(store)
     codes = [i.code for i in report.issues]
     assert "stale_pending_candidates" in codes
-
-
-# ---------------------------------------------------------------------------
-# 5.4: repairs
-# ---------------------------------------------------------------------------
 
 
 def test_repair_jsonl_drops_corrupt_lines():
@@ -286,11 +275,6 @@ def test_repair_orphaned_supersessions_clears_only_broken_links():
     assert facts["validchildaa"].supersedes == "parentaaaaaa"
 
 
-# ---------------------------------------------------------------------------
-# MCP doctor surface
-# ---------------------------------------------------------------------------
-
-
 def test_doctor_mcp_returns_envelope(monkeypatch):
     store = _make_store()
     app = server.create_mcp(AsyncFactStore(store))
@@ -300,11 +284,6 @@ def test_doctor_mcp_returns_envelope(monkeypatch):
     assert parsed["status"] == "ok"
     assert "report" in parsed["data"]
     assert parsed["data"]["report"]["status"] in ("ok", "warning", "error")
-
-
-# ---------------------------------------------------------------------------
-# Sync diagnostics
-# ---------------------------------------------------------------------------
 
 
 def test_doctor_sync_group_when_not_a_git_repo():
@@ -345,7 +324,7 @@ def test_doctor_sync_group_is_local_only(monkeypatch):
     assert network_calls == []
 
 
-def test_doctor_reports_volume_metrics():
+def test_doctor_reports_volume_metrics(fixed_now):
     store = _make_store()
     store.append_facts(
         [
@@ -362,9 +341,7 @@ def test_doctor_reports_volume_metrics():
         ]
     )
     store.log_recall(
-        RecallRecord(
-            query="q", tier=0, prefilter_count=1, latency_ms=1.0, delivered_ids=["a"]
-        )
+        RecallRecord(query="q", tier=0, prefilter_count=1, latency_ms=1.0, delivered_ids=["a"])
     )
     store.log_recall(
         RecallRecord(
@@ -373,7 +350,7 @@ def test_doctor_reports_volume_metrics():
             prefilter_count=1,
             latency_ms=1.0,
             delivered_ids=["c"],
-            timestamp=datetime.now(timezone.utc) - timedelta(days=200),
+            timestamp=fixed_now - timedelta(days=200),
         )
     )
 
@@ -384,3 +361,67 @@ def test_doctor_reports_volume_metrics():
     assert volume["suspect_facts"] == 1
     assert volume["recalls_with_delivery_90d"] == 1
     assert volume["never_delivered_90d"] == 2
+
+
+def test_doctor_uses_same_legacy_event_decoder_as_snapshot(tmp_path):
+    import json
+
+    store = FactStore(tmp_path)
+    store.append_facts([Fact(id="legacy", category=FactCategory.project, content="Original")])
+    event = {
+        "event_type": "edited",
+        "fact_id": "legacy",
+        "payload": {"content": "Changed", "legacy_ignored_field": True},
+    }
+    with store.facts_path.open("a") as stream:
+        stream.write(json.dumps(event) + "\n")
+    assert store.load_facts()[0].content == "Changed"
+    before = store.facts_path.read_bytes()
+    report = run_doctor(store)
+    assert not any(issue.code == "facts_jsonl_corrupt" for issue in report.issues)
+    assert report.counts["facts_valid"] == 2
+    assert report.counts["active_facts"] == 1
+    assert store.facts_path.read_bytes() == before
+
+
+def test_doctor_reports_corrupt_recall_log_without_rewriting(tmp_path):
+    store = FactStore(tmp_path)
+    store.log_recall(RecallRecord(query="valid", tier=0, prefilter_count=1, latency_ms=1))
+    with store.recall_log_path.open("a") as stream:
+        stream.write("broken JSON\n")
+    before = store.recall_log_path.read_bytes()
+    report = run_doctor(store)
+    assert any(issue.code == "recall_log_unparseable" for issue in report.issues)
+    assert report.status == "warning"
+    assert store.recall_log_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("bad_row", ["{broken", '{"kind":"unknown","at":"2026-01-01T00:00:00Z"}'])
+def test_doctor_and_sync_report_same_corrupt_maintenance_state_row(tmp_path, bad_row):
+    from engram.storage.sync import _validate_sync_snapshot
+    from engram.storage.transactions import StoreIntegrityError
+
+    store = FactStore(tmp_path)
+    state_path = tmp_path / "maintenance_state.jsonl"
+    state_path.write_text('{"kind":"run","at":"2026-01-01T00:00:00Z"}\n' + bad_row + "\n")
+    before = state_path.read_bytes()
+
+    report = run_doctor(store)
+
+    assert report.status == "error"
+    assert "maintenance_state" in report.checks_run
+    issue = next(
+        issue for issue in report.issues if issue.code == "maintenance_state_jsonl_corrupt"
+    )
+    assert issue.severity == "error"
+    assert f"{state_path}:2" in issue.message
+    assert not issue.repairable
+    assert "--repair-jsonl" not in (issue.repair or "")
+    assert "backup" in (issue.repair or "")
+    with pytest.raises(StoreIntegrityError) as error:
+        _validate_sync_snapshot(tmp_path)
+    assert error.value.path == state_path
+    assert error.value.line == 2
+    assert f"{state_path}:2" in str(error.value)
+    assert "reported repair" in str(error.value)
+    assert state_path.read_bytes() == before

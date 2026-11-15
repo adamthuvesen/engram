@@ -23,10 +23,11 @@ import logging
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict
 
+from engram.core import clock
 from engram.core.config import get_settings
 from engram.core.models import BRIEF_MEMORY_KEY, Durability, Fact, FactCategory
 from engram.llm import complete_model
@@ -37,8 +38,9 @@ from engram.maintenance.upkeep_state import (
     append_state,
     load_state,
 )
+from engram.storage.async_store import AsyncFactStore, run_sync
+from engram.storage.changes import ChangeSet
 from engram.storage.search import SearchIndex
-from engram.storage.store import AsyncFactStore, ChangeSet
 
 logger = logging.getLogger(__name__)
 
@@ -136,9 +138,6 @@ class ConsolidationResponse(BaseModel):
     retire: list[RetiredInputCard]
 
 
-# --- Clustering --------------------------------------------------------------
-
-
 def partition_clusters(
     facts: list[Fact],
     index: SearchIndex,
@@ -175,9 +174,6 @@ def partition_clusters(
     return clusters
 
 
-# --- One cluster -------------------------------------------------------------
-
-
 def _handles(cluster: list[Fact]) -> dict[str, str]:
     """Short prompt handles (``c1``…) mapped to fact IDs, oldest first.
 
@@ -197,9 +193,7 @@ def _with_fact_ids(
             "cards": [
                 card.model_copy(
                     update={
-                        "source_ids": [
-                            handles.get(handle, handle) for handle in card.source_ids
-                        ]
+                        "source_ids": [handles.get(handle, handle) for handle in card.source_ids]
                     }
                 )
                 for card in response.cards
@@ -241,14 +235,10 @@ def _cluster_prompt(cluster: list[Fact], scope: str) -> str:
 
 def _source_uses(response: ConsolidationResponse) -> Counter[str]:
     """How many output cards each input id feeds; more than one is a split."""
-    return Counter(
-        source_id for card in response.cards for source_id in set(card.source_ids)
-    )
+    return Counter(source_id for card in response.cards for source_id in set(card.source_ids))
 
 
-def _is_verbatim(
-    card: ConsolidatedCard, by_id: dict[str, Fact], uses: Counter[str]
-) -> bool:
+def _is_verbatim(card: ConsolidatedCard, by_id: dict[str, Fact], uses: Counter[str]) -> bool:
     """True when ``card`` is one unsplit source card with its content unchanged."""
     if len(card.source_ids) != 1 or uses[card.source_ids[0]] != 1:
         return False
@@ -285,6 +275,8 @@ def response_problem(cluster: list[Fact], response: ConsolidationResponse) -> st
         problems.append(f"ids listed twice in one place: {', '.join(twice)}")
     if any(not card.source_ids for card in response.cards):
         problems.append("a card has no source_ids")
+    if any(not card.content.strip() for card in response.cards):
+        problems.append("a card has blank content")
     # A split must divide a card's claims, never repeat them.
     texts = [" ".join(card.content.split()) for card in response.cards]
     if len(set(texts)) < len(texts):
@@ -304,8 +296,7 @@ def response_problem(cluster: list[Fact], response: ConsolidationResponse) -> st
     too_long = [
         f"{card.memory_key} ({len(card.content.strip())})"
         for card in response.cards
-        if len(card.content.strip()) > MAX_CARD_CHARS
-        and not _is_verbatim(card, by_id, uses)
+        if len(card.content.strip()) > MAX_CARD_CHARS and not _is_verbatim(card, by_id, uses)
     ]
     if too_long:
         problems.append(
@@ -338,7 +329,7 @@ async def consolidate_cluster(
                 response_model=ConsolidationResponse,
                 reasoning_effort=settings.llm_reasoning_effort,
             )
-        except Exception as exc:  # noqa: BLE001 - one bad cluster must not stop upkeep
+        except Exception as exc:
             problem = f"LLM call failed: {exc}"
             logger.warning("consolidate %s attempt %d: %s", scope, attempt + 1, exc)
             continue
@@ -351,9 +342,7 @@ async def consolidate_cluster(
 
 
 def _unique(values: list[str], limit: int) -> list[str]:
-    return list(dict.fromkeys(value.strip() for value in values if value.strip()))[
-        :limit
-    ]
+    return list(dict.fromkeys(value.strip() for value in values if value.strip()))[:limit]
 
 
 def _same_text(left: str, right: str) -> bool:
@@ -379,7 +368,12 @@ def plan_cluster_changes(
 ) -> ClusterPlan:
     """Translate a validated response into one atomic change set."""
     by_id = {fact.id: fact for fact in cluster}
-    changes = ChangeSet(reason="upkeep: consolidation", actor=CONSOLIDATE_SOURCE)
+    changes = ChangeSet(
+        expected={fact.id: fact.updated_at for fact in cluster},
+        require_eligible=True,
+        reason="upkeep: consolidation",
+        actor=CONSOLIDATE_SOURCE,
+    )
     merged = rewritten = 0
     uses = _source_uses(response)
     for card in response.cards:
@@ -400,9 +394,7 @@ def plan_cluster_changes(
             if card.durability is Durability.ephemeral and source.expires_at is None:
                 fields["expires_at"] = now + ephemeral_ttl
             edits = {
-                name: value
-                for name, value in fields.items()
-                if getattr(source, name) != value
+                name: value for name, value in fields.items() if getattr(source, name) != value
             }
             if edits:
                 changes.edits[source.id] = edits
@@ -432,9 +424,7 @@ def plan_cluster_changes(
             created_at=now,
             updated_at=now,
             observed_at=observed_at,
-            first_observed_at=(
-                oldest_claim_at if oldest_claim_at < observed_at else None
-            ),
+            first_observed_at=(oldest_claim_at if oldest_claim_at < observed_at else None),
             expires_at=expires_at,
             tags=tags,
             retrieval_hints=hints,
@@ -442,9 +432,7 @@ def plan_cluster_changes(
             supersedes=primary.id,
             consolidates=list(
                 dict.fromkeys(
-                    fact_id
-                    for source in sources
-                    for fact_id in [source.id, *source.consolidates]
+                    fact_id for source in sources for fact_id in [source.id, *source.consolidates]
                 )
             ),
             evidence_kind=primary.evidence_kind,
@@ -464,15 +452,8 @@ def plan_cluster_changes(
             rewritten += 1
     for retired in response.retire:
         changes.stale[retired.id] = f"consolidation: {retired.reason}"
-    changes.expected = {
-        fact_id: by_id[fact_id].updated_at
-        for fact_id in [*changes.supersede, *changes.stale, *changes.edits]
-    }
     split = sum(1 for count in uses.values() if count > 1)
     return ClusterPlan(changes=changes, merged=merged, rewritten=rewritten, split=split)
-
-
-# --- Step --------------------------------------------------------------------
 
 
 async def run_consolidation(
@@ -487,9 +468,9 @@ async def run_consolidation(
     """Consolidate every scope (or just ``project``) that changed."""
     settings = get_settings()
     # Taken before reading: anything written after this is seen next run.
-    snapshot = datetime.now(timezone.utc)
+    snapshot = clock.now()
     index = await store.search_index()
-    state = await asyncio.to_thread(load_state, store.data_dir)
+    state = await run_sync(load_state, store.data_dir)
     by_scope: dict[str | None, list[Fact]] = {}
     for fact in index.facts:
         if fact.memory_key == BRIEF_KEY:
@@ -555,6 +536,10 @@ async def run_consolidation(
             ephemeral_ttl=ttl,
         )
         changes = plan.changes
+        report.propose("created", *(fact.id for fact in changes.new_facts))
+        report.propose("superseded", *changes.supersede)
+        report.propose("staled", *changes.stale)
+        report.propose("edited", *changes.edits)
         if dry_run:
             applied_created = [fact.id for fact in changes.new_facts]
             superseded = list(changes.supersede)
@@ -562,6 +547,7 @@ async def run_consolidation(
             edited = list(changes.edits)
         else:
             result = await store.apply_changes(changes, all_or_nothing=True)
+            report.conflicts.update(result.skipped)
             if result.skipped:
                 failed_seeds.setdefault(scope, []).append(cluster[0].id)
                 report.errors.append(
@@ -579,10 +565,11 @@ async def run_consolidation(
         report.bump("merged_cards", plan.merged)
         report.bump("rewritten_cards", plan.rewritten)
         report.bump("split_cards", plan.split)
-        report.add("created", *applied_created)
-        report.add("superseded", *superseded)
-        report.add("staled", *staled)
-        report.add("edited", *edited)
+        if not dry_run:
+            report.add("created", *applied_created)
+            report.add("superseded", *superseded)
+            report.add("staled", *staled)
+            report.add("edited", *edited)
         for retired in response.retire:
             report.notes.append(f"retired {retired.id}: {retired.reason}")
 
@@ -616,4 +603,4 @@ async def run_consolidation(
                 retry_seeds=next_retry,
             )
         )
-    await asyncio.to_thread(append_state, store.data_dir, lines)
+    await run_sync(append_state, store.data_dir, lines)

@@ -1,56 +1,52 @@
-# MCP Tools
+# MCP tools and CLI commands
 
-The MCP tool names below are a stable public surface. Renaming or removing one
-is a breaking change for every agent wired to Engram. Treat them like an API.
+Tool names form a stable public API. The CLI uses the corresponding hyphenated names.
 
-| Tool                                       | Purpose                                               |
-| ------------------------------------------ | ----------------------------------------------------- |
-| `remember`                                 | Save plain language: extract + reconcile in one LLM call |
-| `suggest_memories`                         | Same, queued as candidates for review                  |
-| `list_candidates`                          | Browse pending/reviewed suggestions                   |
-| `approve_candidates` / `reject_candidates` | Promote or dismiss candidates                         |
-| `recall`                                   | Dated cards (`mode="cards"`) or `mode="answer"` (`max_sources`; MCP `limit` alias) |
-| `recall_context`                           | `brief`, `cards` (`prompt` alias), or `answer`        |
-| `recall_trace`                             | Recall + bounded prompt/output excerpts for debugging (`limit` alias) |
-| `recall_stats`                             | Per-recall LLM usage and cache-hit summary            |
-| `forget` / `edit_fact`                     | Soft-delete or edit a fact in place                   |
-| `correct_memory` / `merge_memories`        | Agent-first correction and merge primitives           |
-| `mark_stale` / `unmark_stale`              | Toggle a fact's recall eligibility                    |
-| `inspect`                                  | Browse stored facts                                   |
-| `import_memories`                          | Bootstrap from `~/.claude/projects/*/memory/`         |
-| `memory_stats`                             | Counts, storage size, category breakdown              |
-| `upkeep`                                   | Run projects / verify / consolidate / briefs now      |
-| `audit_memories`                           | Read-only duplicate / stale / contradiction suggestions |
-| `purge` / `rename_project`                 | Permanently drop forgotten/expired or rename a scope  |
-| `doctor`                                   | Read-only health diagnostics (with opt-in `repair`)   |
-| `sync`                                     | Git-backed pull + push of the data directory          |
+Generated from MCP registrations and CLI handlers. Run `just reference` after changing either surface.
 
-Every tool that takes `project` accepts a repo name or a working-directory
-path; paths and git worktrees resolve to the repository's name.
+| MCP tool | CLI command | Description |
+| --- | --- | --- |
+| `approve_candidates` | `approve-candidates` | Promote reviewed candidates into active memory. |
+| `audit_memories` | `audit-memories` | Suggest duplicate, stale, and contradictory memory cleanup. |
+| `correct_memory` | `correct-memory` | Replace ``fact_id`` with a new active fact that supersedes it. |
+| `doctor` | `doctor` | Run a structured health check on the memory store. |
+| `edit_fact` | `edit-fact` | Edit a fact in place without losing its ID or supersession chain. |
+| `forget` | `forget` | Mark a fact as forgotten (soft delete). |
+| `import_memories` | `import-memories` | Import existing memories from Claude Code's per-project memory files. |
+| `inspect` | `inspect` | Browse stored facts for transparency and debugging. |
+| `list_candidates` | `list-candidates` | Browse queued memory candidates for review. |
+| `mark_stale` | `mark-stale` | Exclude a fact from active recall while preserving it for inspection. |
+| `memory_stats` | `memory-stats` | Show memory system statistics: fact counts, storage size, category breakdown. |
+| `merge_memories` | `merge-memories` | Consolidate two or more active facts into one new fact. |
+| `purge` | `purge` | Permanently remove forgotten and expired facts from storage. |
+| `recall` | `recall` | Find memories relevant to ``query``. |
+| `recall_context` | `recall-context` | Context for the current task. |
+| `recall_stats` | `recall-stats` | Show recall quality and performance statistics from the recall log. |
+| `recall_trace` | `recall-trace` | Run recall and return a structured trace for debugging. |
+| `reject_candidates` | `reject-candidates` | Reject proposed candidates without storing them as active memory. |
+| `remember` | `remember` | Save durable knowledge from plain language. |
+| `rename_project` | `rename-project` | Bulk-rename facts and candidates from one project to another. |
+| `suggest_memories` | `suggest-memories` | Propose memories for review without storing them as active facts. |
+| `sync` | `sync` | Git-backed sync of the data directory against its configured remote. |
+| `unmark_stale` | `unmark-stale` | Reverse a previous ``mark_stale`` call so the fact is recall-eligible. |
+| `upkeep` | `upkeep` | Run memory upkeep now (it also runs in the background). |
 
-`recall` defaults to cards: ranked, dated card lines with no LLM call. When no
-card clears the relevance bar and a key is configured, one small LLM call picks
-cards from the top 30 candidates. `mode="answer"` synthesizes an answer with one
-call and falls back to cards (with a `provider_unavailable` warning) if the
-provider fails. Warnings: `suspect_fact` when a delivered card has missing
-anchors, `conflicting_facts` when two delivered cards share a `memory_key`.
+CLI aliases: `trace` → `recall-trace`, `correct` → `correct-memory`, `merge` → `merge-memories`, `stale` → `mark-stale`, `unstale` → `unmark-stale`.
 
-`recall_stats` summarizes LLM usage pulled from the recall log: total LLM
-calls, input tokens, cached (prefix-hit) input tokens, and the resulting cache
-hit ratio. Recall logs stamp each record with its selector version (currently
-`"v4"`), mode, and the delivered fact IDs.
+`engram serve` owns the MCP process. It has no corresponding tool.
 
-`upkeep` applies its changes (they are ordinary append-only events) unless
-`dry_run=True`. Steps run in order `projects`, `verify`, `consolidate`,
-`briefs`; `consolidate` and `briefs` need an LLM key and are skipped without
-one.
+Every tool validates input before mutation. MCP returns the same response envelope as the CLI JSON output.
+The envelope contains `status`, `data`, `warnings`, `errors`, and `meta`.
 
-`edit_fact`, `correct_memory`, and `merge_memories` accept `memory_key` and
-`retrieval_hints` where relevant. `merge_memories` returns `consolidates`, the
-complete source-ID list retained on the new card for provenance.
+Recall uses lexical cards by default. Weak-hit selection and answer mode can call the provider.
+Answer mode caps its prompt evidence before generation. The renderer creates citations from validated fact references.
+`max_sources` caps cards and answer evidence. The MCP `limit` alias remains supported.
 
-The MCP process uses local stdio, or stateless streamable HTTP on loopback via
-`engram serve --transport http` (default `http://127.0.0.1:7422/mcp`) so many
-clients can share one long-lived daemon. It exists for typed discovery and
-persistent agent integration, not as a remote network service. The `engram` CLI exposes the same
-operations for direct inspection, scripting, and batch maintenance.
+`RecallResult` records candidate, selected, delivered, and cited evidence. Legacy `cited_fact_ids` also contains delivered card IDs.
+Usage reports attempts, completions, failures, unknown usage, and token counters. Legacy `llm_calls` counts successful recall operations.
+
+Provider failures return cards with `provider_unavailable`. Delivered suspect or conflicting facts carry explicit warnings.
+`recall_trace` adds bounded prompt excerpts and error traces. `recall_stats` reads recorded usage.
+
+`doctor` reads storage without recovery writes. Repair flags opt into the corresponding repair operation.
+Review pending candidates with `list-candidates`, then approve or reject explicit IDs.

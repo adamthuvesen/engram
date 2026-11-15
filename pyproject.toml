@@ -3,29 +3,28 @@ name = "engram"
 version = "0.1.0"
 description = "Engram — structured, cross-project memory for coding agents"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "fastmcp==4.0.0b2",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0.0",
-    "textual>=1.0.0",
-    "textual-plotext>=1.0.0",
     "snowballstemmer>=3.1.1",
     "openai>=1.60",
 ]
 
 [project.scripts]
 engram = "engram.cli:main_dispatch"
-engram-dash = "engram.dashboard.app:main"
 
 [project.optional-dependencies]
 dev = [
-    "mypy>=2.2.0",
+    "hatchling>=1.33.0",
+    "basedpyright==1.40.2",
     "pre-commit>=4.0.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-    "ruff>=0.15.0",
+    "pytest-xdist>=3.8.0",
+    "ruff==0.17.4",
     "types-pyyaml>=6.0.12.20260518",
 ]
 
@@ -38,13 +37,85 @@ packages = ["src/engram"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
+strict_markers = true
+addopts = "-m 'not live_provider and not sync_transport'"
 
-[tool.mypy]
-python_version = "3.13"
-files = ["src/engram"]
-check_untyped_defs = true
-implicit_optional = false
-warn_redundant_casts = true
-warn_unused_configs = true
-warn_unused_ignores = true
+[tool.basedpyright]
+typeCheckingMode = "strict"
+enableTypeIgnoreComments = false
+reportUnnecessaryTypeIgnoreComment = "error"
+reportIgnoreCommentWithoutRule = "error"
+pythonVersion = "3.14"
+include = ["src", "evals", "tools", "tests"]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["src", "."]
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportUnknownLambdaType = false
+reportMissingTypeStubs = false
+
+[[tool.basedpyright.executionEnvironments]]
+root = "tests"
+reportMissingParameterType = false
+reportPrivateUsage = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PTH", "RUF", "PGH003", "PGH004", "TID251"]
+ignore = [
+    # ruff format wraps code; the remaining long lines are user-facing strings and prompts.
+    "E501",
+    # (str, Enum) keeps str(member) == "Class.member"; StrEnum would change it.
+    "UP042",
+]
+
+# A TID251 ignore lifts every ban below for that file, so owners stay one file each.
+# tests/test_strict_mode.py holds each owner to its own module and rejects noqa on TID251.
+# Process calls are not banned (exception dated 2026-11-07): subprocess, os.system,
+# os.popen, os.exec*, os.spawn*, pty, and asyncio subprocess. Git sync, project
+# detection, doctor, eval reports, the tooling lanes, and verify all run git or child
+# processes, so the owner list would cover 15 files and lift the network and SDK bans
+# for all of them.
+[tool.ruff.lint.per-file-ignores]
+"src/engram/core/clock.py" = ["TID251"]
+"src/engram/core/ids.py" = ["TID251"]
+"src/engram/llm/client.py" = ["TID251"]
+"tools/smoke.py" = ["TID251"]
+"tests/test_llm.py" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"openai".msg = "Only src/engram/llm/client.py imports the OpenAI SDK. Call the provider through engram.llm.client instead of importing openai."
+"httpx".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"httpx2".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"requests".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"urllib.request".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"http.client".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"socket".msg = "Only tools/smoke.py opens sockets. Move the socket code there, or use engram.llm.client for network calls."
+"urllib3".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"aiohttp".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"websockets".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"anthropic".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"litellm".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"boto3".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"smtplib".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"ftplib".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"xmlrpc.client".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"http.server".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+
+# Clock and ids: src/engram/core/clock.py and src/engram/core/ids.py are the only readers.
+"datetime.datetime.now".msg = "Use engram.core.clock.now(); only src/engram/core/clock.py reads the clock, so tests can replace it."
+"datetime.datetime.utcnow".msg = "Use engram.core.clock.now(); only src/engram/core/clock.py reads the clock, so tests can replace it."
+"datetime.datetime.today".msg = "Use engram.core.clock.now(); only src/engram/core/clock.py reads the clock, so tests can replace it."
+"datetime.date.today".msg = "Use engram.core.clock.now().date(); only src/engram/core/clock.py reads the clock, so tests can replace it."
+"time.time".msg = "Use engram.core.clock.now().timestamp(); only src/engram/core/clock.py reads the clock. For durations use time.monotonic()."
+"time.time_ns".msg = "Use engram.core.clock.now(); only src/engram/core/clock.py reads the clock. For durations use time.monotonic()."
+"random".msg = "Ambient randomness is banned in src. Take a seeded generator as a parameter, built by the caller, instead of importing random."
+"uuid.uuid1".msg = "Use engram.core.ids.new_id(); only src/engram/core/ids.py makes fresh ids, so tests can replace it."
+"uuid.uuid4".msg = "Use engram.core.ids.new_id(); only src/engram/core/ids.py makes fresh ids, so tests can replace it."
