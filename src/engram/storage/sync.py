@@ -21,9 +21,10 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from engram.core import clock
 
 logger = logging.getLogger(__name__)
 
@@ -576,7 +577,7 @@ def _sync_locked(
         "pulled_commits": pulled_commits,
         "pushed_commits": pushed_commits,
         "took_ms": took_ms,
-        "completed_at": datetime.now(UTC).isoformat(),
+        "completed_at": clock.now().isoformat(),
     }
     _write_sync_state(data_dir, result)
     logger.info(

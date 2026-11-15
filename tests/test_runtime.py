@@ -2,7 +2,6 @@
 
 import asyncio
 import threading
-from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -175,7 +174,7 @@ def test_ingest_unresolved_is_partial_in_mcp(tmp_path, monkeypatch):
             unresolved=[UnresolvedDecision(fact_id="old", action="replace", reason="changed")],
         )
 
-    monkeypatch.setattr(operations, "ingest", fake_ingest)
+    monkeypatch.setattr("engram.operations.memories.ingest", fake_ingest)
     app = server.create_mcp(store)
     result = asyncio.run(
         app.call_tool("remember", {"content": "New information", "format": "json"})
@@ -276,8 +275,7 @@ def test_cli_does_not_own_background_final_sync(tmp_path, monkeypatch, capsys, a
 
     monkeypatch.setattr("engram.storage.sync.run_final_sync", final_sync)
     monkeypatch.setattr(
-        operations,
-        "_sync",
+        "engram.operations.maintenance._sync",
         lambda *args, **kwargs: {"status": "skipped", "reason": "offline fixture"},
     )
     get_settings.cache_clear()
@@ -289,8 +287,7 @@ def test_cli_does_not_own_background_final_sync(tmp_path, monkeypatch, capsys, a
         get_settings.cache_clear()
 
 
-def test_upkeep_skipped_runs_keep_nonzero_recurring_wait(tmp_path, monkeypatch):
-    from datetime import datetime
+def test_upkeep_skipped_runs_keep_nonzero_recurring_wait(tmp_path, monkeypatch, fixed_now):
 
     from engram.maintenance import upkeep
     from engram.maintenance.upkeep_report import StepReport, UpkeepReport, UpkeepStep
@@ -310,7 +307,7 @@ def test_upkeep_skipped_runs_keep_nonzero_recurring_wait(tmp_path, monkeypatch):
 
     async def skipped(*args, **kwargs):
         return UpkeepReport(
-            started_at=datetime.now(UTC),
+            started_at=fixed_now,
             steps=[StepReport(step=UpkeepStep.projects, skipped="another run owns the lock")],
         )
 

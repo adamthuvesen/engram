@@ -47,3 +47,5 @@ Evals run as modules, for example `uv run --locked python -m evals.recall`.
 | A verify run fails when a drive runs `curl`, `wget`, `ssh`, `scp`, `gh`, `git push`, or `uv publish`. | `.agents/skills/verify-engram/verify::install_tripwires` |
 | Git transport tests need explicit opt-in. | `tests/conftest.py`, `tests/test_tooling.py::test_wrong_marker_expression_cannot_enable_git_push_fixtures` |
 | Only `src/engram/llm/client.py` and `tests/test_llm.py` import the OpenAI SDK or HTTP clients, and only `tools/smoke.py` opens sockets. | `pyproject.toml::"openai".msg`, `pyproject.toml::"socket".msg`, `tests/test_strict_mode.py::test_ban_owners_import_only_the_modules_they_own`, `tests/test_strict_mode.py::test_no_file_suppresses_an_import_ban` |
+| Source code reads the clock and makes fresh ids only through `src/engram/core/clock.py` and `src/engram/core/ids.py`. | `pyproject.toml::"datetime.datetime.now".msg`, `pyproject.toml::"uuid.uuid4".msg`, `tests/test_strict_mode.py::test_ban_owners_import_only_the_modules_they_own` |
+| Every skip and xfail mark gives a non-empty reason | `tests/test_strict_mode.py::test_every_skip_gives_a_reason` |

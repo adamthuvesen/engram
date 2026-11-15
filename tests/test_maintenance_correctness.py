@@ -15,6 +15,8 @@ from engram.maintenance.upkeep_report import StepReport, UpkeepStep
 from engram.storage.async_store import AsyncFactStore
 from engram.storage.store import FactStore
 
+SOME_TIME = datetime(2026, 6, 11, 12, 0, tzinfo=UTC)
+
 
 def fact(index: int, **fields) -> Fact:
     return Fact(
@@ -34,7 +36,7 @@ def refresh(store: AsyncFactStore) -> StepReport:
             project=None,
             report=report,
             dry_run=False,
-            now=datetime.now(UTC),
+            now=SOME_TIME,
         )
     )
     return report
@@ -63,7 +65,7 @@ def test_brief_rejects_changed_source_membership(brief_store, mutation):
     elif mutation == "move":
         store.sync_store.update_fact("source0", project="elsewhere")
     elif mutation == "expiry":
-        store.sync_store.update_fact("source0", expires_at=datetime.now(UTC) - timedelta(seconds=1))
+        store.sync_store.update_fact("source0", expires_at=SOME_TIME - timedelta(seconds=1))
     else:
         store.sync_store.forget("source0")
         store.sync_store.purge()
@@ -259,7 +261,7 @@ def test_sync_store_lock_blocks_all_synced_log_writers(tmp_path, writer):
         if writer == "recall":
             store.log_recall(RecallRecord(query="offline", tier=0, latency_ms=1, prefilter_count=0))
         else:
-            append_state(tmp_path, [StateLine(kind="run", at=datetime.now(UTC))])
+            append_state(tmp_path, [StateLine(kind="run", at=SOME_TIME)])
         completed.set()
 
     with ThreadPoolExecutor(max_workers=1) as pool:

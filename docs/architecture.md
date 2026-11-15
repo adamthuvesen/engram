@@ -5,7 +5,7 @@ CLI and MCP adapters call shared operations. One `Runtime` owns the store facade
 ```text
 cli.py / server.py
         ↓
-operations.py ← runtime.py
+operations/ ← runtime.py
         ↓
 extraction / recall / maintenance
         ↓
@@ -20,6 +20,8 @@ Separate runtimes can run in one process without sharing settings or provider cl
 
 `server.py` registers stable MCP tools with FastMCP. It validates rendering options before dispatch.
 `cli.py` registers CLI handlers and aliases. Both surfaces render the same `OperationResult` envelope.
+`operations` exports the operations both surfaces call. `operations.results` owns `OperationResult`, exit codes, and shared validation failures. `operations.stores` resolves the store and project scope.
+The domain modules are `memories`, `candidates`, `recall`, `facts`, and `maintenance`.
 `core.operation_models` contains typed operation payloads. `core.interfaces` contains JSON values, errors, warnings, and limits.
 
 ## Domain and persistence

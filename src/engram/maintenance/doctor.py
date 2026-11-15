@@ -18,12 +18,13 @@ import logging
 import os
 import subprocess
 from collections import Counter, defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
+from engram.core import clock
 from engram.core.config import get_settings
 from engram.core.fact_state import is_fact_eligible
 from engram.core.models import (
@@ -463,7 +464,7 @@ def _check_candidates(
                 repair="Review the candidate snapshots before changing their status.",
             )
         )
-    now = datetime.now(UTC)
+    now = clock.now()
     stale_pending = [
         c.id
         for c in candidates
@@ -545,7 +546,7 @@ def _doctor_counts(
     candidates_valid: int,
     issues: list[DoctorIssue],
 ) -> dict[str, Any]:
-    now = datetime.now(UTC)
+    now = clock.now()
     return {
         "facts_valid": facts_valid,
         "candidates_valid": candidates_valid,
@@ -680,7 +681,7 @@ def run_doctor(
         for key in ("active_facts", "stale_facts", "forgotten_facts"):
             counts[key] = None
     counts["volume"] = (
-        _volume_counts(facts, sync_store.load_recall_log(limit=None), datetime.now(UTC))
+        _volume_counts(facts, sync_store.load_recall_log(limit=None), clock.now())
         if facts_available
         else None
     )

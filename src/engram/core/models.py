@@ -1,10 +1,8 @@
 import threading
-import time
 from copy import copy
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
-from uuid import uuid4
 
 from pydantic import (
     AliasChoices,
@@ -14,6 +12,8 @@ from pydantic import (
     create_model,
     model_validator,
 )
+
+from engram.core import clock, ids
 
 MIN_ACTIVE_CONFIDENCE = 0.1
 
@@ -36,11 +36,11 @@ def new_event_id() -> str:
     """
     global _last_event_ms
     with _EVENT_ID_LOCK:
-        now_ms = int(time.time() * 1000)
+        now_ms = int(clock.now().timestamp() * 1000)
         if now_ms <= _last_event_ms:
             now_ms = _last_event_ms + 1
         _last_event_ms = now_ms
-    return f"{now_ms:016d}{uuid4().hex[:8]}"
+    return f"{now_ms:016d}{ids.new_id()[:8]}"
 
 
 class FactCategory(str, Enum):
@@ -98,15 +98,15 @@ class TransactionStatus(str, Enum):
 class FactBase(BaseModel):
     """Shared fields between Fact and MemoryCandidate."""
 
-    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    id: str = Field(default_factory=lambda: ids.new_id())
     category: FactCategory
     memory_key: str = ""
     content: str
     source: str = "conversation"
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: clock.now())
+    updated_at: datetime = Field(default_factory=lambda: clock.now())
+    observed_at: datetime = Field(default_factory=lambda: clock.now())
     # When the oldest claim carried into this card was observed. Set when a
     # card replaces or merges older cards, so their claims keep their age
     # instead of taking the newest source's date. None means ``observed_at``.
@@ -193,7 +193,7 @@ class StateLine(BaseModel):
 class RecallRecord(BaseModel):
     """Log entry for a recall query (quality observability)."""
 
-    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    id: str = Field(default_factory=lambda: ids.new_id())
     query: str
     project: str | None = None
     tier: int
@@ -212,13 +212,13 @@ class RecallRecord(BaseModel):
     mode: str | None = None
     # Fact IDs handed back to the caller (cards shown or answer citations).
     delivered_ids: list[str] = Field(default_factory=list)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: clock.now())
 
 
 class StoreTransaction(BaseModel):
     """Durable transaction journal entry for multi-file store operations."""
 
-    id: str = Field(default_factory=lambda: uuid4().hex[:12])
+    id: str = Field(default_factory=lambda: ids.new_id())
     type: str
     status: TransactionStatus
     candidate_ids: list[str] = Field(default_factory=list)
@@ -227,7 +227,7 @@ class StoreTransaction(BaseModel):
     new_facts: list[Fact] = Field(default_factory=list)
     # old fact id -> replacing fact id, applied as ``superseded`` events.
     supersessions: dict[str, str] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: clock.now())
     committed_at: datetime | None = None
     events: list[FactEvent] = Field(default_factory=list)
     candidates: list[MemoryCandidate] = Field(default_factory=list)
@@ -312,7 +312,7 @@ class FactEvent(BaseModel):
     event_id: str = Field(default_factory=new_event_id)
     event_type: EventType
     fact_id: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    timestamp: datetime = Field(default_factory=lambda: clock.now())
     actor: str = "engram"
     payload: dict[str, Any] = Field(default_factory=dict)
 

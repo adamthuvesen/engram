@@ -2,8 +2,7 @@ import asyncio
 import json
 import tempfile
 import threading
-import time
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -293,9 +292,9 @@ def test_update_fact():
     assert loaded[0].content == "Updated content"
 
 
-def test_stats():
+def test_stats(fixed_now):
     store = _make_store()
-    past = datetime.now(UTC) - timedelta(days=1)
+    past = fixed_now - timedelta(days=1)
     store.append_facts(
         [
             Fact(category=FactCategory.preference, content="Pref 1"),
@@ -631,25 +630,36 @@ async def test_async_store_facade_covers_server_operations():
     assert (await async_store.purge())["purged"] == 1
 
 
+async def _loop_turn() -> None:
+    """Return after the event loop runs one callback, which proves the loop is not blocked."""
+    loop = asyncio.get_running_loop()
+    turn = loop.create_future()
+    loop.call_soon(turn.set_result, None)
+    await turn
+
+
 @pytest.mark.asyncio
 async def test_async_store_read_does_not_block_unrelated_coroutine():
     store = _make_store()
     async_store = AsyncFactStore(store)
     original_load_facts = store.load_facts
 
+    started = threading.Event()
+    release = threading.Event()
+
     def slow_load_facts():
-        time.sleep(0.5)
+        started.set()
+        assert release.wait(5)
         return original_load_facts()
 
     store.load_facts = slow_load_facts
-    start = time.perf_counter()
 
     load_task = asyncio.create_task(async_store.load_facts())
-    await asyncio.sleep(0.02)
-    elapsed = time.perf_counter() - start
+    await asyncio.to_thread(started.wait, 5)
+    await _loop_turn()
 
-    assert elapsed < 0.4
     assert not load_task.done()
+    release.set()
     assert await load_task == []
 
 
@@ -659,21 +669,24 @@ async def test_async_store_write_does_not_block_unrelated_coroutine():
     async_store = AsyncFactStore(store)
     original_append_facts = store.append_facts
 
+    started = threading.Event()
+    release = threading.Event()
+
     def slow_append_facts(facts: list[Fact]) -> None:
-        time.sleep(0.5)
+        started.set()
+        assert release.wait(5)
         original_append_facts(facts)
 
     store.append_facts = slow_append_facts
-    start = time.perf_counter()
 
     append_task = asyncio.create_task(
         async_store.append_facts([Fact(category=FactCategory.workflow, content="Async append")])
     )
-    await asyncio.sleep(0.02)
-    elapsed = time.perf_counter() - start
+    await asyncio.to_thread(started.wait, 5)
+    await _loop_turn()
 
-    assert elapsed < 0.4
     assert not append_task.done()
+    release.set()
     await append_task
     assert len(store.load_facts()) == 1
 

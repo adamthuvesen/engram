@@ -7,14 +7,14 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any, Concatenate
-from uuid import uuid4
 
+from engram.core import clock, ids
 from engram.core.config import get_settings
-from engram.core.fact_state import is_fact_eligible
+from engram.core.fact_state import is_fact_editable, is_fact_eligible
 from engram.core.models import (
     BRIEF_MEMORY_KEY,
     EDITABLE_FACT_FIELDS,
@@ -229,7 +229,7 @@ class FactStore:
         Stale facts are excluded by default. Pass ``include_stale=True`` for
         inspection workflows that need to see the full set.
         """
-        now = datetime.now(UTC)
+        now = clock.now()
         facts = []
         for fact in self.load_facts():
             if not _is_active_fact(
@@ -299,7 +299,7 @@ class FactStore:
         if scope is None:
             scope = _infer_project_from_query(index.facts, query)
 
-        now = datetime.now(UTC)
+        now = clock.now()
 
         def in_scope(fact: Fact) -> bool:
             if not is_fact_eligible(fact, now):
@@ -373,7 +373,7 @@ class FactStore:
 
     def _active_fact_by_id(self, fact_id: str) -> Fact | None:
         fact = self._facts_by_id().get(fact_id)
-        if fact is None or fact.lifecycle is not FactLifecycle.active or fact.confidence == 0.0:
+        if fact is None or not is_fact_editable(fact):
             return None
         return fact
 
@@ -437,10 +437,10 @@ class FactStore:
             existing = self._facts_by_id().get(fact_id)
             if existing is None:
                 return None
-            if existing.lifecycle is not FactLifecycle.active or existing.confidence == 0.0:
+            if not is_fact_editable(existing):
                 return None
 
-            now = datetime.now(UTC)
+            now = clock.now()
             event, updated = self._event_and_result_for_update(existing, updates, now)
             self.append_events([event])
             return updated
@@ -457,7 +457,7 @@ class FactStore:
                 {
                     **candidate.model_dump(),
                     **updates,
-                    "updated_at": datetime.now(UTC),
+                    "updated_at": clock.now(),
                 }
             )
             if updated.id != candidate_id:
@@ -469,7 +469,7 @@ class FactStore:
         """Rename project scopes through fact events and candidate snapshots."""
         with _locked_store(self.data_dir):
             facts = self.load_facts()
-            now = datetime.now(UTC)
+            now = clock.now()
             events: list[FactEvent] = []
             for fact in facts:
                 if fact.project == old_project and fact.lifecycle is FactLifecycle.active:
@@ -527,7 +527,7 @@ class FactStore:
 
         with _locked_store(self.data_dir):
             facts_by_id = self._facts_by_id()
-            now = datetime.now(UTC)
+            now = clock.now()
             events: list[FactEvent] = []
             updated_facts: list[Fact] = []
 
@@ -570,7 +570,7 @@ class FactStore:
                             {
                                 **candidate.model_dump(),
                                 **updates[candidate.id],
-                                "updated_at": datetime.now(UTC),
+                                "updated_at": clock.now(),
                             }
                         )
                     )
@@ -583,7 +583,7 @@ class FactStore:
             existing = self._active_fact_by_id(fact_id)
             if existing is None:
                 return None
-            now = datetime.now(UTC)
+            now = clock.now()
             self._append_fact_event(
                 EventType.forgotten,
                 fact_id,
@@ -622,7 +622,7 @@ class FactStore:
                 # Only explicit forgetting can be restored.
                 return None
 
-            now = datetime.now(UTC)
+            now = clock.now()
             self._append_fact_event(EventType.restored, fact_id, now)
             logger.info("Restored fact %s", fact_id)
             return fact.model_copy(update={"updated_at": now, "lifecycle": FactLifecycle.active})
@@ -654,11 +654,11 @@ class FactStore:
             if existing is None:
                 return None
 
-            now = datetime.now(UTC)
+            now = clock.now()
             new_fact = Fact.model_validate(
                 {
                     **existing.model_dump(),
-                    "id": uuid4().hex[:12],
+                    "id": ids.new_id(),
                     "category": category or existing.category,
                     "memory_key": memory_key if memory_key is not None else existing.memory_key,
                     "content": new_content,
@@ -699,7 +699,7 @@ class FactStore:
         sources: list[Fact] = []
         for source_id in source_ids:
             fact = facts_by_id.get(source_id)
-            if fact is None or fact.lifecycle is not FactLifecycle.active or fact.confidence == 0.0:
+            if fact is None or not is_fact_editable(fact):
                 return None
             sources.append(fact)
         if len({fact.project for fact in sources}) > 1:
@@ -721,7 +721,7 @@ class FactStore:
     ) -> Fact:
         primary = sources[0]
         return Fact(
-            id=uuid4().hex[:12],
+            id=ids.new_id(),
             category=category or primary.category,
             memory_key=memory_key if memory_key is not None else primary.memory_key,
             content=merged_content,
@@ -812,7 +812,7 @@ class FactStore:
             if sources is None:
                 return None
 
-            now = datetime.now(UTC)
+            now = clock.now()
             new_fact = self._merged_fact(
                 sources,
                 merged_content,
@@ -859,7 +859,7 @@ class FactStore:
                     and fact.confidence > 0.0
                 )
 
-            now = datetime.now(UTC)
+            now = clock.now()
             targets = [
                 *changes.supersede,
                 *changes.stale,
@@ -961,7 +961,7 @@ class FactStore:
             existing = self._active_fact_by_id(fact_id)
             if existing is None:
                 return None
-            now = datetime.now(UTC)
+            now = clock.now()
             self._append_fact_event(
                 EventType.stale,
                 fact_id,
@@ -979,7 +979,7 @@ class FactStore:
             existing = self._active_fact_by_id(fact_id)
             if existing is None:
                 return None
-            now = datetime.now(UTC)
+            now = clock.now()
             self._append_fact_event(EventType.unstale, fact_id, now)
             return existing.model_copy(
                 update={"stale": False, "stale_reason": "", "updated_at": now}
@@ -1132,7 +1132,7 @@ class FactStore:
         committed = transaction.model_copy(
             update={
                 "status": TransactionStatus.committed,
-                "committed_at": datetime.now(UTC),
+                "committed_at": clock.now(),
             }
         )
         self._append_transaction(committed)
@@ -1212,7 +1212,7 @@ class FactStore:
             events_before = len(events)
             materialized = materialize_events(events)
 
-            now = datetime.now(UTC)
+            now = clock.now()
             compacted, tombstones = compacted_event_log(
                 materialized,
                 keep_tombstones=keep_tombstones,
@@ -1254,7 +1254,7 @@ class FactStore:
         self._require_offline_rewrite()
         with _locked_store(self.data_dir):
             facts = self.load_facts()
-            now = datetime.now(UTC)
+            now = clock.now()
             kept = []
             purged = 0
             for fact in facts:
@@ -1279,7 +1279,7 @@ class FactStore:
 
     def stats(self) -> dict[str, Any]:
         facts = self.load_facts()
-        now = datetime.now(UTC)
+        now = clock.now()
         active = [f for f in facts if _is_active_fact(f, now)]
         forgotten = [
             f

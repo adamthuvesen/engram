@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from engram.core import clock as clock_module
 from engram.core.fact_state import is_fact_eligible
 from engram.core.models import (
     CandidateStatus,
@@ -24,7 +25,6 @@ from engram.core.models import (
     TransactionStatus,
     materialize_events,
 )
-from engram.storage import store as store_module
 from engram.storage import sync as sync_module
 from engram.storage.changes import ChangeSet
 from engram.storage.store import FactStore, StoreIntegrityError
@@ -48,12 +48,12 @@ def candidate(candidate_id: str) -> MemoryCandidate:
     )
 
 
-def test_nested_snapshots_and_search_results_cannot_mutate_store(tmp_path):
+def test_nested_snapshots_and_search_results_cannot_mutate_store(tmp_path, fixed_now):
     store = FactStore(tmp_path)
     original = fact(
         "one",
         tags=["original"],
-        brief_source_revisions={"source": datetime.now(UTC)},
+        brief_source_revisions={"source": fixed_now},
     )
     store.append_facts([original])
     first = store.load_facts()[0]
@@ -351,18 +351,13 @@ def test_pending_dedup_reads_entire_queue_and_allows_rejected_reproposal(tmp_pat
     assert len(store.append_pending_candidates([rows[0].model_copy(update={"id": "new"})])) == 1
 
 
-def test_cached_search_excludes_newly_expired_fact(tmp_path, monkeypatch):
-    now = datetime.now(UTC)
+def test_cached_search_excludes_newly_expired_fact(tmp_path, monkeypatch, fixed_now):
+    now = fixed_now
     store = FactStore(tmp_path)
     store.append_facts([fact("one", expires_at=now + timedelta(minutes=1))])
     assert store.search_facts("Memory")
 
-    class Later(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return now + timedelta(minutes=2)
-
-    monkeypatch.setattr(store_module, "datetime", Later)
+    monkeypatch.setattr(clock_module, "now", lambda: now + timedelta(minutes=2))
     assert store.search_facts("Memory") == []
 
 
@@ -415,7 +410,10 @@ async def test_cancelled_sync_waits_for_worker_before_returning(tmp_path, monkey
     task = asyncio.create_task(sync_module.run_sync(tmp_path, timeout=1))
     await asyncio.to_thread(started.wait, 2)
     task.cancel()
-    await asyncio.sleep(0)
+    loop = asyncio.get_running_loop()
+    turn = loop.create_future()
+    loop.call_soon(turn.set_result, None)
+    await turn
     assert not task.done()
     release.set()
     with pytest.raises(asyncio.CancelledError):
@@ -532,10 +530,10 @@ def test_unknown_or_missing_header_marker_is_rejected(tmp_path, header):
     assert store.facts_path.read_text() == header + "\n"
 
 
-def test_correction_preserves_full_source_metadata(tmp_path):
+def test_correction_preserves_full_source_metadata(tmp_path, fixed_now):
     from engram.core.models import Durability
 
-    now = datetime.now(UTC)
+    now = fixed_now
     original = fact(
         "one",
         durability=Durability.ephemeral,
@@ -630,7 +628,7 @@ def test_approval_keeps_changed_replacement_sources_unresolved(tmp_path, change)
     if change == "edit":
         store.update_fact(source.id, content="Changed source")
     elif change == "expire":
-        store.update_fact(source.id, expires_at=datetime.now(UTC) - timedelta(seconds=1))
+        store.update_fact(source.id, expires_at=datetime(2020, 1, 1, tzinfo=UTC))
     elif change == "stale":
         store.mark_stale(source.id)
     elif change == "forgotten":

@@ -19,6 +19,7 @@ from functools import lru_cache
 
 import snowballstemmer
 
+from engram.core import clock
 from engram.core.models import Durability, Fact, FactCategory
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -348,7 +349,7 @@ class SearchIndex:
         terms = _query_terms(query)
         if not terms or not self._docs:
             return []
-        now = now or datetime.now(UTC)
+        now = now or clock.now()
         # Coverage is measured over the query's own words; an alias match
         # credits the word it stands for.
         origins = {term.origin for term in terms.values() if term.origin}

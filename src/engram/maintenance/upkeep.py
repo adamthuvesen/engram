@@ -26,9 +26,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from engram.core import clock
 from engram.core.config import get_settings
 from engram.core.models import Fact
 from engram.core.projects import canonical_project, record_project_root, resolve_project
@@ -151,7 +152,7 @@ async def run_upkeep(
     call the LLM so their proposals can be reviewed. ``full`` ignores the
     incremental consolidation state and reprocesses every project.
     """
-    now = now or datetime.now(UTC)
+    now = now or clock.now()
     project = canonical_project(project)
     report = UpkeepReport(started_at=now, dry_run=dry_run, project=project)
     ordered = [step for step in ALL_STEPS if step in steps]
@@ -166,7 +167,7 @@ async def run_upkeep(
                 # Recorded at start so a server restarted mid-run waits too.
                 await run_sync(append_state, store.data_dir, [StateLine(kind="run", at=now)])
             await _run_steps(store, report, ordered, project, dry_run, now, full)
-    report.finished_at = datetime.now(UTC)
+    report.finished_at = clock.now()
     return report
 
 
@@ -221,7 +222,7 @@ def seconds_until_due(
     last = load_state(data_dir).last_run_at
     if last is None:
         return minimum
-    now = now or datetime.now(UTC)
+    now = now or clock.now()
     due = last + timedelta(seconds=interval)
     return max(minimum, (due - now).total_seconds())
 

@@ -14,16 +14,17 @@ a real, deterministic recall number see ``evals.recall``.
 Run: uv run --locked python -m evals.tiers
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from engram.core import clock
 from engram.core.models import Fact, FactCategory
 from engram.recall.retriever import relevant_hits
 from engram.storage.store import FactStore
 from evals.report import print_provenance, report_provenance
 
-NOW = datetime.now(UTC)
+NOW = clock.now()
 WEEK_AGO = NOW - timedelta(days=3)
 MONTH_AGO = NOW - timedelta(days=35)
 

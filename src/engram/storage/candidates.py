@@ -4,10 +4,11 @@ import hashlib
 import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from engram.core import clock
 from engram.core.fact_state import is_fact_eligible
 from engram.core.models import (
     CandidateStatus,
@@ -164,7 +165,7 @@ def prepare_approval(
     supersessions: dict[str, str] = {}
     candidate_updates: dict[str, dict[str, Any]] = {}
     new_facts: list[Fact] = []
-    now = datetime.now(UTC)
+    now = clock.now()
     seen_ids: set[str] = set()
     selected_ids: list[str] = []
 

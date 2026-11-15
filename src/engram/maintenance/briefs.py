@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from engram.core import clock
 from engram.core.config import get_settings
 from engram.core.fact_format import format_observed
 from engram.core.models import Durability, Fact, FactCategory
@@ -110,7 +111,7 @@ async def run_briefs(
     """Write or refresh briefs for every project whose facts changed."""
     settings = get_settings()
     # Taken before reading: facts written after this trigger the next refresh.
-    snapshot = max(now, datetime.now(UTC))
+    snapshot = max(now, clock.now())
     facts = await store.load_active_facts(project=project, include_global=False)
     by_project: dict[str, list[Fact]] = {}
     # Newest first (load order); more than one only after a concurrent write.

@@ -23,10 +23,11 @@ import logging
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict
 
+from engram.core import clock
 from engram.core.config import get_settings
 from engram.core.models import BRIEF_MEMORY_KEY, Durability, Fact, FactCategory
 from engram.llm import complete_model
@@ -467,7 +468,7 @@ async def run_consolidation(
     """Consolidate every scope (or just ``project``) that changed."""
     settings = get_settings()
     # Taken before reading: anything written after this is seen next run.
-    snapshot = datetime.now(UTC)
+    snapshot = clock.now()
     index = await store.search_index()
     state = await run_sync(load_state, store.data_dir)
     by_scope: dict[str | None, list[Fact]] = {}

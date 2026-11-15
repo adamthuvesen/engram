@@ -14,6 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from engram.core import clock
 from engram.core.models import MIN_ACTIVE_CONFIDENCE, Fact
 from engram.storage.async_store import AsyncFactStore, run_sync
 from engram.storage.search import term_set
@@ -157,7 +158,7 @@ def audit_facts(
     The audit is deliberately conservative: it proposes commands for human
     review, and leaves execution to existing explicit maintenance tools.
     """
-    checked_at = _aware(now or datetime.now(UTC))
+    checked_at = _aware(now or clock.now())
     reviewable = [
         fact for fact in facts if fact.confidence >= MIN_ACTIVE_CONFIDENCE and not fact.stale
     ]

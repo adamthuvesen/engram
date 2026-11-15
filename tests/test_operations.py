@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 from engram import operations
@@ -177,9 +177,9 @@ def test_recall_stats_json_defaults_to_aggregate_only():
     assert "records" not in json_object(result.envelope.data)
 
 
-def test_recall_stats_can_include_records_and_filter_window():
+def test_recall_stats_can_include_records_and_filter_window(fixed_now):
     store = _store()
-    now = datetime.now(UTC)
+    now = fixed_now
     store.log_recall(
         RecallRecord(
             query="old",

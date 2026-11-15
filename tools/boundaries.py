@@ -28,7 +28,14 @@ def check_source(source: str, path: str) -> list[BoundaryViolation]:
         if isinstance(node, ast.ImportFrom) and node.module == "engram.storage.store":
             for alias in node.names:
                 if alias.name.startswith("_") and not is_storage:
-                    report(node, "Use the public lifecycle policy or storage API.")
+                    report(
+                        node,
+                        (
+                            "Rule: only src/engram/storage/ may use underscore names from engram.storage.store. "
+                            "Fix: use the public lifecycle policy in engram.core.fact_state or a public "
+                            "FactStore method."
+                        ),
+                    )
                 if alias.name == "FactStore":
                     fact_store_names.add(alias.asname or alias.name)
         elif isinstance(node, ast.Import):
@@ -47,7 +54,14 @@ def check_source(source: str, path: str) -> list[BoundaryViolation]:
             and not is_storage
             and ast.unparse(node.value) in storage_modules
         ):
-            report(node, "Use the public lifecycle policy or storage API.")
+            report(
+                node,
+                (
+                    "Rule: only src/engram/storage/ may use underscore names from engram.storage.store. "
+                    "Fix: use the public lifecycle policy in engram.core.fact_state or a public "
+                    "FactStore method."
+                ),
+            )
         if not isinstance(node, ast.AsyncFunctionDef) or is_storage:
             continue
         for child in ast.walk(node):
@@ -72,10 +86,20 @@ def check_source(source: str, path: str) -> list[BoundaryViolation]:
                 if direct_constructor or storage_class or classmethod_constructor:
                     report(
                         child,
-                        "Construct FactStore through run_sync or asyncio.to_thread in async code.",
+                        (
+                            "Rule: async code never builds FactStore on the event loop. "
+                            "Fix: construct it inside run_sync(...) or asyncio.to_thread(...), "
+                            "or use AsyncFactStore."
+                        ),
                     )
             if isinstance(child, ast.Attribute) and child.attr == "sync_store":
-                report(child, "Use AsyncFactStore in async application code.")
+                report(
+                    child,
+                    (
+                        "Rule: async code never touches .sync_store. "
+                        "Fix: await the matching AsyncFactStore method."
+                    ),
+                )
     return violations
 
 

@@ -84,25 +84,38 @@ ignore = [
 # processes, so the owner list would cover 15 files and lift the network and SDK bans
 # for all of them.
 [tool.ruff.lint.per-file-ignores]
+"src/engram/core/clock.py" = ["TID251"]
+"src/engram/core/ids.py" = ["TID251"]
 "src/engram/llm/client.py" = ["TID251"]
 "tools/smoke.py" = ["TID251"]
 "tests/test_llm.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"openai".msg = "Call the provider through engram.llm.client."
-"httpx".msg = "Network calls belong to engram.llm.client."
-"httpx2".msg = "Network calls belong to engram.llm.client."
-"requests".msg = "Network calls belong to engram.llm.client."
-"urllib.request".msg = "Network calls belong to engram.llm.client."
-"http.client".msg = "Network calls belong to engram.llm.client."
-"socket".msg = "Only tools.smoke opens sockets."
-"urllib3".msg = "Network calls belong to engram.llm.client."
-"aiohttp".msg = "Network calls belong to engram.llm.client."
-"websockets".msg = "Network calls belong to engram.llm.client."
-"anthropic".msg = "Network calls belong to engram.llm.client."
-"litellm".msg = "Network calls belong to engram.llm.client."
-"boto3".msg = "Network calls belong to engram.llm.client."
-"smtplib".msg = "Network calls belong to engram.llm.client."
-"ftplib".msg = "Network calls belong to engram.llm.client."
-"xmlrpc.client".msg = "Network calls belong to engram.llm.client."
-"http.server".msg = "Network calls belong to engram.llm.client."
+"openai".msg = "Only src/engram/llm/client.py imports the OpenAI SDK. Call the provider through engram.llm.client instead of importing openai."
+"httpx".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"httpx2".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"requests".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"urllib.request".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"http.client".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"socket".msg = "Only tools/smoke.py opens sockets. Move the socket code there, or use engram.llm.client for network calls."
+"urllib3".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"aiohttp".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"websockets".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"anthropic".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"litellm".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"boto3".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"smtplib".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"ftplib".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"xmlrpc.client".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+"http.server".msg = "Only src/engram/llm/client.py makes network calls. Call the provider through engram.llm.client instead of importing this."
+
+# Clock and ids: src/engram/core/clock.py and src/engram/core/ids.py are the only readers.
+"datetime.datetime.now".msg = "Use engram.core.clock.now(); only src/engram/core/clock.py reads the clock, so tests can replace it."
+"datetime.datetime.utcnow".msg = "Use engram.core.clock.now(); only src/engram/core/clock.py reads the clock, so tests can replace it."
+"datetime.datetime.today".msg = "Use engram.core.clock.now(); only src/engram/core/clock.py reads the clock, so tests can replace it."
+"datetime.date.today".msg = "Use engram.core.clock.now().date(); only src/engram/core/clock.py reads the clock, so tests can replace it."
+"time.time".msg = "Use engram.core.clock.now().timestamp(); only src/engram/core/clock.py reads the clock. For durations use time.monotonic()."
+"time.time_ns".msg = "Use engram.core.clock.now(); only src/engram/core/clock.py reads the clock. For durations use time.monotonic()."
+"random".msg = "Ambient randomness is banned in src. Take a seeded generator as a parameter, built by the caller, instead of importing random."
+"uuid.uuid1".msg = "Use engram.core.ids.new_id(); only src/engram/core/ids.py makes fresh ids, so tests can replace it."
+"uuid.uuid4".msg = "Use engram.core.ids.new_id(); only src/engram/core/ids.py makes fresh ids, so tests can replace it."

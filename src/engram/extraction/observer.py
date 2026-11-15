@@ -12,10 +12,10 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError
 
+from engram.core import clock, ids
 from engram.core.config import get_settings
 from engram.core.fact_format import content_signature, format_observed
 from engram.core.models import (
@@ -389,9 +389,9 @@ def _draft_facts(
     ``replaces`` IDs so sibling consolidation can merge them.
     """
     neighbor_by_hash = {content_signature(fact.content): fact.id for fact in neighbors.values()}
-    now = datetime.now(UTC)
+    now = clock.now()
     ttl = timedelta(days=get_settings().ephemeral_ttl_days)
-    source_group_id = uuid4().hex[:12]
+    source_group_id = ids.new_id()
     drafts: list[Fact] = []
     for raw in raw_facts:
         exact_id = neighbor_by_hash.get(content_signature(raw.content))

@@ -23,13 +23,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from engram.core import clock
 from engram.core.interfaces import WarningCode
 from engram.core.models import Durability, Fact, FactCategory
 from engram.llm import OpenAICompletionClient, completion_client
@@ -114,7 +115,7 @@ class EvalResult(BaseModel):
 
 
 def materialize_facts(specs: list[EvalFactSpec]) -> list[Fact]:
-    now = datetime.now(UTC)
+    now = clock.now()
     facts: list[Fact] = []
     for spec in specs:
         observed = now - timedelta(days=spec.observed_days_ago)

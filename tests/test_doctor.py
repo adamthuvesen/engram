@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -178,9 +178,9 @@ def test_doctor_skips_provider_by_default():
     assert "provider" in report.checks_skipped
 
 
-def test_doctor_counts_active_stale_forgotten():
+def test_doctor_counts_active_stale_forgotten(fixed_now):
     store = _make_store()
-    past = datetime.now(UTC) - timedelta(days=1)
+    past = fixed_now - timedelta(days=1)
     store.append_facts(
         [
             Fact(id="aaaaaaaaaaaa", category=FactCategory.preference, content="a"),
@@ -210,11 +210,11 @@ def test_doctor_counts_active_stale_forgotten():
     assert report.counts["forgotten_facts"] == 1
 
 
-def test_doctor_flags_stale_pending_candidates():
+def test_doctor_flags_stale_pending_candidates(fixed_now):
     store = _make_store()
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
-    old = datetime.now(UTC) - timedelta(days=45)
+    old = fixed_now - timedelta(days=45)
     candidate = MemoryCandidate(
         id="oldpendingcan",
         category=FactCategory.preference,
@@ -324,7 +324,7 @@ def test_doctor_sync_group_is_local_only(monkeypatch):
     assert network_calls == []
 
 
-def test_doctor_reports_volume_metrics():
+def test_doctor_reports_volume_metrics(fixed_now):
     store = _make_store()
     store.append_facts(
         [
@@ -350,7 +350,7 @@ def test_doctor_reports_volume_metrics():
             prefilter_count=1,
             latency_ms=1.0,
             delivered_ids=["c"],
-            timestamp=datetime.now(UTC) - timedelta(days=200),
+            timestamp=fixed_now - timedelta(days=200),
         )
     )
 

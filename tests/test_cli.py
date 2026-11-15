@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -205,9 +205,9 @@ def test_cli_correct_json_not_found(cli_env, capsys):
     assert parsed["errors"][0]["code"] == "not_found"
 
 
-def test_cli_recall_stats_aggregate_and_include_records(cli_env, capsys):
+def test_cli_recall_stats_aggregate_and_include_records(cli_env, capsys, fixed_now):
     store = FactStore(data_dir=cli_env)
-    now = datetime.now(UTC)
+    now = fixed_now
     store.log_recall(
         RecallRecord(
             query="old",

@@ -2,10 +2,12 @@ import json
 import os
 import shutil
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+FIXED_NOW = datetime(2026, 6, 11, 12, 0, tzinfo=UTC)
 _session_home = Path(tempfile.mkdtemp(prefix="engram-session-home-"))
 
 
@@ -85,3 +87,12 @@ def _no_llm_key(monkeypatch, request):
     # Upkeep's LLM steps (consolidate, briefs) check the same key cache.
     monkeypatch.setattr("engram.maintenance.upkeep.llm_available", lambda: False)
     monkeypatch.setenv("ENGRAM_MAINTENANCE_ENABLED", "false")
+
+
+@pytest.fixture
+def fixed_now(monkeypatch):
+    """Pin engram.core.clock.now so expected values never depend on the real date."""
+    from engram.core import clock
+
+    monkeypatch.setattr(clock, "now", lambda: FIXED_NOW)
+    return FIXED_NOW

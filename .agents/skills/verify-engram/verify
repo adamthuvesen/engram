@@ -16,7 +16,6 @@ import sys
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -25,6 +24,8 @@ HELPER = Path(__file__).resolve()
 if Path(sys.prefix).resolve() != (ROOT / ".venv").resolve():
     uv = ["uv", "run", "--quiet", "--locked", "--extra", "dev", "--project", str(ROOT)]
     os.execvp("uv", [*uv, "python", str(HELPER), *sys.argv[1:]])
+# The drives import the checkout's evals and tools packages, which the wheel does not ship.
+sys.path.insert(1, str(ROOT))
 
 from drives import (  # noqa: E402 - imports after the venv re-exec above
     CONTROL_FAILURE,
@@ -36,6 +37,7 @@ from drives import (  # noqa: E402 - imports after the venv re-exec above
 )
 
 import engram  # noqa: E402 - imports after the venv re-exec above
+from engram.core import clock  # noqa: E402 - imports after the venv re-exec above
 
 GLOBAL_PATHS = ["pyproject.toml", "uv.lock", ".agents/skills/verify-engram/*"]
 REDACT = ("KEY", "TOKEN", "SECRET", "PASSWORD")
@@ -189,7 +191,7 @@ def preflight(env: dict[str, str], scratch: Path) -> None:
 def run_dir() -> Path:
     sha = git("rev-parse", "--short=7", "HEAD") or "nogit"
     dirty = "-dirty" if git("status", "--porcelain") else ""
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    stamp = clock.now().strftime("%Y%m%dT%H%M%S%fZ")
     path = ROOT / ".verify" / "runs" / f"{stamp}-{sha}{dirty}"
     path.mkdir(parents=True, exist_ok=False)
     return path

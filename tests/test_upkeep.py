@@ -490,9 +490,9 @@ def test_merged_card_keeps_the_age_of_its_oldest_claim(tmp_path: Path, llm):
     assert "2026-03-22..2026-10-01" in format_fact_line(merged)
 
 
-def test_unchanged_single_source_card_is_edited_in_place(tmp_path: Path, llm):
+def test_unchanged_single_source_card_is_edited_in_place(tmp_path: Path, llm, fixed_now):
     _, use = llm
-    observed = datetime.now(UTC) - timedelta(days=5)
+    observed = fixed_now - timedelta(days=5)
     store = _store(
         tmp_path,
         [_fact("keep", "Widget staging is down this week.", observed_at=observed)],
@@ -512,7 +512,7 @@ def test_unchanged_single_source_card_is_edited_in_place(tmp_path: Path, llm):
     assert fact.retrieval_hints == ["hint"]
     # The TTL starts when upkeep classifies the card, never in the past.
     assert fact.expires_at is not None
-    assert fact.expires_at > datetime.now(UTC) + timedelta(days=44)
+    assert fact.expires_at > fixed_now + timedelta(days=44)
     assert report.fact_ids["edited"] == ["keep"]
     assert "created" not in report.fact_ids or not report.fact_ids["created"]
 
@@ -648,18 +648,16 @@ def test_unchanged_kept_card_is_still_a_cluster_dependency(tmp_path: Path, llm, 
     assert load_state(store.data_dir).projects["widget"].retry_seeds == {"a": 1}
 
 
-def test_source_expiring_during_provider_cannot_become_durable(tmp_path: Path, llm, monkeypatch):
+def test_source_expiring_during_provider_cannot_become_durable(
+    tmp_path: Path, llm, monkeypatch, fixed_now
+):
     _, use = llm
-    start = datetime.now(UTC)
+    start = fixed_now
 
-    class Clock(datetime):
+    class Clock:
         current = start
 
-        @classmethod
-        def now(cls, tz=None):
-            return cls.current
-
-    monkeypatch.setattr("engram.storage.store.datetime", Clock)
+    monkeypatch.setattr("engram.core.clock.now", lambda: Clock.current)
     source = _fact(
         "a",
         "Widget temporarily uses pnpm.",

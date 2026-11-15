@@ -420,7 +420,7 @@ def test_existing_id_is_claimed_by_first_card_only(monkeypatch):
     assert second.supersedes is None
 
 
-def test_ephemeral_card_gets_default_expiry(monkeypatch):
+def test_ephemeral_card_gets_default_expiry(monkeypatch, fixed_now):
     explicit = datetime(2030, 1, 1, tzinfo=UTC)
     _patch(
         monkeypatch,
@@ -447,7 +447,7 @@ def test_ephemeral_card_gets_default_expiry(monkeypatch):
     incident, freeze, db = result.created
     assert incident.durability == Durability.ephemeral
     assert incident.expires_at is not None
-    expected = datetime.now(UTC) + timedelta(days=45)
+    expected = fixed_now + timedelta(days=45)
     assert abs(incident.expires_at - expected) < timedelta(minutes=1)
     assert freeze.expires_at == explicit
     assert db.expires_at is None
@@ -611,18 +611,14 @@ def test_repeated_conflict_stores_card_without_the_changed_target(monkeypatch):
 @pytest.mark.parametrize("queue_for_review", [False, True])
 @pytest.mark.parametrize("mutation", ["forget", "expire"])
 def test_unavailable_duplicate_retries_with_fresh_neighbors(
-    monkeypatch, queue_for_review, mutation
+    monkeypatch, queue_for_review, mutation, fixed_now
 ):
-    start = datetime.now(UTC)
+    start = fixed_now
 
-    class Clock(datetime):
+    class Clock:
         current = start
 
-        @classmethod
-        def now(cls, tz=None):
-            return cls.current
-
-    monkeypatch.setattr("engram.storage.store.datetime", Clock)
+    monkeypatch.setattr("engram.core.clock.now", lambda: Clock.current)
     store = _pandas_store()
     Clock.current = start + timedelta(seconds=1)
     store.update_fact("oldfact", expires_at=start + timedelta(minutes=1))
@@ -779,7 +775,7 @@ def test_unscoped_ingest_may_retire_global_cards(monkeypatch):
     assert result.retired == {"global-pm": "moved to bun"}
 
 
-def test_past_expiry_on_ephemeral_card_falls_back_to_ttl(monkeypatch):
+def test_past_expiry_on_ephemeral_card_falls_back_to_ttl(monkeypatch, fixed_now):
     past = datetime(2020, 1, 1, tzinfo=UTC)
     _patch(
         monkeypatch,
@@ -798,4 +794,4 @@ def test_past_expiry_on_ephemeral_card_falls_back_to_ttl(monkeypatch):
 
     expires_at = result.created[0].expires_at
     assert expires_at is not None
-    assert expires_at > datetime.now(UTC) + timedelta(days=44)
+    assert expires_at > fixed_now + timedelta(days=44)
